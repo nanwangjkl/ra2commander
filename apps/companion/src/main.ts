@@ -185,7 +185,7 @@ async function handleCommand(line: string, ctx: CommandContext): Promise<string>
           if (u.type === 7) {
             if (filter === 'vehicles' || filter === 'all') return true
             // tanks：按规则排除矿车/维修车等非战斗车辆（名称启发式，待规则目录化）。
-            if (filter === 'tanks') return !/HARV|MINR|TRUCK|AMBULANCE|MGTK/i.test(u.name)
+            if (filter === 'tanks') return !/HARV|CMIN|MINR|TRUCK|AMBULANCE/i.test(u.name)
             return false
           }
           return false
@@ -245,6 +245,7 @@ async function handleCommand(line: string, ctx: CommandContext): Promise<string>
             const r = (await bridge.rules(name, 2)) as { prerequisite?: string[] } | undefined | null
             return r?.prerequisite
           },
+          available: async () => bridge.latest?.production?.available ?? [],
         },
         snap.self,
       )
@@ -308,8 +309,12 @@ async function handleCommand(line: string, ctx: CommandContext): Promise<string>
         const lines: string[] = []
         for (const t of ctx.runtime.tasks.values()) {
           const s = t.stats
+          // 编队任务显示动态成员数（转编后授权实时收窄）。
+          const memberCount = t.spec.formationId
+            ? ctx.formations.membersOf(t.spec.formationId).length
+            : t.spec.unitIds.length
           lines.push(
-            `  ${t.spec.id} [${t.status}] v${t.script?.version ?? '-'} 「${t.spec.rawText.slice(0, 30)}」 单位=${t.spec.unitIds.length} steps=${s.steps} actions=${s.actions} 拒绝=${s.rejected}${s.lastError ? ` 错误=${s.lastError.slice(0, 60)}` : ''}`,
+            `  ${t.spec.id} [${t.status}] v${t.script?.version ?? '-'} 「${t.spec.rawText.slice(0, 30)}」 单位=${memberCount}${t.spec.formationId ? `（编队${t.spec.formationId}）` : ''}${t.spec.allowedProduce ? ` 生产=${t.spec.allowedProduce.length}项` : ''} steps=${s.steps} actions=${s.actions} 拒绝=${s.rejected}${s.lastError ? ` 错误=${s.lastError.slice(0, 60)}` : ''}`,
           )
         }
         return lines.length ? lines.join('\n') : '（无任务）'

@@ -4,6 +4,22 @@ import type { SnapshotUnit } from '@ra2c/contracts'
 export interface RulesLookup {
   /** 返回 rules().prerequisite（不存在为 undefined）。 */
   prerequisites(name: string): Promise<string[] | undefined>
+  /** 当前可造项目名（production.available()；目标在列即前置已被引擎确认满足）。 */
+  available(): Promise<string[]>
+}
+
+/**
+ * 规则前置中的通用类别名 → 三族建筑（gonghui MOD 实测 NASAM.prerequisite=[BARRACKS] 这类）。
+ * 与快照中的既有建筑、可造清单求交后解析为具体建筑名。
+ */
+const PREREQ_CATEGORY: Record<string, string[]> = {
+  CONYARD: ['GACNST', 'NACNST', 'YACNST'],
+  POWER: ['GAPOWR', 'NAPOWR', 'NAAPWR', 'YAPOWR'],
+  BARRACKS: ['GAPILE', 'NAPILE', 'YAPILE'],
+  REFINERY: ['GAREFN', 'NAREFN', 'YAREFN'],
+  FACTORY: ['GAWEAP', 'NAWEAP', 'YAWEAP'],
+  RADAR: ['GAAIRC', 'NARADR', 'YARADR'],
+  TECH: ['GATECH', 'NATECH', 'YATECH'],
 }
 
 export interface PrerequisiteClosure {
@@ -27,10 +43,26 @@ export async function computePrerequisiteClosure(
   ownBuildings: SnapshotUnit[],
 ): Promise<PrerequisiteClosure> {
   const existing = new Set(ownBuildings.filter((u) => u.type === 2).map((u) => u.name))
+  const available = new Set(await lookup.available().catch(() => []))
   const unknown: string[] = []
   const visited = new Set<string>()
   // 拓扑序输出：依赖先于依赖者。
   const order: string[] = []
+
+  /** 前置项解析：具体建筑名原样；类别名在既有/可造建筑族中求交。 */
+  const resolvePrereq = (name: string): string | undefined => {
+    if (existing.has(name) || available.has(name)) {
+      return existing.has(name) ? undefined : name // 已存在即满足；可造但未造返回自身
+    }
+    const family = PREREQ_CATEGORY[name]
+    if (family) {
+      const built = family.find((b) => existing.has(b))
+      if (built) return undefined
+      const buildable = family.find((b) => available.has(b))
+      if (buildable) return buildable
+    }
+    return name
+  }
 
   const visit = async (name: string, path: string[]): Promise<void> => {
     if (visited.has(name) || existing.has(name)) return
@@ -42,7 +74,9 @@ export async function computePrerequisiteClosure(
     }
     visited.add(name)
     for (const dep of prereqs) {
-      if (dep && !existing.has(dep)) await visit(dep, [...path, name])
+      if (!dep) continue
+      const resolved = resolvePrereq(dep)
+      if (resolved) await visit(resolved, [...path, name])
     }
     if (!order.includes(name)) order.push(name)
   }
