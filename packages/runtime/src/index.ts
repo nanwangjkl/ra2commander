@@ -6,8 +6,36 @@ export { FormationRegistry } from './formation.ts'
 export type { Formation, CreateResult } from './formation.ts'
 export { computePrerequisiteClosure } from './production.ts'
 export type { RulesLookup, PrerequisiteClosure } from './production.ts'
+export { persistState, restoreState } from './persist.ts'
+export type { PersistedState } from './persist.ts'
 
 export type TaskStatus = 'compiling' | 'active' | 'paused' | 'stopped' | 'replaced'
+
+/**
+ * 生产队列账本：记录每个任务暂停过的队列。
+ * 任务撤权/终结时只恢复"自己暂停的、且当前仍处于暂停态"的队列——
+ * 后续命令改变过的不动（需求：结束后仅恢复它自己暂停且未被改变的队列）。
+ */
+export class ProductionLedger {
+  private pausedBy = new Map<string, Set<number>>()
+
+  pause(taskId: string, queueType: number): void {
+    const s = this.pausedBy.get(taskId) ?? new Set<number>()
+    s.add(queueType)
+    this.pausedBy.set(taskId, s)
+  }
+
+  resume(taskId: string, queueType: number): void {
+    this.pausedBy.get(taskId)?.delete(queueType)
+  }
+
+  /** 取走该任务暂停过的队列（清账）；调用方按当前状态决定是否 resume。 */
+  takePaused(taskId: string): number[] {
+    const s = [...(this.pausedBy.get(taskId) ?? [])]
+    this.pausedBy.delete(taskId)
+    return s
+  }
+}
 
 export interface TaskSpec {
   id: string
@@ -60,6 +88,8 @@ const MAX_CONSECUTIVE_ERRORS = 3
 export class TaskRuntime {
   private session = -1
   readonly tasks = new Map<string, TaskState>()
+  /** 生产队列账本：谁暂停的谁负责恢复。 */
+  readonly ledger = new ProductionLedger()
 
   constructor(private readonly deps: RuntimeDeps) {}
 
@@ -79,7 +109,7 @@ export class TaskRuntime {
     )
   }
 
-  /** 停止/禁止类命令：立即撤权并尝试停住其单位；后续动作一律拒绝。 */
+  /** 停止/禁止类命令：立即撤权并尝试停住其单位；后续动作一律拒绝。恢复其暂停过的队列。 */
   async stop(id: string): Promise<void> {
     const task = this.tasks.get(id)
     if (!task) return
@@ -88,7 +118,22 @@ export class TaskRuntime {
       ? task.spec.unitIds.filter((uid) => this.lastSnapshot!.self.some((u) => u.id === uid))
       : task.spec.unitIds
     if (alive.length) await this.deps.submit([{ kind: 'stop', unitIds: alive }])
+    await this.restorePausedQueues(id)
     this.deps.log?.(`[runtime] 任务 ${id} 已撤权停止`)
+  }
+
+  /** 只恢复本任务暂停过、且当前仍处于 OnHold(2) 的队列（未被后续命令改变的不动）。 */
+  private async restorePausedQueues(id: string): Promise<void> {
+    const paused = this.ledger.takePaused(id)
+    if (!paused.length || !this.lastSnapshot) return
+    const queues = this.lastSnapshot.production?.queues ?? []
+    for (const queueType of paused) {
+      const q = queues.find((x) => x.type === queueType)
+      if (q && q.status === 2) {
+        await this.deps.submit([{ kind: 'resumeQueue', queueType }])
+        this.deps.log?.(`[runtime] 任务 ${id} 结束，恢复其暂停的队列 type${queueType}`)
+      }
+    }
   }
 
   pause(id: string): void {
@@ -182,6 +227,11 @@ export class TaskRuntime {
     task.stats.lastActionSig = sig
 
     if (!outcome.actions.length) return
+    // 生产队列操作记账（撤权/终结时只恢复自己暂停的）。
+    for (const a of outcome.actions) {
+      if (a.kind === 'pauseQueue') this.ledger.pause(task.spec.id, a.queueType)
+      else if (a.kind === 'resumeQueue') this.ledger.resume(task.spec.id, a.queueType)
+    }
     const results = await this.deps.submit(outcome.actions)
     for (const r of results) {
       if (!r.ok) task.stats.rejected++

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createServer } from 'node:net'
@@ -10,7 +10,15 @@ import type { ActionRequest, Snapshot } from '@ra2c/contracts'
 import { compileCommand, type CompileInput } from '@ra2c/command'
 import { StepExecutor } from '@ra2c/js-worker'
 import { configuredProviderNames, providerFromEnv, type OpenAICompatibleProvider } from '@ra2c/model-providers'
-import { computePrerequisiteClosure, FormationRegistry, TaskRuntime, type TaskSpec } from '@ra2c/runtime'
+import {
+  computePrerequisiteClosure,
+  FormationRegistry,
+  persistState,
+  restoreState,
+  TaskRuntime,
+  type PersistedState,
+  type TaskSpec,
+} from '@ra2c/runtime'
 import { setupCdnProxy, WerhdBridge } from '@ra2c/game-werhd'
 import { dismissStartupDialogs } from './auto-import.ts'
 import { startStaticServer } from './static-server.ts'
@@ -25,6 +33,8 @@ const PORT = Number(process.env.RA2C_PORT ?? 8787)
 const CMD_PORT = Number(process.env.RA2C_CMD_PORT ?? 8790)
 /** 浏览器 CDP 端口：浏览器常驻独立进程，companion 重启只断连不杀对局。 */
 const CDP_PORT = Number(process.env.RA2C_CDP_PORT ?? 9222)
+/** 任务/编队持久化状态文件。 */
+const STATE_FILE = join(ROOT, '.runtime/state.json')
 
 /**
  * 确保 Chromium 常驻运行并经 CDP 连接。
@@ -458,13 +468,44 @@ async function main(): Promise<void> {
   })
 
   let lastSession = 0
+  let stateDirty = false
+  const markDirty = () => {
+    stateDirty = true
+  }
+  const saveState = () => {
+    try {
+      writeFileSync(STATE_FILE, JSON.stringify(persistState(runtime, formations, lastSession)))
+    } catch (err) {
+      console.log(`[companion] 状态保存失败: ${String(err).slice(0, 80)}`)
+    }
+  }
+  // 启动恢复：任务/编队从上次会话恢复（换局后由 runtime 的会话失效机制自然终结）。
+  try {
+    const state = JSON.parse(readFileSync(STATE_FILE, 'utf8')) as PersistedState
+    lastSession = state.session
+    const restored = restoreState(runtime, formations, state)
+    console.log(`[companion] 已恢复 ${restored} 个任务、${state.formations.length} 个编队（对局代次 ${state.session}）`)
+  } catch {
+    // 无状态文件（首次运行）。
+  }
+  setInterval(() => {
+    if (stateDirty) {
+      stateDirty = false
+      saveState()
+    }
+  }, 3000).unref()
+
   bridge.onSnapshot((snap) => {
     if (snap.session !== lastSession) {
       lastSession = snap.session
       console.log(`\n[companion] 检测到对局会话 #${snap.session}，快照 tick=${snap.tick}，己方单位 ${snap.self.length}，可见敌人 ${snap.enemies.length}`)
+      markDirty()
     }
-    // 快照驱动任务运行时；异常不阻断桥回调。
-    void runtime.onSnapshot(snap).catch((err) => console.error(`[runtime] 快照处理错误: ${String(err)}`))
+    // 快照驱动任务运行时；异常不阻断桥回调。memory 每步演进，标记脏供定时持久化。
+    void runtime
+      .onSnapshot(snap)
+      .then(() => markDirty())
+      .catch((err) => console.error(`[runtime] 快照处理错误: ${String(err)}`))
   })
 
   // 找到游戏页（companion 重启后页面还在，桥也还在）。
@@ -505,9 +546,11 @@ async function main(): Promise<void> {
   let running = true
   const runLine = async (line: string): Promise<string> => {
     const out = await handleCommand(line, ctx)
+    markDirty() // 命令可能改变了任务/编队状态
     if (out === '__QUIT__' || out === '__QUIT_HARD__') {
       hardQuit = out === '__QUIT_HARD__'
       running = false
+      saveState()
       return 'bye'
     }
     return out
