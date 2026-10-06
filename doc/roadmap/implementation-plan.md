@@ -2,7 +2,7 @@
 
 本项目基于 [ra2web](https://github.com/ra2web/ra2web.github.io) 设计独立的本机语音指挥伴随程序。
 
-状态：计划，尚无实现或实测结果。更新日期：2026-10-06。行为依据为[产品需求](../spec/requirements.md)，模块边界见[架构设计](../architecture/overview.md)。
+状态：M1 与 M2 单队循环已实施并实测（见[API 调查的原型实测记录](../architecture/game-api.md)），M3/M4 未开始。更新日期：2026-10-06。行为依据为[产品需求](../spec/requirements.md)，模块边界见[架构设计](../architecture/overview.md)。
 
 ## 首版范围
 

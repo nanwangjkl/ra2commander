@@ -79,6 +79,9 @@ export class OpenAICompatibleProvider {
   private lastUsage?: GenerateResult['usage']
 
   private async requestOnce(model: string, opts: GenerateOptions): Promise<string> {
+    // 挂起保护：单请求 120s 硬超时（实测 GLM coding 端点在大 max_tokens 下可能长期不返回）。
+    const timeoutSignal = AbortSignal.timeout(120_000)
+    const signal = opts.signal ? AbortSignal.any([opts.signal, timeoutSignal]) : timeoutSignal
     const res = await fetch(`${this.config.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -92,7 +95,7 @@ export class OpenAICompatibleProvider {
         temperature: opts.temperature ?? 0.2,
         stream: false,
       }),
-      ...(opts.signal ? { signal: opts.signal } : {}),
+      signal,
     })
     if (!res.ok) {
       const body = await res.text().catch(() => '')
