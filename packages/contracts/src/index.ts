@@ -30,6 +30,22 @@ export interface SnapshotUnit {
   veteranLevel?: number;
 }
 
+/** 生产队列状态（werhd production.queues() 的映射）。 */
+export interface ProductionQueueState {
+  type: number;
+  status: number;
+  size: number;
+  maxSize: number;
+  items: Array<{ name: string; quantity: number; progress: number; creditsEach: number; creditsSpent: number }>;
+}
+
+/** 生产态势：电力、各队列与可造清单。 */
+export interface ProductionState {
+  power: { drain: number; total: number; isLowPower: boolean };
+  queues: ProductionQueueState[];
+  available: string[];
+}
+
 /** 每个采样窗口回传一次的有界快照。 */
 export interface Snapshot {
   /** 会话代次：一局对局一个代次，换局递增。 */
@@ -45,9 +61,11 @@ export interface Snapshot {
   self: SnapshotUnit[];
   /** 当前可见的敌方单位（选敌/攻击目标来源），带上限护栏。 */
   enemies: SnapshotUnit[];
+  /** 生产态势（进局后采集；游戏 API 不可用时缺省）。 */
+  production?: ProductionState;
 }
 
-/** MVP 动作请求；宿主提交前做会话与存活复查。 */
+/** MVP 动作请求；宿主提交前做会话与存活复查。生产动作无 unitIds，按名单授权。 */
 export type ActionRequest =
   | { kind: 'move'; unitIds: number[]; x: number; y: number }
   | { kind: 'attackMove'; unitIds: number[]; x: number; y: number }
@@ -55,7 +73,12 @@ export type ActionRequest =
   | { kind: 'attack'; unitIds: number[]; targetId: number }
   | { kind: 'stop'; unitIds: number[] }
   | { kind: 'scatter'; unitIds: number[] }
-  | { kind: 'guard'; unitIds: number[] };
+  | { kind: 'guard'; unitIds: number[] }
+  | { kind: 'produce'; name: string; quantity: number }
+  | { kind: 'cancel'; name: string; quantity: number }
+  | { kind: 'place'; name: string; x: number; y: number }
+  | { kind: 'pauseQueue'; queueType: number }
+  | { kind: 'resumeQueue'; queueType: number };
 
 export interface ActionResult {
   ok: boolean;
@@ -73,6 +96,8 @@ export interface StepConstraints {
   mapWidth: number;
   mapHeight: number;
   maxActions?: number;
+  /** 生产任务可操作的项目名（必要前置闭包）；produce/cancel/place 只能操作名单内。 */
+  allowedProduce?: string[];
 }
 
 /** 任务脚本单次 step 的执行结果。 */

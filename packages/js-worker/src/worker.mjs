@@ -22,9 +22,11 @@ function compile(code) {
   return entry.fn
 }
 
-const KNOWN_KINDS = new Set(['move', 'attackMove', 'attack', 'stop', 'gather'])
+const KNOWN_KINDS = new Set(['move', 'attackMove', 'attack', 'stop', 'gather', 'produce', 'cancel', 'place', 'pauseQueue', 'resumeQueue'])
 // 无坐标/无目标动作：不需要 x/y，也不需要 targetId。
 const NO_TARGET_KINDS = new Set(['stop', 'scatter', 'guard'])
+// 生产动作：无 unitIds，按 allowedProduce 名单授权。
+const PRODUCTION_KINDS = new Set(['produce', 'cancel', 'place'])
 
 /** 动作结构校验（宿主提交前还有一层复查，这里是执行侧第一道）。 */
 function validateActions(actions, constraints) {
@@ -32,8 +34,25 @@ function validateActions(actions, constraints) {
   if (actions.length > (constraints.maxActions ?? 20)) return `动作数超上限: ${actions.length}`
   const allowed = new Set(constraints.allowedUnitIds ?? [])
   const enemies = new Set(constraints.enemyIds ?? [])
+  const producible = constraints.allowedProduce ? new Set(constraints.allowedProduce) : null
   for (const a of actions) {
     if (!a || typeof a !== 'object' || !KNOWN_KINDS.has(a.kind)) return `未知动作类型: ${JSON.stringify(a).slice(0, 80)}`
+    if (PRODUCTION_KINDS.has(a.kind)) {
+      if (typeof a.name !== 'string' || !a.name) return `动作 ${a.kind} 缺少 name`
+      if (producible && !producible.has(a.name)) return `动作 ${a.kind} 引用未授权项目 "${a.name}"（不在必要前置闭包内）`
+      if (a.kind === 'place') {
+        if (!Number.isInteger(a.x) || !Number.isInteger(a.y)) return `place 坐标非法`
+        if (a.x < 0 || a.y < 0 || a.x >= constraints.mapWidth || a.y >= constraints.mapHeight)
+          return `place 坐标越界 (${a.x},${a.y})`
+      } else if (!Number.isInteger(a.quantity) || a.quantity < 1) {
+        return `动作 ${a.kind} quantity 非法`
+      }
+      continue
+    }
+    if (a.kind === 'pauseQueue' || a.kind === 'resumeQueue') {
+      if (!Number.isInteger(a.queueType) || a.queueType < 0 || a.queueType > 5) return `${a.kind} queueType 非法`
+      continue
+    }
     if (!Array.isArray(a.unitIds) || a.unitIds.length === 0) return `动作 ${a.kind} 缺少 unitIds`
     for (const id of a.unitIds) {
       if (!Number.isInteger(id) || !allowed.has(id)) return `动作 ${a.kind} 引用未授权单位 ${id}`

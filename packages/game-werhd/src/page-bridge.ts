@@ -32,6 +32,14 @@ export class WerhdBridge {
       for (const cb of this.listeners) cb(snapshot)
     })
     await this.context.addInitScript(source)
+    // 已打开的页面可能没有桥（companion 断连期间页面被刷新过；addInitScript 只对未来导航生效）。
+    // 立即补装，实现 companion 重启即恢复。
+    for (const page of this.context.pages()) {
+      const has = await page.evaluate(`!!window.__ra2cInstalled`).catch(() => false)
+      if (!has) {
+        await page.evaluate(source).catch(() => {})
+      }
+    }
   }
 
   onSnapshot(cb: (s: Snapshot) => void): () => void {
@@ -65,6 +73,13 @@ export class WerhdBridge {
       if (Date.now() > deadline) throw new Error('等待对局超时：window.werhd 未出现')
       await new Promise((r) => setTimeout(r, pollMs))
     }
+  }
+
+  /** 查询当前有效规则（含地图/MOD 覆盖）；无效名称返回 undefined。 */
+  async rules(name: string, type: number): Promise<unknown> {
+    return this.page().evaluate(
+      `(() => { const w = window.werhd; if (!w) return undefined; return w.rules(${JSON.stringify(name)}, ${type}) })()`,
+    )
   }
 
   /** 提交动作；会话不一致或单位失效时被拒绝。 */

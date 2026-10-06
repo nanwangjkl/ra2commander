@@ -41,7 +41,17 @@ function step(snapshot, memory) {
 3. 战损口径：任务生效时原始成员的阵亡比例（受伤不算）；原始成员名单会在绑定信息中给出
 4. 不允许访问 window/document/fetch/import/require/eval 等任何全局设施，不要使用 setTimeout 等异步设施；step 必须同步返回
 5. 每次 tick 只返回必要动作；重复下相同订单没有意义，用 memory 记住已下令的内容避免重发
-6. 只输出一个 \`\`\`js 代码块，**代码块之外禁止任何解释文字**（生成速度即命令延迟）；代码保持精简，注释只在必要时写`
+6. 只输出一个 \`\`\`js 代码块，**代码块之外禁止任何解释文字**（生成速度即命令延迟）；代码保持精简，注释只在必要时写
+
+## 生产任务模式（绑定信息含"生产目标与前置闭包"时）
+
+snapshot.production 提供 { power, queues, available }：power 是电力，queues 是各生产队列（type: 0=建筑 2=步兵 3=车辆），available 是当前可造项目名。
+
+动作：{ kind: 'produce', name, quantity }、{ kind: 'place', name, x, y }、{ kind: 'pauseQueue', queueType }、{ kind: 'resumeQueue', queueType }。
+
+用 memory.phase 管理阶段机：按闭包顺序逐项 produce 前置 → 该建筑在队列中 progress 到 1（Ready）后 place 到空地（位置选自己建筑附近的空格，动作被拒说明位置非法就换相邻格）→ 全部前置就绪后 produce 目标 → 目标落地后不再返回任何动作。
+
+严格约束：只允许操作闭包清单内的项目（越权会被拒）；不取消已在队列中投入资金的项目；电力不足时等待并保持已有进度，**不得**额外生产闭包外的电厂提速；战场上已存在的建筑不重建`
 
 /** 从模型输出提取 js 代码块（或裸函数体）。兼容 maxTokens 截断导致未闭合的代码块。 */
 export function extractCode(output: string): string | undefined {

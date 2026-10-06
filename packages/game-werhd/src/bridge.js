@@ -69,6 +69,21 @@
       self: self,
       enemies: enemies,
     };
+    // 生产态势：队列/电力/可造清单（M3）。采集失败不影响战斗快照。
+    try {
+      snap.production = {
+        power: (me && me.power) || { drain: 0, total: 0, isLowPower: false },
+        queues: (w.production.queues() || []).map(function (q) {
+          return {
+            type: q.type, status: q.status, size: q.size, maxSize: q.maxSize,
+            items: (q.items || []).map(function (it) {
+              return { name: it.name, quantity: it.quantity, progress: it.progress, creditsEach: it.creditsEach, creditsSpent: it.creditsSpent };
+            }),
+          };
+        }),
+        available: (w.production.available() || []).map(function (a) { return a.name; }),
+      };
+    } catch (e) { /* 进局前的过渡期没有生产 API */ }
     var cost = performance.now() - t0;
     stats.samples++;
     if (cost > stats.collectMsMax) stats.collectMsMax = cost;
@@ -127,6 +142,25 @@
     var alive = {};
     var own = w.units('self') || [];
     for (var i = 0; i < own.length; i++) alive[own[i].id] = true;
+
+    // 生产动作（无 unitIds）
+    try {
+      switch (action.kind) {
+        case 'produce': w.produce(action.name, action.quantity || 1); return { ok: true, submitted: 1, session: session };
+        case 'cancel': w.cancel(action.name, action.quantity || 1); return { ok: true, submitted: 1, session: session };
+        case 'place':
+          // 落地预检：无效位置不产生游戏订单，脚本可通过拒绝反馈感知换位。
+          if (w.canPlace && !w.canPlace(action.name, action.x, action.y)) {
+            return { ok: false, reason: 'cannot-place', submitted: 0, session: session };
+          }
+          w.place(action.name, action.x, action.y); return { ok: true, submitted: 1, session: session };
+        case 'pauseQueue': w.pause(action.queueType); return { ok: true, submitted: 1, session: session };
+        case 'resumeQueue': w.resume(action.queueType); return { ok: true, submitted: 1, session: session };
+      }
+    } catch (e) {
+      return { ok: false, reason: 'api-error: ' + (e && e.message), submitted: 0, session: session };
+    }
+
     var ids = [];
     for (var j = 0; j < action.unitIds.length; j++) {
       if (alive[action.unitIds[j]]) ids.push(action.unitIds[j]);

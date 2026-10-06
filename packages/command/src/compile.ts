@@ -10,6 +10,8 @@ export interface CompileBinding {
   originalMembers?: number[]
   /** 守区/目标地域。 */
   region?: { name: string; x1: number; y1: number; x2: number; y2: number }
+  /** 生产任务：目标与必要前置闭包（固定程序计算，模型只负责执行步骤）。 */
+  production?: { target: string; closure: string[] }
 }
 
 export interface CompileInput {
@@ -70,6 +72,15 @@ function bindingPrompt(input: CompileInput): string {
       `当前快照: tick=${s.tick} 资金=${Math.floor(s.credits)} 地图=${s.mapWidth}x${s.mapHeight}`,
       `己方 ${s.self.length} 单位（示例: ${selfSample}）；可见敌人 ${s.enemies.length}（示例: ${enemySample}）`,
     )
+    if (b.production) {
+      const p = s.production
+      const queues = p ? p.queues.map((q) => `type${q.type}:${q.status}(${q.items.map((i) => `${i.name}x${i.quantity}@${Math.floor(i.progress * 100)}%`).join(',') || '空'})`).join('；') : '无数据'
+      lines.push(
+        `生产目标: ${b.production.target}；必要前置闭包（按顺序，只允许操作这些项目）: ${[...b.production.closure, b.production.target].join(' → ')}`,
+        `生产状态: 电力 ${p ? `${p.power.drain}/${p.power.total}${p.power.isLowPower ? '（低电）' : ''}` : '?'}；队列: ${queues}`,
+        `可造清单: ${p ? p.available.slice(0, 30).join(',') : '?'}`,
+      )
+    }
   }
   return lines.join('\n')
 }
@@ -107,6 +118,9 @@ export async function compileCommand(
           enemyIds: snap.enemies.map((u) => u.id),
           mapWidth: snap.mapWidth,
           mapHeight: snap.mapHeight,
+          ...(input.binding.production
+            ? { allowedProduce: [...input.binding.production.closure, input.binding.production.target] }
+            : {}),
         }
         const dry = await executor.run(code, snap, {}, constraints, 200)
         if (!dry.ok) errors = [`干跑失败: ${dry.error}`]

@@ -1,5 +1,11 @@
 import type { ActionRequest, ActionResult, Snapshot, StepConstraints } from '@ra2c/contracts'
 import { StepExecutor, codeHash } from '@ra2c/js-worker'
+import { FormationRegistry } from './formation.ts'
+
+export { FormationRegistry } from './formation.ts'
+export type { Formation, CreateResult } from './formation.ts'
+export { computePrerequisiteClosure } from './production.ts'
+export type { RulesLookup, PrerequisiteClosure } from './production.ts'
 
 export type TaskStatus = 'compiling' | 'active' | 'paused' | 'stopped' | 'replaced'
 
@@ -7,12 +13,16 @@ export interface TaskSpec {
   id: string
   /** 玩家原话。 */
   rawText: string
-  /** 授权操纵单位。 */
+  /** 授权操纵单位（战斗任务）。 */
   unitIds: number[]
   /** 战损口径基准（任务生效时原始成员）。 */
   originalMembers: number[]
   /** 授权地域（可选）。 */
   region?: { name: string; x1: number; y1: number; x2: number; y2: number }
+  /** 绑定编队（可选）：成员随编队动态变化（转编自动收窄授权），优先于 unitIds。 */
+  formationId?: string
+  /** 生产任务：可操作项目闭包（produce/cancel/place 授权名单）。 */
+  allowedProduce?: string[]
 }
 
 export interface TaskState {
@@ -34,6 +44,10 @@ export interface RuntimeDeps {
   executor: StepExecutor
   /** 动作提交通道（经桥，带会话与存活复查）。 */
   submit: (actions: ActionRequest[]) => Promise<ActionResult[]>
+  /** 编队注册表（可选；任务绑定编队时用于动态成员）。 */
+  formations?: FormationRegistry
+  /** 任务因连续失败暂停时的回调（用于触发同授权修复）。 */
+  onTaskFaulted?: (taskId: string) => void
   log?: (msg: string) => void
 }
 
@@ -116,14 +130,19 @@ export class TaskRuntime {
     const script = task.script
     if (!script) return
     const aliveSelf = new Set(snap.self.map((u) => u.id))
+    // 编队任务：成员动态取自注册表（转编后旧任务授权自动收窄）。
+    const boundIds = task.spec.formationId
+      ? (this.deps.formations?.membersOf(task.spec.formationId) ?? task.spec.unitIds)
+      : task.spec.unitIds
     const constraints: StepConstraints = {
-      allowedUnitIds: task.spec.unitIds.filter((uid) => aliveSelf.has(uid)),
+      allowedUnitIds: boundIds.filter((uid) => aliveSelf.has(uid)),
       enemyIds: snap.enemies.map((u) => u.id),
       mapWidth: snap.mapWidth,
       mapHeight: snap.mapHeight,
+      ...(task.spec.allowedProduce ? { allowedProduce: task.spec.allowedProduce } : {}),
     }
-    if (!constraints.allowedUnitIds.length) {
-      // 全员阵亡：任务自然结束。
+    // 战斗任务全灭：自然结束（生产任务无单位，不适用）。
+    if (boundIds.length && !constraints.allowedUnitIds.length) {
       task.status = 'stopped'
       this.deps.log?.(`[runtime] 任务 ${task.spec.id} 无存活成员，结束`)
       return
@@ -143,8 +162,11 @@ export class TaskRuntime {
       this.deps.log?.(`[runtime] 任务 ${task.spec.id} step 失败(${task.stats.errors}): ${outcome.error}`)
       if (task.stats.errors >= MAX_CONSECUTIVE_ERRORS) {
         task.status = 'paused'
-        await this.deps.submit([{ kind: 'stop', unitIds: constraints.allowedUnitIds }])
-        this.deps.log?.(`[runtime] 任务 ${task.spec.id} 连续失败，暂停并停止其单位`)
+        if (constraints.allowedUnitIds.length) {
+          await this.deps.submit([{ kind: 'stop', unitIds: constraints.allowedUnitIds }])
+        }
+        this.deps.log?.(`[runtime] 任务 ${task.spec.id} 连续失败，暂停（触发同授权修复）`)
+        this.deps.onTaskFaulted?.(task.spec.id)
       }
       return
     }
@@ -167,8 +189,12 @@ export class TaskRuntime {
 }
 
 function actionSignature(a: ActionRequest): string {
-  const ids = [...a.unitIds].sort((x, y) => x - y).join(',')
-  if (a.kind === 'attack') return `attack:${ids}:${a.targetId}`
-  if ('x' in a && 'y' in a) return `${a.kind}:${ids}:${a.x},${a.y}`
-  return `${a.kind}:${ids}`
+  if ('unitIds' in a) {
+    const ids = [...a.unitIds].sort((x, y) => x - y).join(',')
+    if (a.kind === 'attack') return `attack:${ids}:${a.targetId}`
+    if ('x' in a && 'y' in a) return `${a.kind}:${ids}:${a.x},${a.y}`
+    return `${a.kind}:${ids}`
+  }
+  if ('name' in a) return `${a.kind}:${a.name}:${'quantity' in a ? a.quantity : ''}`
+  return `${a.kind}:${a.queueType}`
 }
