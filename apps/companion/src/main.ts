@@ -44,6 +44,8 @@ async function ensureBrowserContext(): Promise<{ browser: Browser; context: Brow
         '--no-first-run',
         '--no-default-browser-check',
         '--ignore-certificate-errors', // 本地 https 为自签证书
+        '--test-type', // 抑制 Chrome for Testing 的"仅用于自动测试"信息条
+        '--disable-infobars',
         'about:blank',
       ],
       { detached: true, stdio: 'ignore' },
