@@ -9,8 +9,11 @@
 // 且带性能护栏（超预算自动降频）。
 (() => {
   'use strict';
-  if (window.__ra2cInstalled) return;
+  var BRIDGE_VERSION = 2; // 桥升级：companion 重启时按版本重装（清掉旧轮询）
+  if (window.__ra2cInstalled && window.__ra2cVersion === BRIDGE_VERSION) return;
+  if (window.__ra2cInterval) { try { clearInterval(window.__ra2cInterval) } catch (e) {} }
   window.__ra2cInstalled = true;
+  window.__ra2cVersion = BRIDGE_VERSION;
 
   var SAMPLE_EVERY = 15;      // 每 N 个模拟 tick 采样一次
   var SAMPLE_MAX_EVERY = 120; // 降频上限
@@ -30,7 +33,34 @@
     hookedSession = -1; // 强制重挂
   }
 
+  // place 自动选址记忆（name -> 已尝试格），跳过引擎静默拒绝过的位置。
+  var placeTried = {};
+
+  /** 以建造厂为圆心环形搜 canPlace 可用格（跳过已试）。 */
+  function findPlacementSpot(w, name) {
+    var self = w.units('self') || [];
+    var base = null;
+    for (var i = 0; i < self.length; i++) {
+      if (self[i].type === 2 && /CNST/i.test(self[i].name)) { base = self[i]; break }
+    }
+    if (!base) return null;
+    var tried = placeTried[name] || (placeTried[name] = []);
+    for (var r = 2; r <= 20; r++) {
+      for (var dx = -r; dx <= r; dx++) {
+        for (var dy = -r; dy <= r; dy++) {
+          if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+          var x = base.tile.rx + dx, y = base.tile.ry + dy;
+          var key = x + ',' + y;
+          if (tried.indexOf(key) >= 0) continue;
+          if (w.canPlace(name, x, y)) { tried.push(key); if (tried.length > 24) tried.shift(); return { x: x, y: y } }
+        }
+      }
+    }
+    return null;
+  }
+
   var ENEMY_CAP = 200; // 敌方采集上限护栏
+
 
   function mapUnit(u) {
     var t = u.tile || {};
@@ -148,12 +178,18 @@
       switch (action.kind) {
         case 'produce': w.produce(action.name, action.quantity || 1); return { ok: true, submitted: 1, session: session };
         case 'cancel': w.cancel(action.name, action.quantity || 1); return { ok: true, submitted: 1, session: session };
-        case 'place':
-          // 落地预检：无效位置不产生游戏订单，脚本可通过拒绝反馈感知换位。
-          if (w.canPlace && !w.canPlace(action.name, action.x, action.y)) {
+        case 'place': {
+          var px = action.x, py = action.y;
+          if (!Number.isFinite(px) || !Number.isFinite(py)) {
+            // 宿主自动选址（几何与选位是宿主原语；引擎对非法格静默丢弃，脚本无法感知）。
+            var spot = findPlacementSpot(w, action.name);
+            if (!spot) return { ok: false, reason: 'no-spot', submitted: 0, session: session };
+            px = spot.x; py = spot.y;
+          } else if (w.canPlace && !w.canPlace(action.name, px, py)) {
             return { ok: false, reason: 'cannot-place', submitted: 0, session: session };
           }
-          w.place(action.name, action.x, action.y); return { ok: true, submitted: 1, session: session };
+          w.place(action.name, px, py); return { ok: true, submitted: 1, session: session };
+        }
         case 'pauseQueue': w.pause(action.queueType); return { ok: true, submitted: 1, session: session };
         case 'resumeQueue': w.resume(action.queueType); return { ok: true, submitted: 1, session: session };
       }
@@ -186,7 +222,7 @@
   // 主循环：发现新对局 → 递增代次并挂接；发现 API 消失 → 递增代次；
   // 发现挂接丢失（onTick 被替换后不再更新 lastTickAt）→ 重挂同代次。
   var hadApi = false;
-  setInterval(function () {
+  window.__ra2cInterval = setInterval(function () {
     var hasApi = !!window.werhd;
     if (hasApi && !hadApi) bumpSession('api-appeared');
     if (!hasApi && hadApi) bumpSession('api-removed');

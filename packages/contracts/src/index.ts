@@ -76,7 +76,7 @@ export type ActionRequest =
   | { kind: 'guard'; unitIds: number[] }
   | { kind: 'produce'; name: string; quantity: number }
   | { kind: 'cancel'; name: string; quantity: number }
-  | { kind: 'place'; name: string; x: number; y: number }
+  | { kind: 'place'; name: string; x?: number; y?: number }
   | { kind: 'pauseQueue'; queueType: number }
   | { kind: 'resumeQueue'; queueType: number };
 

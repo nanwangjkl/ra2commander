@@ -19,6 +19,9 @@ export interface BridgeState {
  *
  * install() 必须在打开任何页面之前调用（exposeBinding/addInitScript 是 context 级）。
  */
+/** 桥版本（与 bridge.js 的 BRIDGE_VERSION 保持一致；升级后对已开页面重装）。 */
+const BRIDGE_VERSION = 2
+
 export class WerhdBridge {
   private latestSnapshot?: Snapshot
   private readonly listeners = new Set<(s: Snapshot) => void>()
@@ -32,11 +35,11 @@ export class WerhdBridge {
       for (const cb of this.listeners) cb(snapshot)
     })
     await this.context.addInitScript(source)
-    // 已打开的页面可能没有桥（companion 断连期间页面被刷新过；addInitScript 只对未来导航生效）。
-    // 立即补装，实现 companion 重启即恢复。
+    // 已打开的页面：桥缺失（断连期间刷新过）或版本旧（companion 升级）都重装；
+    // bridge.js 自带版本比较与旧轮询清理。
     for (const page of this.context.pages()) {
-      const has = await page.evaluate(`!!window.__ra2cInstalled`).catch(() => false)
-      if (!has) {
+      const ver = (await page.evaluate(`window.__ra2cVersion ?? 0`).catch(() => 0)) as number
+      if (ver < BRIDGE_VERSION) {
         await page.evaluate(source).catch(() => {})
       }
     }

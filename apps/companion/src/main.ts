@@ -370,6 +370,13 @@ async function handleCommand(line: string, ctx: CommandContext): Promise<string>
       await page.screenshot({ path: file })
       return `截图: ${file}`
     }
+    case 'eval': {
+      // 调试：页面内求值（只读诊断/受控实验用）。用法: eval <表达式>
+      const expr = line.slice(line.indexOf('eval') + 4).trim()
+      if (!expr) return '用法: eval <JS 表达式（页面上下文）>'
+      const value = await page.evaluate(`(() => { try { return { ok: true, value: (${expr}) } } catch (e) { return { ok: false, error: String(e) } } })()`)
+      return JSON.stringify(value, null, 2).slice(0, 2000)
+    }
     case 'quit':
       return args[0] === 'hard' ? '__QUIT_HARD__' : '__QUIT__'
     default:

@@ -41,9 +41,12 @@ function validateActions(actions, constraints) {
       if (typeof a.name !== 'string' || !a.name) return `动作 ${a.kind} 缺少 name`
       if (producible && !producible.has(a.name)) return `动作 ${a.kind} 引用未授权项目 "${a.name}"（不在必要前置闭包内）`
       if (a.kind === 'place') {
-        if (!Number.isInteger(a.x) || !Number.isInteger(a.y)) return `place 坐标非法`
-        if (a.x < 0 || a.y < 0 || a.x >= constraints.mapWidth || a.y >= constraints.mapHeight)
-          return `place 坐标越界 (${a.x},${a.y})`
+        // 坐标可选：缺省由宿主自动选址（canPlace 环形搜索 + 失败记忆）。
+        if (a.x !== undefined || a.y !== undefined) {
+          if (!Number.isInteger(a.x) || !Number.isInteger(a.y)) return `place 坐标非法`
+          if (a.x < 0 || a.y < 0 || a.x >= constraints.mapWidth || a.y >= constraints.mapHeight)
+            return `place 坐标越界 (${a.x},${a.y})`
+        }
       } else if (!Number.isInteger(a.quantity) || a.quantity < 1) {
         return `动作 ${a.kind} quantity 非法`
       }

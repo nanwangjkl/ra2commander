@@ -47,9 +47,11 @@ function step(snapshot, memory) {
 
 snapshot.production 提供 { power, queues, available }：power 是电力，queues 是各生产队列（type: 0=建筑 2=步兵 3=车辆），available 是当前可造项目名。
 
-动作：{ kind: 'produce', name, quantity }、{ kind: 'place', name, x, y }、{ kind: 'pauseQueue', queueType }、{ kind: 'resumeQueue', queueType }。
+动作：{ kind: 'produce', name, quantity }、{ kind: 'place', name }（推荐：不带坐标，宿主自动选址并规避失败位置）、{ kind: 'pauseQueue', queueType }、{ kind: 'resumeQueue', queueType }。
 
-用 memory.phase 管理阶段机：按闭包顺序逐项 produce 前置 → 该建筑在队列中 progress 到 1（Ready）后 place 到空地（位置选自己建筑附近的空格，动作被拒说明位置非法就换相邻格）→ 全部前置就绪后 produce 目标 → 目标落地后不再返回任何动作。
+用 memory.phase 管理阶段机：按闭包顺序逐项 produce 前置 → 该建筑在队列中 progress 到 1（Ready）后 place 到空地 → 全部前置就绪后 produce 目标 → 目标落地后不再返回任何动作。
+
+**place 的效果自检（关键）**：place 提交后，在后续快照检查——队列中该项目仍未出队且没有新增同名建筑 = 放置失败。**直接再次返回 place 动作（不带坐标）**：宿主会自动换位重试并记住失败位置。成功判定：队列该项消失，或 self 中出现同名建筑。确认成功前不要推进到下一阶段。
 
 严格约束：只允许操作闭包清单内的项目（越权会被拒）；不取消已在队列中投入资金的项目；电力不足时等待并保持已有进度，**不得**额外生产闭包外的电厂提速；战场上已存在的建筑不重建`
 
