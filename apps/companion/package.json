@@ -1,0 +1,11 @@
+{
+  "name": "@ra2c/companion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@ra2c/contracts": "workspace:*",
+    "@ra2c/game-werhd": "workspace:*",
+    "playwright": "^1.49.0"
+  }
+}

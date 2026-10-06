@@ -147,3 +147,6 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# ra2commander 运行时数据（浏览器 profile、截图、日志）
+.runtime/

@@ -4,7 +4,7 @@
 
 系统由命令编译器与实时任务运行时组成，具有战术执行层的自主性。主程序计划使用 TypeScript / Node.js；云端模型生成和修复代码，本机脚本持续观察战况并执行动作。
 
-当前处于设计阶段，尚未实现程序。首版范围与验证安排见[实施与验证计划](doc/roadmap/implementation-plan.md)；目录及开发约定见[AGENTS.md](AGENTS.md)。
+MVP 里程碑（M1 公共 API 桥）已验证：本地游戏实例加载、页面桥注入、快照回传与文本命令调动部队（127 单位实测，快照采集 1.3ms）。运行方式见 [AGENTS.md](AGENTS.md)；首版范围与验证安排见[实施与验证计划](doc/roadmap/implementation-plan.md)。
 
 ## 文档导航
 
