@@ -140,6 +140,12 @@ interface CommandContext {
 
 const TYPE_LABEL: Record<number, string> = { 1: '空军', 2: '建筑', 3: '步兵', 7: '车辆' }
 
+/** 绑定单位名的去重列表（供规则预查）。 */
+function units0names(snap: Snapshot, ids: number[]): string[] {
+  const set = new Set(ids)
+  return [...new Set(snap.self.filter((u) => set.has(u.id)).map((u) => u.name))]
+}
+
 /** 单条命令 → 输出文本；quit 由调用方根据返回值处理。 */
 async function handleCommand(line: string, ctx: CommandContext): Promise<string> {
   const [cmd, ...args] = line.split(/\s+/)
@@ -320,7 +326,17 @@ async function handleCommand(line: string, ctx: CommandContext): Promise<string>
         }
         const provider = ctx.currentProvider()
         console.log(`[companion] 编译中：${provider.config.name} 绑定 ${unitIds.length} 个单位${formationId ? `（编队 ${formationId}）` : ''}…`)
-        const input: CompileInput = { rawText: text, binding: { unitIds }, snapshot: snap }
+        // 形态转换映射（rules.deploysInto 预查）：展开/转换不算阵亡的口径依据。
+        const transforms: Record<string, string> = {}
+        for (const name of new Set(units0names(snap, unitIds))) {
+          const r = (await bridge.rules(name, 7)) as { deploysInto?: string } | undefined | null
+          if (r?.deploysInto) transforms[name] = r.deploysInto
+        }
+        const input: CompileInput = {
+          rawText: text,
+          binding: { unitIds, ...(Object.keys(transforms).length ? { transforms } : {}) },
+          snapshot: snap,
+        }
         const outcome = await compileCommand(provider, input, ctx.executor)
         const spec: TaskSpec = { id, rawText: text, unitIds, originalMembers, ...(formationId ? { formationId } : {}) }
         ctx.compileInputs.set(id, input)

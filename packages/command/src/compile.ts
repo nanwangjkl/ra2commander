@@ -12,6 +12,8 @@ export interface CompileBinding {
   region?: { name: string; x1: number; y1: number; x2: number; y2: number }
   /** 生产任务：目标与必要前置闭包（固定程序计算，模型只负责执行步骤）。 */
   production?: { target: string; closure: string[] }
+  /** 形态转换映射（成员名 → 展开形态名，宿主经 rules.deploysInto 预查）：转换不算阵亡。 */
+  transforms?: Record<string, string>
 }
 
 export interface CompileInput {
@@ -59,6 +61,12 @@ function bindingPrompt(input: CompileInput): string {
     `绑定单位 id（只能操纵这些）: ${b.unitIds.join(', ')}`,
     `原始成员（战损口径基准，阵亡比例按此计算）: ${(b.originalMembers ?? b.unitIds).join(', ')}`,
   ]
+  if (b.transforms && Object.keys(b.transforms).length) {
+    const pairs = Object.entries(b.transforms).map(([from, to]) => `${from}→${to}`).join('，')
+    lines.push(
+      `形态转换（重要）：${pairs}。判定阵亡时，成员消失若同格/邻近出现其转换形态（新 id 新名字），视为转换**不算阵亡**，也不算可指挥成员`,
+    )
+  }
   if (b.region) {
     lines.push(`授权地域「${b.region.name}」: 矩形 (${b.region.x1},${b.region.y1}) 到 (${b.region.x2},${b.region.y2})；没有授权不得离开`)
   } else {
