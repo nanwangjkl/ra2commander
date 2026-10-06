@@ -253,7 +253,7 @@ async function handleCommand(line: string, ctx: CommandContext): Promise<string>
     }
     case 'produce': {
       const target = args[0]
-      if (!target) return '用法: produce <目标名>（如 produce GAWEAP）'
+      if (!target) return '用法: produce <目标名> [附加指令]（如 produce MTNK 暂停步兵队列优先坦克）'
       const snap = bridge.latest
       if (!snap?.production) return '尚无生产数据（未进局）'
       // 固定程序计算必要前置闭包（模型不参与）。
@@ -261,8 +261,12 @@ async function handleCommand(line: string, ctx: CommandContext): Promise<string>
         target,
         {
           prerequisites: async (name: string) => {
-            const r = (await bridge.rules(name, 2)) as { prerequisite?: string[] } | undefined | null
-            return r?.prerequisite
+            // 建筑外也可能是车辆/步兵/空军目标，按类型探测规则。
+            for (const type of [2, 7, 3, 1]) {
+              const r = (await bridge.rules(name, type)) as { prerequisite?: string[] } | undefined | null
+              if (r?.prerequisite) return r.prerequisite
+            }
+            return undefined
           },
           available: async () => bridge.latest?.production?.available ?? [],
         },
@@ -276,7 +280,7 @@ async function handleCommand(line: string, ctx: CommandContext): Promise<string>
       const provider = ctx.currentProvider()
       console.log(`[companion] 编译中：${provider.config.name} …`)
       const input: CompileInput = {
-        rawText: `尽快完成生产目标 ${target}`,
+        rawText: `尽快完成生产目标 ${target}${args.length > 1 ? `；${args.slice(1).join(' ')}` : ''}`,
         binding: { unitIds: [], production: { target, closure: closure.toBuild } },
         snapshot: snap,
       }

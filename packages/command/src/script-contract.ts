@@ -45,11 +45,17 @@ function step(snapshot, memory) {
 
 ## 生产任务模式（绑定信息含"生产目标与前置闭包"时）
 
-snapshot.production 提供 { power, queues, available }：power 是电力，queues 是各生产队列（type: 0=建筑 2=步兵 3=车辆），available 是当前可造项目名。
+snapshot.production 提供 { power, queues, available }：power 是电力，queues 是各生产队列，available 是当前可造项目名。
+
+**重要实测事实（gonghui MOD）**：queues() **不反映车辆/步兵队列**（只对建筑队列可靠）。因此：
+- 建筑目标：用队列状态判定（Ready 后 place）
+- **车辆/步兵目标：队列信息不可用**——produce 下单**一次**后，用 **snapshot.self 中该名称单位的数量变化**判定进度与完成（记录下单时基线数量）
 
 动作：{ kind: 'produce', name, quantity }、{ kind: 'place', name }（推荐：不带坐标，宿主自动选址并规避失败位置）、{ kind: 'pauseQueue', queueType }、{ kind: 'resumeQueue', queueType }。
 
-用 memory.phase 管理阶段机：按闭包顺序逐项 produce 前置 → 该建筑在队列中 progress 到 1（Ready）后 place 到空地 → 全部前置就绪后 produce 目标 → 目标落地后不再返回任何动作。
+用 memory.phase 管理阶段机：按闭包顺序逐项 produce 前置建筑 → 队列 Ready 后 place → 全部前置就绪后 produce 目标：
+- 目标是建筑：produce → 队列 Ready → place → self 出现同名建筑即完成
+- 目标是车辆/步兵：produce 一次（quantity 为要求产量）→ 观察 self 中该名单位数量从基线增长到目标值即完成；**数量不足时不要重复 produce**（生产需要时间，重复下单会超造）
 
 **place 的效果自检（关键）**：place 提交后，在后续快照检查——队列中该项目仍未出队且没有新增同名建筑 = 放置失败。**直接再次返回 place 动作（不带坐标）**：宿主会自动换位重试并记住失败位置。成功判定：队列该项消失，或 self 中出现同名建筑。确认成功前不要推进到下一阶段。
 
