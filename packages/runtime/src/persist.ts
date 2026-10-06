@@ -53,6 +53,7 @@ export function restoreState(
     if (created) created.originalMemberIds = [...f.originalMemberIds]
   }
   let restored = 0
+  runtime.adoptSession(state.session)
   for (const t of state.tasks) {
     if (t.status === 'stopped') continue
     runtime.deploy(t.spec, t.code)

@@ -151,6 +151,15 @@ export class TaskRuntime {
 
   private lastSnapshot?: Snapshot
 
+  /**
+   * 恢复持久化状态时同时采纳当时的对局代次：
+   * 恢复后第一个快照若与该代次不符，按换局处理（旧任务全部终结），
+   * 避免旧局任务在新局复活（跨局状态不复用）。
+   */
+  adoptSession(session: number): void {
+    this.session = session
+  }
+
   /** 快照入口：会话变化使旧任务全部失效；驱动各 active 任务步进。 */
   async onSnapshot(snap: Snapshot): Promise<void> {
     if (snap.session !== this.session) {
