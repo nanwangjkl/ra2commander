@@ -8,7 +8,7 @@ import { chromium, type Page } from 'playwright'
 import type { ActionRequest, Snapshot } from '@ra2c/contracts'
 import { compileCommand } from '@ra2c/command'
 import { StepExecutor } from '@ra2c/js-worker'
-import { providerFromEnv, type OpenAICompatibleProvider } from '@ra2c/model-providers'
+import { configuredProviderNames, providerFromEnv, type OpenAICompatibleProvider } from '@ra2c/model-providers'
 import { TaskRuntime, type TaskSpec } from '@ra2c/runtime'
 import { setupCdnProxy, WerhdBridge } from '@ra2c/game-werhd'
 import { dismissStartupDialogs } from './auto-import.ts'
@@ -213,7 +213,7 @@ async function main(): Promise<void> {
   }
 
   const providers = new Map<string, OpenAICompatibleProvider>()
-  for (const name of ['deepseek', 'glm'] as const) {
+  for (const name of configuredProviderNames(process.env)) {
     try {
       providers.set(name, providerFromEnv(name, process.env))
     } catch (err) {

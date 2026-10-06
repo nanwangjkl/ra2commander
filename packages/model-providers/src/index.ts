@@ -140,15 +140,46 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
-/** 从环境变量构造 provider：DEEPSEEK_API_KEY / GLM_API_KEY 等。 */
-export function providerFromEnv(name: 'deepseek' | 'glm', env: NodeJS.ProcessEnv): OpenAICompatibleProvider {
-  const prefix = name === 'deepseek' ? 'DEEPSEEK' : 'GLM'
-  const apiKey = env[`${prefix}_API_KEY`]
-  if (!apiKey) throw new ProviderError(`缺少 ${prefix}_API_KEY`, undefined, false)
+/** 内置别名（兼容简写 env）；任意 OpenAI 兼容服务用 MODEL_<NAME>_* 配置接入。 */
+const BUILTIN: Record<string, { baseUrl: string; model: string; legacyPrefix?: string }> = {
+  deepseek: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', legacyPrefix: 'DEEPSEEK' },
+  glm: { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-5.3-flash', legacyPrefix: 'GLM' },
+}
+
+/**
+ * 从环境变量构造 provider。两种配置方式（开源使用者可接任意 OpenAI 兼容服务）：
+ *   MODEL_<NAME>_API_KEY / MODEL_<NAME>_BASE_URL / MODEL_<NAME>_MODEL   （通用，NAME 小写即 provider 名）
+ *   <PREFIX>_API_KEY / <PREFIX>_BASE_URL / <PREFIX>_MODEL               （deepseek/glm 内置别名）
+ */
+export function providerFromEnv(name: string, env: NodeJS.ProcessEnv): OpenAICompatibleProvider {
+  const key = name.toUpperCase()
+  const builtin = BUILTIN[name]
+  const apiKey =
+    env[`MODEL_${key}_API_KEY`] ?? (builtin?.legacyPrefix ? env[`${builtin.legacyPrefix}_API_KEY`] : undefined)
+  if (!apiKey) throw new ProviderError(`缺少 MODEL_${key}_API_KEY`, undefined, false)
   return new OpenAICompatibleProvider({
     name,
-    baseUrl: env[`${prefix}_BASE_URL`] ?? (name === 'deepseek' ? 'https://api.deepseek.com' : 'https://open.bigmodel.cn/api/paas/v4'),
+    baseUrl:
+      env[`MODEL_${key}_BASE_URL`] ?? (builtin?.legacyPrefix ? env[`${builtin.legacyPrefix}_BASE_URL`] : undefined)
+      ?? builtin?.baseUrl ?? '',
     apiKey,
-    model: env[`${prefix}_MODEL`] ?? (name === 'deepseek' ? 'deepseek-chat' : 'glm-5.3-flash'),
+    model:
+      env[`MODEL_${key}_MODEL`] ?? (builtin?.legacyPrefix ? env[`${builtin.legacyPrefix}_MODEL`] : undefined)
+      ?? builtin?.model ?? name,
   })
+}
+
+/** 扫描环境变量，返回全部已配置的 provider 名（内置别名 + MODEL_* 泛化配置）。 */
+export function configuredProviderNames(env: NodeJS.ProcessEnv): string[] {
+  const names = new Set<string>()
+  for (const k of Object.keys(env)) {
+    const m = k.match(/^MODEL_([A-Z0-9_]+)_API_KEY$/)
+    if (m && env[k]) names.add(m[1]!.toLowerCase())
+  }
+  for (const [name, b] of Object.entries(BUILTIN)) {
+    if (env[`MODEL_${name.toUpperCase()}_API_KEY`] || (b.legacyPrefix && env[`${b.legacyPrefix}_API_KEY`])) {
+      names.add(name)
+    }
+  }
+  return [...names]
 }

@@ -41,7 +41,7 @@ function step(snapshot, memory) {
 3. 战损口径：任务生效时原始成员的阵亡比例（受伤不算）；原始成员名单会在绑定信息中给出
 4. 不允许访问 window/document/fetch/import/require/eval 等任何全局设施，不要使用 setTimeout 等异步设施；step 必须同步返回
 5. 每次 tick 只返回必要动作；重复下相同订单没有意义，用 memory 记住已下令的内容避免重发
-6. 代码放在单独的 \`\`\`js 代码块中，除代码块外可以有简短说明`
+6. 只输出一个 \`\`\`js 代码块，**代码块之外禁止任何解释文字**（生成速度即命令延迟）；代码保持精简，注释只在必要时写`
 
 /** 从模型输出提取 js 代码块（或裸函数体）。兼容 maxTokens 截断导致未闭合的代码块。 */
 export function extractCode(output: string): string | undefined {
