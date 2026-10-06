@@ -1,0 +1,174 @@
+import type { ActionRequest, ActionResult, Snapshot, StepConstraints } from '@ra2c/contracts'
+import { StepExecutor, codeHash } from '@ra2c/js-worker'
+
+export type TaskStatus = 'compiling' | 'active' | 'paused' | 'stopped' | 'replaced'
+
+export interface TaskSpec {
+  id: string
+  /** 玩家原话。 */
+  rawText: string
+  /** 授权操纵单位。 */
+  unitIds: number[]
+  /** 战损口径基准（任务生效时原始成员）。 */
+  originalMembers: number[]
+  /** 授权地域（可选）。 */
+  region?: { name: string; x1: number; y1: number; x2: number; y2: number }
+}
+
+export interface TaskState {
+  spec: TaskSpec
+  status: TaskStatus
+  script?: { code: string; version: number; hash: string }
+  memory: unknown
+  stats: {
+    steps: number
+    actions: number
+    rejected: number
+    errors: number
+    lastError?: string | undefined
+    lastActionSig?: string | undefined
+  }
+}
+
+export interface RuntimeDeps {
+  executor: StepExecutor
+  /** 动作提交通道（经桥，带会话与存活复查）。 */
+  submit: (actions: ActionRequest[]) => Promise<ActionResult[]>
+  log?: (msg: string) => void
+}
+
+const MAX_CONSECUTIVE_ERRORS = 3
+
+/**
+ * 任务运行时：管理每条命令的任务（版本、成员、授权、故障隔离），
+ * 由最新快照驱动各任务脚本步进。云生成等待期间已有任务继续运行。
+ */
+export class TaskRuntime {
+  private session = -1
+  readonly tasks = new Map<string, TaskState>()
+
+  constructor(private readonly deps: RuntimeDeps) {}
+
+  /** 部署脚本：新任务或普通改令的原子版本切换（就绪后替换，等待期旧任务继续）。 */
+  deploy(spec: TaskSpec, code: string): void {
+    const existing = this.tasks.get(spec.id)
+    const version = existing ? (existing.script?.version ?? 0) + 1 : 1
+    this.tasks.set(spec.id, {
+      spec,
+      status: 'active',
+      script: { code, version, hash: codeHash(code) },
+      memory: {},
+      stats: { steps: 0, actions: 0, rejected: 0, errors: 0 },
+    })
+    this.deps.log?.(
+      `[runtime] 任务 ${spec.id} v${version} 部署（${spec.unitIds.length} 单位）「${spec.rawText}」`,
+    )
+  }
+
+  /** 停止/禁止类命令：立即撤权并尝试停住其单位；后续动作一律拒绝。 */
+  async stop(id: string): Promise<void> {
+    const task = this.tasks.get(id)
+    if (!task) return
+    task.status = 'stopped'
+    const alive = this.lastSnapshot
+      ? task.spec.unitIds.filter((uid) => this.lastSnapshot!.self.some((u) => u.id === uid))
+      : task.spec.unitIds
+    if (alive.length) await this.deps.submit([{ kind: 'stop', unitIds: alive }])
+    this.deps.log?.(`[runtime] 任务 ${id} 已撤权停止`)
+  }
+
+  pause(id: string): void {
+    const t = this.tasks.get(id)
+    if (t && t.status === 'active') t.status = 'paused'
+  }
+
+  resume(id: string): void {
+    const t = this.tasks.get(id)
+    if (t && t.status === 'paused') {
+      t.status = 'active'
+      t.stats.errors = 0
+    }
+  }
+
+  private lastSnapshot?: Snapshot
+
+  /** 快照入口：会话变化使旧任务全部失效；驱动各 active 任务步进。 */
+  async onSnapshot(snap: Snapshot): Promise<void> {
+    if (snap.session !== this.session) {
+      const old = this.session
+      this.session = snap.session
+      this.lastSnapshot = snap
+      if (old >= 0) {
+        for (const t of this.tasks.values()) t.status = 'stopped'
+        this.deps.log?.(`[runtime] 对局会话 ${old} → ${snap.session}，旧任务全部失效`)
+      }
+      return
+    }
+    this.lastSnapshot = snap
+
+    for (const task of this.tasks.values()) {
+      if (task.status !== 'active' || !task.script) continue
+      await this.step(task, snap)
+    }
+  }
+
+  private async step(task: TaskState, snap: Snapshot): Promise<void> {
+    const script = task.script
+    if (!script) return
+    const aliveSelf = new Set(snap.self.map((u) => u.id))
+    const constraints: StepConstraints = {
+      allowedUnitIds: task.spec.unitIds.filter((uid) => aliveSelf.has(uid)),
+      enemyIds: snap.enemies.map((u) => u.id),
+      mapWidth: snap.mapWidth,
+      mapHeight: snap.mapHeight,
+    }
+    if (!constraints.allowedUnitIds.length) {
+      // 全员阵亡：任务自然结束。
+      task.status = 'stopped'
+      this.deps.log?.(`[runtime] 任务 ${task.spec.id} 无存活成员，结束`)
+      return
+    }
+
+    const outcome = await this.deps.executor.run(
+      script.code,
+      snap,
+      task.memory,
+      constraints,
+    )
+    task.stats.steps++
+
+    if (!outcome.ok) {
+      task.stats.errors++
+      task.stats.lastError = outcome.error
+      this.deps.log?.(`[runtime] 任务 ${task.spec.id} step 失败(${task.stats.errors}): ${outcome.error}`)
+      if (task.stats.errors >= MAX_CONSECUTIVE_ERRORS) {
+        task.status = 'paused'
+        await this.deps.submit([{ kind: 'stop', unitIds: constraints.allowedUnitIds }])
+        this.deps.log?.(`[runtime] 任务 ${task.spec.id} 连续失败，暂停并停止其单位`)
+      }
+      return
+    }
+
+    task.stats.errors = 0
+    task.memory = outcome.memory
+
+    // 相同订单节流：本轮动作包签名与上次完全相同则不重发（重新选敌/改目标会破签名，不受影响）。
+    const sig = outcome.actions.map(actionSignature).join('|')
+    if (sig && sig === task.stats.lastActionSig) return
+    task.stats.lastActionSig = sig
+
+    if (!outcome.actions.length) return
+    const results = await this.deps.submit(outcome.actions)
+    for (const r of results) {
+      if (!r.ok) task.stats.rejected++
+    }
+    task.stats.actions += outcome.actions.length
+  }
+}
+
+function actionSignature(a: ActionRequest): string {
+  const ids = [...a.unitIds].sort((x, y) => x - y).join(',')
+  if (a.kind === 'attack') return `attack:${ids}:${a.targetId}`
+  if ('x' in a && 'y' in a) return `${a.kind}:${ids}:${a.x},${a.y}`
+  return `${a.kind}:${ids}`
+}

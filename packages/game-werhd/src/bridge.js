@@ -30,26 +30,32 @@
     hookedSession = -1; // 强制重挂
   }
 
+  var ENEMY_CAP = 200; // 敌方采集上限护栏
+
+  function mapUnit(u) {
+    var t = u.tile || {};
+    return {
+      id: u.id,
+      name: u.name,
+      owner: u.owner,
+      type: u.type,
+      rx: t.rx,
+      ry: t.ry,
+      hitPoints: u.hitPoints,
+      maxHitPoints: u.maxHitPoints,
+      isIdle: u.isIdle,
+      veteranLevel: u.veteranLevel,
+    };
+  }
+
   function collect(w) {
     var t0 = performance.now();
     var units = w.units('self') || [];
     var self = new Array(units.length);
-    for (var i = 0; i < units.length; i++) {
-      var u = units[i];
-      var t = u.tile || {};
-      self[i] = {
-        id: u.id,
-        name: u.name,
-        owner: u.owner,
-        type: u.type,
-        rx: t.rx,
-        ry: t.ry,
-        hitPoints: u.hitPoints,
-        maxHitPoints: u.maxHitPoints,
-        isIdle: u.isIdle,
-        veteranLevel: u.veteranLevel,
-      };
-    }
+    for (var i = 0; i < units.length; i++) self[i] = mapUnit(units[i]);
+    var hostile = w.units('hostile') || [];
+    var enemies = [];
+    for (var j = 0; j < hostile.length && j < ENEMY_CAP; j++) enemies.push(mapUnit(hostile[j]));
     var me = w.me();
     var size = w.map.size();
     var snap = {
@@ -61,6 +67,7 @@
       mapWidth: size.width,
       mapHeight: size.height,
       self: self,
+      enemies: enemies,
     };
     var cost = performance.now() - t0;
     stats.samples++;

@@ -20,15 +20,36 @@ importers:
 
   apps/companion:
     dependencies:
+      '@ra2c/command':
+        specifier: workspace:*
+        version: link:../../packages/command
       '@ra2c/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
       '@ra2c/game-werhd':
         specifier: workspace:*
         version: link:../../packages/game-werhd
+      '@ra2c/js-worker':
+        specifier: workspace:*
+        version: link:../../packages/js-worker
+      '@ra2c/model-providers':
+        specifier: workspace:*
+        version: link:../../packages/model-providers
+      '@ra2c/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
       playwright:
         specifier: ^1.49.0
         version: 1.63.0
+
+  packages/command:
+    dependencies:
+      '@ra2c/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@ra2c/model-providers':
+        specifier: workspace:*
+        version: link:../model-providers
 
   packages/contracts: {}
 
@@ -40,6 +61,26 @@ importers:
       playwright:
         specifier: ^1.49.0
         version: 1.63.0
+
+  packages/js-worker:
+    dependencies:
+      '@ra2c/command':
+        specifier: workspace:*
+        version: link:../command
+      '@ra2c/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/model-providers: {}
+
+  packages/runtime:
+    dependencies:
+      '@ra2c/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@ra2c/js-worker':
+        specifier: workspace:*
+        version: link:../js-worker
 
 packages:
 

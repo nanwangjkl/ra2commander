@@ -6,11 +6,16 @@ import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { chromium, type Page } from 'playwright'
 import type { ActionRequest, Snapshot } from '@ra2c/contracts'
+import { compileCommand } from '@ra2c/command'
+import { StepExecutor } from '@ra2c/js-worker'
+import { providerFromEnv, type OpenAICompatibleProvider } from '@ra2c/model-providers'
+import { TaskRuntime, type TaskSpec } from '@ra2c/runtime'
 import { setupCdnProxy, WerhdBridge } from '@ra2c/game-werhd'
 import { dismissStartupDialogs } from './auto-import.ts'
 import { startStaticServer } from './static-server.ts'
 
-const ROOT = resolve(import.meta.dirname, '../..')
+// import.meta.dirname = apps/companion/src，仓库根需上溯三级。
+const ROOT = resolve(import.meta.dirname, '../../..')
 const PROFILE_DIR = process.env.RA2C_PROFILE ?? join(ROOT, '.runtime/profile')
 const GAME_DIR = process.env.RA2C_GAME_DIR ?? join(homedir(), 'my/code/ra2web.github.io')
 const PACK_PATH = process.env.RA2C_PACK ?? join(homedir(), 'Downloads/full-pack.7z')
@@ -28,6 +33,13 @@ function usage(): string {
     '  gather <ids|all> <x> <y> 集结',
     '  attack <ids|all> <targetId> 攻击目标',
     '  stop <ids|all>         停止',
+    '  enemy [n]              列出当前可见敌人（默认前 20）',
+    '  providers              列出已配置的云模型',
+    '  task new <id> <命令>   编译并部署任务（绑定当前全部车辆/步兵，需先开局）',
+    '  task list              任务与运行状态',
+    '  task stop <id>         立即撤权停止任务',
+    '  task pause <id> / task resume <id>',
+    '  model <deepseek|glm>   切换编译用的云模型',
     '  shot                   截图到 .runtime/shots/',
     '  quit                   退出（关闭浏览器）',
   ].join('\n')
@@ -53,7 +65,13 @@ function parseIds(spec: string, snap: Snapshot | undefined): number[] | undefine
 interface CommandContext {
   bridge: WerhdBridge
   page: Page
+  runtime: TaskRuntime
+  executor: StepExecutor
+  providers: Map<string, OpenAICompatibleProvider>
+  currentProvider: () => OpenAICompatibleProvider
 }
+
+const TYPE_LABEL: Record<number, string> = { 1: '空军', 2: '建筑', 3: '步兵', 7: '车辆' }
 
 /** 单条命令 → 输出文本；quit 由调用方根据返回值处理。 */
 async function handleCommand(line: string, ctx: CommandContext): Promise<string> {
@@ -78,10 +96,79 @@ async function handleCommand(line: string, ctx: CommandContext): Promise<string>
       if (!snap) return '尚无快照'
       const n = args[0] ? Number(args[0]) : 20
       const lines = snap.self.slice(0, n).map((u) =>
-        `  #${u.id} ${u.name} (${u.type === 2 ? '建筑' : u.type === 3 ? '步兵' : u.type === 7 ? '车辆' : u.type === 1 ? '空军' : `type${u.type}`}) (${u.rx},${u.ry}) hp=${u.hitPoints ?? '?'}/${u.maxHitPoints ?? '?'} ${u.isIdle ? 'idle' : 'busy'}`,
+        `  #${u.id} ${u.name} (${TYPE_LABEL[u.type] ?? `type${u.type}`}) (${u.rx},${u.ry}) hp=${u.hitPoints ?? '?'}/${u.maxHitPoints ?? '?'} ${u.isIdle ? 'idle' : 'busy'}`,
       )
-      lines.push(`  共 ${snap.self.length} 个单位；地图 ${snap.mapWidth}x${snap.mapHeight}`)
+      lines.push(`  共 ${snap.self.length} 个单位；可见敌人 ${snap.enemies.length}；地图 ${snap.mapWidth}x${snap.mapHeight}`)
       return lines.join('\n')
+    }
+    case 'enemy': {
+      const snap = bridge.latest
+      if (!snap) return '尚无快照'
+      const n = args[0] ? Number(args[0]) : 20
+      const lines = snap.enemies.slice(0, n).map((u) =>
+        `  #${u.id} ${u.name} (${TYPE_LABEL[u.type] ?? `type${u.type}`}) (${u.rx},${u.ry}) hp=${u.hitPoints ?? '?'}/${u.maxHitPoints ?? '?'}`,
+      )
+      lines.push(`  可见敌人 ${snap.enemies.length} 个`)
+      return lines.join('\n')
+    }
+    case 'providers': {
+      const list = [...ctx.providers.values()]
+        .map((p) => `  ${p.config.name}: ${p.model} @ ${p.config.baseUrl}`)
+      return list.length ? list.join('\n') : '（未配置任何云模型：检查 .env 的 *_API_KEY）'
+    }
+    case 'model': {
+      const name = args[0]
+      const p = name ? ctx.providers.get(name) : undefined
+      if (!p) return `用法: model <${[...ctx.providers.keys()].join('|')}>`
+      ctx.currentProvider = () => p
+      return `编译模型切换为 ${p.config.name} (${p.model})`
+    }
+    case 'task': {
+      const sub = args[0]
+      if (sub === 'new') {
+        const id = args[1]
+        const text = args.slice(2).join(' ')
+        if (!id || !text) return '用法: task new <id> <命令文本>'
+        const snap = bridge.latest
+        if (!snap) return '尚无快照：请先进入对局'
+        const units = snap.self.filter((u) => u.type === 3 || u.type === 7)
+        if (!units.length) return '当前没有可绑定的车辆/步兵单位'
+        const unitIds = units.map((u) => u.id)
+        const provider = ctx.currentProvider()
+        console.log(`[companion] 编译中：${provider.config.name} 绑定 ${unitIds.length} 个单位…`)
+        const outcome = await compileCommand(
+          provider,
+          { rawText: text, binding: { unitIds }, snapshot: snap },
+          ctx.executor,
+        )
+        const spec: TaskSpec = { id, rawText: text, unitIds, originalMembers: unitIds }
+        ctx.runtime.deploy(spec, outcome.code)
+        const last = outcome.log[outcome.log.length - 1]!
+        return `任务 ${id} 已部署（v1，${outcome.attempts} 轮编译，${last.model} ${last.durationMs}ms）`
+      }
+      if (sub === 'list') {
+        const lines: string[] = []
+        for (const t of ctx.runtime.tasks.values()) {
+          const s = t.stats
+          lines.push(
+            `  ${t.spec.id} [${t.status}] v${t.script?.version ?? '-'} 「${t.spec.rawText.slice(0, 30)}」 单位=${t.spec.unitIds.length} steps=${s.steps} actions=${s.actions} 拒绝=${s.rejected}${s.lastError ? ` 错误=${s.lastError.slice(0, 60)}` : ''}`,
+          )
+        }
+        return lines.length ? lines.join('\n') : '（无任务）'
+      }
+      if (sub === 'stop') {
+        await ctx.runtime.stop(args[1] ?? '')
+        return `任务 ${args[1]} 已停止`
+      }
+      if (sub === 'pause') {
+        ctx.runtime.pause(args[1] ?? '')
+        return `任务 ${args[1]} 已暂停`
+      }
+      if (sub === 'resume') {
+        ctx.runtime.resume(args[1] ?? '')
+        return `任务 ${args[1]} 已恢复`
+      }
+      return '用法: task new|list|stop|pause|resume …'
     }
     case 'move':
     case 'amove':
@@ -119,6 +206,21 @@ async function handleCommand(line: string, ctx: CommandContext): Promise<string>
 }
 
 async function main(): Promise<void> {
+  try {
+    process.loadEnvFile(join(ROOT, '.env'))
+  } catch (err) {
+    console.log(`[companion] .env 未加载（${String(err).slice(0, 120)}）；仅桥命令可用`)
+  }
+
+  const providers = new Map<string, OpenAICompatibleProvider>()
+  for (const name of ['deepseek', 'glm'] as const) {
+    try {
+      providers.set(name, providerFromEnv(name, process.env))
+    } catch (err) {
+      console.log(`[companion] 云模型 ${name} 不可用: ${String(err).slice(0, 120)}`)
+    }
+  }
+
   const server = await startStaticServer({
     root: GAME_DIR,
     extraFiles: { '/pack.7z': PACK_PATH },
@@ -138,19 +240,48 @@ async function main(): Promise<void> {
   const bridge = new WerhdBridge(context)
   await bridge.install()
 
+  // M2：任务运行时（执行器 + 批量提交通道）。
+  const executor = new StepExecutor()
+  const runtime = new TaskRuntime({
+    executor,
+    submit: async (actions) => {
+      const results = []
+      for (const a of actions) results.push(await bridge.submit(a))
+      return results
+    },
+    log: (msg) => console.log(msg),
+  })
+
   let lastSession = 0
   bridge.onSnapshot((snap) => {
     if (snap.session !== lastSession) {
       lastSession = snap.session
-      console.log(`\n[companion] 检测到对局会话 #${snap.session}，快照 tick=${snap.tick}，己方单位 ${snap.self.length}`)
+      console.log(`\n[companion] 检测到对局会话 #${snap.session}，快照 tick=${snap.tick}，己方单位 ${snap.self.length}，可见敌人 ${snap.enemies.length}`)
     }
+    // 快照驱动任务运行时；异常不阻断桥回调。
+    void runtime.onSnapshot(snap).catch((err) => console.error(`[runtime] 快照处理错误: ${String(err)}`))
   })
 
   const page = context.pages()[0] ?? (await context.newPage())
   await page.goto(server.url)
   await dismissStartupDialogs(page)
 
-  const ctx: CommandContext = { bridge, page }
+  if (!providers.size) {
+    console.log('[companion] 未配置任何云模型 key（.env），task new 不可用；桥命令不受影响。')
+  }
+  let currentProvider: OpenAICompatibleProvider | undefined
+  const ctx: CommandContext = {
+    bridge,
+    page,
+    runtime,
+    executor,
+    providers,
+    currentProvider: () => {
+      if (!currentProvider) currentProvider = providers.values().next().value
+      if (!currentProvider) throw new Error('没有可用的云模型（检查 .env 的 *_API_KEY）')
+      return currentProvider
+    },
+  }
   let running = true
   const runLine = async (line: string): Promise<string> => {
     const out = await handleCommand(line, ctx)

@@ -4,8 +4,12 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@ra2c/command": "workspace:*",
     "@ra2c/contracts": "workspace:*",
     "@ra2c/game-werhd": "workspace:*",
+    "@ra2c/js-worker": "workspace:*",
+    "@ra2c/model-providers": "workspace:*",
+    "@ra2c/runtime": "workspace:*",
     "playwright": "^1.49.0"
   }
 }

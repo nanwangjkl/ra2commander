@@ -41,7 +41,10 @@ export interface Snapshot {
   credits: number;
   mapWidth: number;
   mapHeight: number;
+  /** 己方全部单位（含建筑）。 */
   self: SnapshotUnit[];
+  /** 当前可见的敌方单位（选敌/攻击目标来源），带上限护栏。 */
+  enemies: SnapshotUnit[];
 }
 
 /** MVP 动作请求；宿主提交前做会话与存活复查。 */
@@ -61,6 +64,23 @@ export interface ActionResult {
   /** 实际进入 werhd 调用的单位数。 */
   submitted: number;
   session: number;
+}
+
+/** 任务脚本执行侧约束：执行器第一道把关（宿主提交前还有会话/存活复查）。 */
+export interface StepConstraints {
+  allowedUnitIds: number[];
+  enemyIds: number[];
+  mapWidth: number;
+  mapHeight: number;
+  maxActions?: number;
+}
+
+/** 任务脚本单次 step 的执行结果。 */
+export interface StepOutcome {
+  ok: boolean;
+  actions: ActionRequest[];
+  memory: unknown;
+  error?: string | undefined;
 }
 
 export function isTileAction(a: ActionRequest): a is Extract<ActionRequest, { x: number }> {
