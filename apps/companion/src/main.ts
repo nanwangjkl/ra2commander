@@ -34,6 +34,11 @@ const CDP_PORT = Number(process.env.RA2C_CDP_PORT ?? 9222)
 async function ensureBrowserContext(): Promise<{ browser: Browser; context: BrowserContext }> {
   const cdpUrl = `http://127.0.0.1:${CDP_PORT}`
   const alive = () => fetch(`${cdpUrl}/json/version`).then((r) => r.ok).catch(() => false)
+  // 防竞态双检查：上一次 companion/任务清理的瞬间窗口里 CDP 可能短暂不可达，
+  // 误判"无浏览器"会 spawn 同 profile 第二实例并引发实例更替（对局丢失）。
+  if (!(await alive())) {
+    await new Promise((r) => setTimeout(r, 1500))
+  }
   if (!(await alive())) {
     mkdirSync(PROFILE_DIR, { recursive: true })
     spawn(
@@ -44,6 +49,10 @@ async function ensureBrowserContext(): Promise<{ browser: Browser; context: Brow
         '--no-first-run',
         '--no-default-browser-check',
         '--ignore-certificate-errors', // 本地 https 为自签证书
+        // 资源 CDN 对本地 origin 不回 CORS 头。浏览器级关闭同源策略（专用实例无浏览风险），
+        // 使跨源资源请求不依赖 Playwright route——companion 断连/重启时代理失效曾触发
+        // 游戏的资源校验失败 → location.reload() → 单机对局丢失。
+        '--disable-web-security',
         '--test-type', // 抑制 Chrome for Testing 的"仅用于自动测试"信息条
         '--disable-infobars',
         'about:blank',

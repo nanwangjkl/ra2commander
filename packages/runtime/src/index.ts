@@ -175,8 +175,10 @@ export class TaskRuntime {
     task.memory = outcome.memory
 
     // 相同订单节流：本轮动作包签名与上次完全相同则不重发（重新选敌/改目标会破签名，不受影响）。
-    const sig = outcome.actions.map(actionSignature).join('|')
-    if (sig && sig === task.stats.lastActionSig) return
+    // 生产动作不节流：队列被玩家取消/回收后脚本需要重新下单，"重复"是合法且必要的。
+    const combatActions = outcome.actions.filter((a) => 'unitIds' in a)
+    const sig = combatActions.map(actionSignature).join('|')
+    if (sig && sig === task.stats.lastActionSig && combatActions.length === outcome.actions.length) return
     task.stats.lastActionSig = sig
 
     if (!outcome.actions.length) return
