@@ -16,6 +16,12 @@ export interface GenerateOptions {
   maxTokens?: number | undefined
   temperature?: number | undefined
   signal?: AbortSignal | undefined
+  /**
+   * 思考模式开关（DeepSeek/GLM 的 OpenAI 兼容扩展）。
+   * 战术脚本生成实测不需要深度思考：默认思考模式 82s（其中 20k 思考 token），
+   * 关闭后 7s 且质量相同。默认关闭。
+   */
+  thinking?: 'enabled' | 'disabled' | undefined
 }
 
 export interface GenerateResult {
@@ -94,6 +100,7 @@ export class OpenAICompatibleProvider {
         max_tokens: opts.maxTokens ?? 32768,
         temperature: opts.temperature ?? 0.2,
         stream: false,
+        thinking: { type: opts.thinking ?? 'disabled' },
       }),
       signal,
     })

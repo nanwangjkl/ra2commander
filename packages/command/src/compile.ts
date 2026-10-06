@@ -92,7 +92,8 @@ export async function compileCommand(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // 验证阶段放开输出上限（截断会破坏代码块；API 端会钳制到其支持的最大值）。
-    const result = await provider.generate({ messages, signal, maxTokens: 32768 })
+    // 思考模式默认关闭：实测生成战术脚本不需要（开思考 82s、关 7s，质量相同）。
+    const result = await provider.generate({ messages, signal, maxTokens: 32768, thinking: 'disabled' })
     const code = extractCode(result.text)
     let errors: string[] = []
     if (!code) {
