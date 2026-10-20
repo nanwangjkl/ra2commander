@@ -9,7 +9,7 @@
 // 且带性能护栏（超预算自动降频）。
 (() => {
   'use strict';
-  var BRIDGE_VERSION = 2; // 桥升级：companion 重启时按版本重装（清掉旧轮询）
+  var BRIDGE_VERSION = 3;
   if (window.__ra2cInstalled && window.__ra2cVersion === BRIDGE_VERSION) return;
   if (window.__ra2cInterval) { try { clearInterval(window.__ra2cInterval) } catch (e) {} }
   window.__ra2cInstalled = true;
@@ -31,6 +31,9 @@
     window.__ra2cSession = currentSession() + 1;
     window.__ra2cSessionNote = why;
     hookedSession = -1; // 强制重挂
+    window.__ra2cSessionKey = crypto.randomUUID();
+    lastSampleTick = -1;
+    placeTried = {};
   }
 
   // place 自动选址记忆（name -> 已尝试格），跳过引擎静默拒绝过的位置。
@@ -75,6 +78,8 @@
       maxHitPoints: u.maxHitPoints,
       isIdle: u.isIdle,
       veteranLevel: u.veteranLevel,
+      primaryWeapon: u.primaryWeapon,
+      secondaryWeapon: u.secondaryWeapon,
     };
   }
 
@@ -90,6 +95,7 @@
     var size = w.map.size();
     var snap = {
       session: currentSession(),
+      sessionKey: window.__ra2cSessionKey,
       seq: ++seq,
       tick: w.tick(),
       time: w.time(),
@@ -130,9 +136,11 @@
     if (!w || typeof w.onTick !== 'function') return false;
     var session = currentSession();
     w.onTick(function (ctx) {
+      if (window.werhd !== w || currentSession() !== session) return;
       lastTickAt = Date.now();
       var tick = ctx && ctx.tick != null ? ctx.tick : w.tick();
-      if (tick - lastSampleTick < SAMPLE_EVERY) return;
+      if (tick < lastSampleTick) { bumpSession('tick-reset'); return }
+      if (lastSampleTick >= 0 && tick - lastSampleTick < SAMPLE_EVERY) return;
       lastSampleTick = tick;
       var snap = collect(w);
       if (window.__ra2cSnapshot) {
@@ -153,6 +161,7 @@
     return {
       installed: true,
       session: currentSession(),
+      sessionKey: window.__ra2cSessionKey || '',
       sessionNote: window.__ra2cSessionNote || '',
       apiAlive: !!window.werhd,
       hookedSession: hookedSession,
@@ -163,12 +172,15 @@
   };
 
   // 页面内动作提交（宿主 evaluate 调用）；返回与宿主 ActionResult 对齐的对象。
-  window.__ra2cSubmit = function (session, action) {
+  window.__ra2cSubmit = function (session, action, expectedSeq, sessionKey) {
     var w = window.werhd;
     if (!w) return { ok: false, reason: 'no-api', submitted: 0, session: session };
-    if (session !== currentSession()) {
+    if (w !== previousApi || w.tick() < lastSampleTick) return { ok: false, reason: 'stale-session', submitted: 0, session: currentSession() };
+    if (session !== currentSession() || sessionKey !== window.__ra2cSessionKey) {
       return { ok: false, reason: 'stale-session', submitted: 0, session: currentSession() };
     }
+    // 停车不依赖旧位置，允许宿主撤权后用同局稍早的快照紧急停车。
+    if (action.kind !== 'stop' && expectedSeq !== seq) return { ok: false, reason: 'stale-snapshot', submitted: 0, session: currentSession() };
     var alive = {};
     var own = w.units('self') || [];
     for (var i = 0; i < own.length; i++) alive[own[i].id] = true;
@@ -207,7 +219,12 @@
         case 'move': w.move(ids, action.x, action.y); break;
         case 'attackMove': w.attackMove(ids, action.x, action.y); break;
         case 'gather': w.gather(ids, action.x, action.y); break;
-        case 'attack': w.attack(ids, action.targetId); break;
+        case 'attack': {
+          var visible = w.units('hostile') || [];
+          if (!visible.some(function (u) { return u.id === action.targetId })) return { ok: false, reason: 'invisible-target', submitted: 0, session: session };
+          if (typeof w.inRange !== 'function' || ids.some(function (id) { return !w.inRange(id, action.targetId, 'current') })) return { ok: false, reason: 'out-of-range', submitted: 0, session: session };
+          w.attack(ids, action.targetId); break;
+        }
         case 'stop': w.stop(ids); break;
         case 'scatter': ids.forEach(function (id) { w.order([id], { type: 16 }); }); break;
         case 'guard': ids.forEach(function (id) { w.order([id], { type: 5 }); }); break;
@@ -221,12 +238,12 @@
 
   // 主循环：发现新对局 → 递增代次并挂接；发现 API 消失 → 递增代次；
   // 发现挂接丢失（onTick 被替换后不再更新 lastTickAt）→ 重挂同代次。
-  var hadApi = false;
+  var previousApi;
   window.__ra2cInterval = setInterval(function () {
     var hasApi = !!window.werhd;
-    if (hasApi && !hadApi) bumpSession('api-appeared');
-    if (!hasApi && hadApi) bumpSession('api-removed');
-    hadApi = hasApi;
+    if (hasApi && window.werhd !== previousApi) bumpSession('api-appeared');
+    if (!hasApi && previousApi) bumpSession('api-removed');
+    previousApi = window.werhd;
     if (hasApi && (hookedSession !== currentSession() || Date.now() - lastTickAt > 4000)) {
       hook();
     }

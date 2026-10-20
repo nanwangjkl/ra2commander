@@ -2,7 +2,7 @@
 
 本项目基于 [ra2web](https://github.com/ra2web/ra2web.github.io) 设计独立的本机语音指挥伴随程序。
 
-状态：首版工程方案，尚未实现。更新日期：2026-10-06。产品行为以[产品需求](../spec/requirements.md)为准，公共接口事实见[API 调查](game-api.md)。
+状态：M1/M2 文本链路与部分 M3 已实现；语音、界面、地图绑定和 Skill 仍为规划。更新日期：2026-10-18。产品行为以[产品需求](../spec/requirements.md)为准，公共接口事实见[API 调查](game-api.md)。
 
 ## 系统定位与可行性
 
@@ -47,13 +47,13 @@ LangGraph 支持组合固定步骤与模型步骤，可作为命令编译工作�
 | 命令编译 | 优先评估 Pi 模型接口与 Agent Core | 生成、校验与修复；具体依赖和版本由原型确定 |
 | 浏览器 | Playwright 管理可见 Chromium | 专用用户档案；固定页面桥访问 `window.werhd` |
 | 命令脚本 | JavaScript | AI 为每条命令生成，或在同授权下修复 |
-| JS 执行器 | 独立进程中的嵌入式 QuickJS | 需少量 C/C++ 封装；不提供文件、网络或系统模块 |
+| JS 执行器 | 独立 Node 子进程中的 QuickJS WASM | 使用 quickjs-emscripten；不向脚本暴露文件、网络、Node 或浏览器句柄 |
 | 本地语音 | 优先验证 whisper.cpp 常驻服务与多语言模型 | 保留 sherpa-onnx / SenseVoice 适配，模型规模以实测选择 |
 | 玩家界面 | 轻量本机界面 | 录音、任务反馈和巡视；诊断信息单独展示 |
 
 浏览器桥使用 `addInitScript` 注入、`exposeBinding` 回传快照、`evaluate` 提交有限动作批次。使用独立用户档案，实际游戏加载与开销纳入原型验证。参见 [Playwright 页面求值](https://playwright.dev/docs/evaluating)、[页面 API](https://playwright.dev/docs/api/class-page)与[独立用户档案](https://playwright.dev/docs/api/class-browsertype#browser-type-launch-persistent-context)。
 
-QuickJS 的内存、栈和执行期限限制用于控制脚本资源，它们不等同于完整操作系统沙箱；默认 `qjs` CLI 不直接作为隔离执行器。具体进程封装与平台约束在原型阶段验证。参见 [QuickJS 文档](https://bellard.org/quickjs/quickjs.html)。
+QuickJS 的内存、栈和执行期限限制用于控制脚本资源，它们不等同于完整操作系统沙箱；默认 `qjs` CLI 不直接作为隔离执行器。当前子进程清空继承环境变量，每步新建 QuickJS runtime/context，仅传输 JSON；脚本不能接触 Node 子进程本身。参见 [QuickJS 文档](https://bellard.org/quickjs/quickjs.html)。
 
 本地识别采用独立线程或进程，避免阻塞控制循环，使用中文和游戏术语样本选模型。参见 [whisper.cpp](https://github.com/ggml-org/whisper.cpp)、[本机 server](https://github.com/ggml-org/whisper.cpp/tree/master/examples/server)、[sherpa-onnx 原生 Node 示例](https://github.com/k2-fsa/sherpa-onnx/blob/master/nodejs-addon-examples/README.md)与[SenseVoice](https://k2-fsa.github.io/sherpa/onnx/sense-voice/index.html)。
 
@@ -88,6 +88,19 @@ flowchart LR
 | 语音与界面 | 录音、识别、摘要、阻塞反馈和镜头巡视 |
 
 AI 负责选敌、火力分配、站位、队形和执行时机。宿主提供距离、几何、状态查询与底层动作原语，负责权限、资源、会话和生命周期；不内置替代 AI 微操的战术决策器。
+
+## 当前执行边界（2026-10-18）
+
+- 主进程使用 Acorn 解析至多 64 KiB 源码，只接受一个同步 `function step(snapshot, memory)` 声明；不执行候选代码。禁用标识符扫描只作早期诊断，隔离由 QuickJS 承担。
+- 子进程串行接受任务，启动就绪后才计算各请求的预算。QuickJS 限制为每步默认 60 ms、堆 8 MiB、栈 256 KiB；宿主在预算后另加 100 ms 硬超时并杀死失联进程。子进程 V8 old-space 上限 64 MiB，不代表整个进程 RSS 上限。
+- 输入 JSON 至多 1 MiB，传入 memory 至多 64 KiB；沙箱返回 memory 至多 16,384 个 UTF-16 码元，整份输出至多 32,768 个码元，宿主另检查整份输出 128 KiB。每步释放 runtime/context，跨步仅保留 memory，不共享脚本全局变量。
+- 每次新命令/修复持有独立请求令牌，绑定对局 UUID；停止、手动暂停、换局及后续改令取消旧请求。结果提交还检查任务对象、脚本版本与运行代次，停止后迟到的修复无法部署。普通改令失败保留原任务。
+- 每次只推进最新快照，不堆积旧微操。动作使用来源快照的对局 UUID 和序号，桥不替换为当前会话；页面在真正调用 API 前再检查。紧急 stop 允许同局稍早快照，以免新的采样阻断撤权停车。
+- 独立授权默认拒绝：单位实时归属、动作种类、地域、射程、生产项目、累计数量和可操作队列都由宿主检查。取消已投入生产的动作始终拒绝；队列状态不可观测时拒绝操作，恢复仅限本任务实际暂停的队列。生产额度在提交前保留；仅对确定未发送的拒绝退款，断连或 API 异常等不确定结果保留额度。自动修复及 v2 状态恢复沿用额度、战损身份与已触发回撤阶段。
+- 战损按任务生效时存活的原始成员计算，宿主追踪已知转换形态的邻近新身份；近邻匹配仍受公共 API 缺少转换事件的限制。严格超过阈值才开放已绑定回撤点，触发后只能前往该点或停止。原生追击导致越区时，宿主停车并纠正到最近区内格，偏移仍受快照采样周期影响。
+- 显式攻击先按快照中的武器数据保守检查，再由页面 `inRange(..., 'current')` 复查。保守检查可能拒绝高地加成等额外射程，不把几何距离视为开火效果证明。
+
+当前文本 CLI 用显式参数绑定地域、模式、战损回撤和生产数量/队列，示例见 [AGENTS.md](../../AGENTS.md)。自动语义地标绑定、任意条件的自然语言授权解析、语音澄清尚未实现。`pnpm test` 覆盖授权、迟到编译/修复、停止/转编/换局竞态、资源限制与故障恢复；真实引擎效果和规模性能需继续实测。
 
 ## 命令记录与脚本契约
 
@@ -126,6 +139,8 @@ Skill 保存名称、参数、实现、版本、所需 API、适用游戏/MOD/�
 
 地图 Profile 保存经校准的地图版本、坐标与方位约定、大区和小区边界、名称及别名。启动流程选用 Profile，不根据公共 API 假定能自动识别地图；静态地理数据不包含实时隐藏敌情。
 
+现已提供 `packages/maps` 的方案读取、校验、空间查询，以及 `maps/ice/schemes/` 的 17 区数据。方案将地图哈希与方案版本分别保存，边界使用原生 `rx/ry` 多边形；[分区规范](../spec/map-regions.md)记录生成方法与静态校准结果。地名解析和多边形守区尚未接入命令、运行时及页面桥。
+
 ## 故障与连接恢复
 
 每个脚本分别限制时间、内存和发令量。异常或超时只暂停该任务并尝试停止其单位，其他任务继续；修复版重新校验和试运行。重试有上限，连续失败后保持暂停并反馈，不改变战略目标。
@@ -147,8 +162,9 @@ ra2commander/
   packages/game-werhd/      # 页面桥、公共 API 映射与规则目录
   packages/speech/          # 本地识别适配
   packages/model-providers/ # 云服务适配
+  packages/maps/            # 分区方案读取、校验与离线提取
   maps/ice/                 # 校准后的冰天雪地地域数据
   skills/                   # 已确认能力与验证样本
 ```
 
-以上是模块边界，目录尚未作为程序实现建立。原型步骤与性能测量见[实施与验证计划](../roadmap/implementation-plan.md)。
+以上同时包含已实现模块与后续规划；当前目录与运行命令见仓库 AGENTS.md。原型步骤与性能测量见[实施与验证计划](../roadmap/implementation-plan.md)。

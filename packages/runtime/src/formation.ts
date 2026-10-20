@@ -1,13 +1,13 @@
 /**
  * 编队注册表：命名编队与成员唯一归属。
  * 规则（对应产品需求）：成员重叠/重名先澄清不静默抢占；转编先撤销旧归属；
- * 战损口径基准取建队时原始成员，补员/转编不重置基准。
+ * 保留建队历史；任务战损基准另在任务生效时冻结。
  */
 export interface Formation {
   id: string
   /** 当前成员。 */
   memberIds: number[]
-  /** 建队时原始成员（战损口径基准）。 */
+  /** 建队时原始成员（历史记录，不作为新任务战损口径）。 */
   originalMemberIds: number[]
   createdAt: number
 }
@@ -23,6 +23,13 @@ export interface CreateResult {
 export class FormationRegistry {
   private formations = new Map<string, Formation>()
   private unitOwner = new Map<number, string>()
+  revision = 0
+
+  clear(): void {
+    this.revision++
+    this.formations.clear()
+    this.unitOwner.clear()
+  }
 
   create(id: string, memberIds: number[], opts?: { force?: boolean }): CreateResult {
     if (this.formations.has(id)) return { ok: false, reason: `编队名 "${id}" 已存在` }
@@ -40,6 +47,7 @@ export class FormationRegistry {
     const formation: Formation = { id, memberIds: unique, originalMemberIds: [...unique], createdAt: Date.now() }
     this.formations.set(id, formation)
     for (const unit of unique) this.unitOwner.set(unit, id)
+    this.revision++
     return { ok: true, formation }
   }
 
@@ -52,6 +60,7 @@ export class FormationRegistry {
       if (!target.memberIds.includes(unit)) target.memberIds.push(unit)
       this.unitOwner.set(unit, toId)
     }
+    this.revision++
     return { ok: true }
   }
 
@@ -60,6 +69,7 @@ export class FormationRegistry {
     if (!f) return
     for (const unit of f.memberIds) this.unitOwner.delete(unit)
     this.formations.delete(id)
+    this.revision++
   }
 
   private removeFromFormation(unit: number): void {

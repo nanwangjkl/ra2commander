@@ -11,6 +11,8 @@
   "scripts": {
     "companion": "tsx apps/companion/src/main.ts",
     "typecheck": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "maps:check": "node --import tsx packages/maps/src/check.ts",
     "playwright-install": "pnpm --filter @ra2c/companion exec playwright install chromium"
   },
   "devDependencies": {

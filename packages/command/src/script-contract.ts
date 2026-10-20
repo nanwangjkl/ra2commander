@@ -1,3 +1,5 @@
+import { parse } from 'acorn'
+
 /**
  * 命令脚本契约（M2）：模型为每条命令生成的代码必须是单个函数声明
  *
@@ -22,9 +24,10 @@ function step(snapshot, memory) {
 
 参数：
 - snapshot：当前可见战况，字段 { tick, credits, mapWidth, mapHeight, self: Unit[], enemies: Unit[] }
-- Unit：{ id, name, owner, type, rx, ry, hitPoints, maxHitPoints, isIdle, veteranLevel }
+- Unit：{ id, name, owner, type, rx, ry, hitPoints, maxHitPoints, isIdle, veteranLevel, primaryWeapon?, secondaryWeapon? }；武器含 { minRange, maxRange, aa, ag }，显式 attack 只允许已知射程内的合法目标
   type 数值：1=空军 2=建筑 3=步兵 7=车辆；rx/ry 是地图格子坐标
 - memory：你上次返回的 memory（首轮为 {}），用于跨 tick 记住自己的状态（如目标、阶段、已下令内容）
+- snapshot.execution：宿主计算的 { retreatActive, lossRatio, produceRemaining }。回撤条件与生产累计额度以此为准，不能自己放宽。宿主未列入 allowedActions 的动作一律不可用。
 
 返回：
 - actions：本次要提交的动作数组，每个动作形如：
@@ -51,7 +54,7 @@ snapshot.production 提供 { power, queues, available }：power 是电力，queu
 - 建筑目标：用队列状态判定（Ready 后 place）
 - **车辆/步兵目标：队列信息不可用**——produce 下单**一次**后，用 **snapshot.self 中该名称单位的数量变化**判定进度与完成（记录下单时基线数量）
 
-动作：{ kind: 'produce', name, quantity }、{ kind: 'place', name }（推荐：不带坐标，宿主自动选址并规避失败位置）、{ kind: 'pauseQueue', queueType }、{ kind: 'resumeQueue', queueType }。
+动作：{ kind: 'produce', name, quantity }、{ kind: 'place', name }（推荐：不带坐标，宿主自动选址并规避失败位置）、{ kind: 'pauseQueue', queueType }、{ kind: 'resumeQueue', queueType }。队列操作仅限绑定中明确授权且可观测的 queues；缺省禁止；只能恢复本任务实际暂停的队列。每项 produce 累计数量不得超过绑定额度；使用 snapshot.execution.produceRemaining 避免修复后重复下单。cancel 始终禁止。
 
 用 memory.phase 管理阶段机：按闭包顺序逐项 produce 前置建筑 → 队列 Ready 后 place → 全部前置就绪后 produce 目标：
 - 目标是建筑：produce → 队列 Ready → place → self 出现同名建筑即完成
@@ -119,10 +122,14 @@ export function staticScan(code: string): string[] {
 
 /** 编译期检查：可编译、定义 step、无禁用全局。空数组 = 通过。 */
 export function compileChecks(code: string): string[] {
+  if (typeof code !== 'string' || Buffer.byteLength(code) > 65_536) return ['脚本超过 64 KiB 上限']
   const errors = [...staticScan(code)]
   try {
-    const factory = new Function(`${code}\n;return typeof step === 'function' ? step : undefined`)
-    if (typeof factory() !== 'function') errors.push('代码必须定义 function step(snapshot, memory)')
+    const ast = parse(code, { ecmaVersion: 2022, sourceType: 'script' })
+    const fn = ast.body[0]
+    if (ast.body.length !== 1 || fn?.type !== 'FunctionDeclaration' || fn.id?.name !== 'step' || fn.async || fn.generator || fn.params.length !== 2 || fn.params.some(p => p.type !== 'Identifier')) {
+      errors.push('代码必须且只能包含同步 function step(snapshot, memory) 声明，参数必须是两个普通标识符')
+    }
   } catch (err) {
     errors.push(`语法错误: ${String((err as Error).message).slice(0, 300)}`)
   }

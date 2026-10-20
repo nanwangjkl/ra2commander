@@ -1,88 +1,44 @@
-// Step 脚本隔离执行 worker（Node worker_threads 占位实现；架构终态为独立进程 QuickJS）。
-// 约束：只接受单个 function step 声明源码；同步执行；结果必须可结构化克隆。
-import { parentPort } from 'node:worker_threads'
-import { createHash } from 'node:crypto'
+// 仅作为隔离子进程启动。生成代码只在 QuickJS 内运行，不注入任何宿主函数/模块。
+import { getQuickJS } from 'quickjs-emscripten'
 
-const compiled = new Map() // codeHash -> { fn }（进程内缓存）
-
-function hashOf(code) {
-  return createHash('sha256').update(code).digest('hex')
-}
-
-function compile(code) {
-  const h = hashOf(code)
-  let entry = compiled.get(h)
-  if (!entry) {
-    const factory = new Function(`${code}\n;return typeof step === 'function' ? step : undefined`)
-    const fn = factory()
-    if (typeof fn !== 'function') throw new Error('脚本未定义 function step(snapshot, memory)')
-    entry = { fn }
-    compiled.set(h, entry)
-  }
-  return entry.fn
-}
-
-const KNOWN_KINDS = new Set(['move', 'attackMove', 'attack', 'stop', 'gather', 'produce', 'cancel', 'place', 'pauseQueue', 'resumeQueue'])
-// 无坐标/无目标动作：不需要 x/y，也不需要 targetId。
-const NO_TARGET_KINDS = new Set(['stop', 'scatter', 'guard'])
-// 生产动作：无 unitIds，按 allowedProduce 名单授权。
-const PRODUCTION_KINDS = new Set(['produce', 'cancel', 'place'])
-
-/** 动作结构校验（宿主提交前还有一层复查，这里是执行侧第一道）。 */
-function validateActions(actions, constraints) {
-  if (!Array.isArray(actions)) return 'actions 必须是数组'
-  if (actions.length > (constraints.maxActions ?? 20)) return `动作数超上限: ${actions.length}`
-  const allowed = new Set(constraints.allowedUnitIds ?? [])
-  const enemies = new Set(constraints.enemyIds ?? [])
-  const producible = constraints.allowedProduce ? new Set(constraints.allowedProduce) : null
-  for (const a of actions) {
-    if (!a || typeof a !== 'object' || !KNOWN_KINDS.has(a.kind)) return `未知动作类型: ${JSON.stringify(a).slice(0, 80)}`
-    if (PRODUCTION_KINDS.has(a.kind)) {
-      if (typeof a.name !== 'string' || !a.name) return `动作 ${a.kind} 缺少 name`
-      if (producible && !producible.has(a.name)) return `动作 ${a.kind} 引用未授权项目 "${a.name}"（不在必要前置闭包内）`
-      if (a.kind === 'place') {
-        // 坐标可选：缺省由宿主自动选址（canPlace 环形搜索 + 失败记忆）。
-        if (a.x !== undefined || a.y !== undefined) {
-          if (!Number.isInteger(a.x) || !Number.isInteger(a.y)) return `place 坐标非法`
-          if (a.x < 0 || a.y < 0 || a.x >= constraints.mapWidth || a.y >= constraints.mapHeight)
-            return `place 坐标越界 (${a.x},${a.y})`
-        }
-      } else if (!Number.isInteger(a.quantity) || a.quantity < 1) {
-        return `动作 ${a.kind} quantity 非法`
-      }
-      continue
-    }
-    if (a.kind === 'pauseQueue' || a.kind === 'resumeQueue') {
-      if (!Number.isInteger(a.queueType) || a.queueType < 0 || a.queueType > 5) return `${a.kind} queueType 非法`
-      continue
-    }
-    if (!Array.isArray(a.unitIds) || a.unitIds.length === 0) return `动作 ${a.kind} 缺少 unitIds`
-    for (const id of a.unitIds) {
-      if (!Number.isInteger(id) || !allowed.has(id)) return `动作 ${a.kind} 引用未授权单位 ${id}`
-    }
-    if (a.kind === 'attack') {
-      if (!Number.isInteger(a.targetId) || !enemies.has(a.targetId)) return `attack 目标 ${a.targetId} 不在可见敌人中`
-    } else if (!NO_TARGET_KINDS.has(a.kind)) {
-      if (!Number.isInteger(a.x) || !Number.isInteger(a.y)) return `动作 ${a.kind} 坐标非法`
-      if (a.x < 0 || a.y < 0 || a.x >= constraints.mapWidth || a.y >= constraints.mapHeight)
-        return `动作 ${a.kind} 坐标越界 (${a.x},${a.y})`
-    }
-  }
-  return undefined
-}
-
-parentPort.on('message', (msg) => {
-  const { runId, code, snapshot, memory, constraints } = msg
+const QuickJS = await getQuickJS()
+process.send({ ready: true })
+process.on('disconnect', () => process.exit(0))
+process.on('message', ({ code, input, timeoutMs }) => {
+  const runtime = QuickJS.newRuntime()
+  runtime.setMemoryLimit(8 * 1024 * 1024)
+  runtime.setMaxStackSize(256 * 1024)
+  const deadline = Date.now() + timeoutMs
+  runtime.setInterruptHandler(() => Date.now() > deadline)
+  const context = runtime.newContext()
   try {
-    const fn = compile(code)
-    const out = fn(snapshot, memory ?? {})
-    if (!out || typeof out !== 'object') throw new Error('step 返回值必须是对象')
-    const err = validateActions(out.actions ?? [], constraints)
-    if (err) throw new Error(err)
-    // memory 必须可 JSON 序列化（跨 tick 传递走结构化克隆，这里提前把关）。
-    JSON.stringify(out.memory ?? {})
-    parentPort.postMessage({ runId, ok: true, actions: out.actions ?? [], memory: out.memory ?? {} })
-  } catch (err) {
-    parentPort.postMessage({ runId, ok: false, error: String(err?.message ?? err).slice(0, 500) })
+    // 每步建立全新 context/runtime，唯一跨步状态为有界 JSON memory。
+    const result = context.evalCode(`(() => {
+      'use strict';
+      const stringify = JSON.stringify.bind(JSON);
+      const input = JSON.parse(${JSON.stringify(input)});
+      ${code}
+      const out = step(input.snapshot, input.memory);
+      if (!out || typeof out !== 'object' || typeof out.then === 'function' || !Array.isArray(out.actions)) throw new Error('step 必须同步返回 actions 数组与 memory');
+      const memory = stringify(out.memory ?? {});
+      if (typeof memory !== 'string' || memory.length > 16384) throw new Error('memory 超过上限或不可序列化');
+      const json = stringify({actions: out.actions, memory: out.memory ?? {}});
+      if (json.length > 32768) throw new Error('脚本输出超过上限');
+      return json;
+    })()`, 'task.js')
+    if (result.error) {
+      // 不 dump 不可信错误对象，避免在宿主遍历巨型属性。
+      result.error.dispose()
+      process.send({ ok: false, error: Date.now() > deadline ? '脚本执行超时' : '脚本执行失败（异常、内存/栈/输出限制）' })
+    } else {
+      const json = context.getString(result.value)
+      result.value.dispose()
+      process.send({ ok: true, json })
+    }
+  } catch {
+    process.send({ ok: false, error: '隔离执行器异常' })
+  } finally {
+    context.dispose()
+    runtime.dispose()
   }
 })

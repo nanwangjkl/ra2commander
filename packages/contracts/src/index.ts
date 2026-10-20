@@ -28,6 +28,8 @@ export interface SnapshotUnit {
   maxHitPoints?: number;
   isIdle: boolean;
   veteranLevel?: number;
+  primaryWeapon?: { maxRange: number; minRange: number; aa: boolean; ag: boolean };
+  secondaryWeapon?: { maxRange: number; minRange: number; aa: boolean; ag: boolean };
 }
 
 /** 生产队列状态（werhd production.queues() 的映射）。 */
@@ -50,6 +52,8 @@ export interface ProductionState {
 export interface Snapshot {
   /** 会话代次：一局对局一个代次，换局递增。 */
   session: number;
+  /** 页面刷新、浏览器重启与换局均重新生成，避免局部计数器碰撞。 */
+  sessionKey: string;
   /** 递增序号，用于丢弃过期批次。 */
   seq: number;
   tick: number;
@@ -63,6 +67,8 @@ export interface Snapshot {
   enemies: SnapshotUnit[];
   /** 生产态势（进局后采集；游戏 API 不可用时缺省）。 */
   production?: ProductionState;
+  /** 宿主为当前任务计算；脚本不能通过修改 memory 改变这些授权事实。 */
+  execution?: { retreatActive: boolean; lossRatio: number; produceRemaining: Record<string, number> };
 }
 
 /** MVP 动作请求；宿主提交前做会话与存活复查。生产动作无 unitIds，按名单授权。 */
@@ -98,7 +104,32 @@ export interface StepConstraints {
   maxActions?: number;
   /** 生产任务可操作的项目名（必要前置闭包）；produce/cancel/place 只能操作名单内。 */
   allowedProduce?: string[];
+  /** 缺省为空权限；额度按任务累计消耗，不能通过多次 step/修复重置。 */
+  produceRemaining?: Record<string, number>;
+  allowedQueueTypes?: number[];
+  /** 只能恢复本任务实际暂停且未被后续操作改变的队列。 */
+  resumableQueueTypes?: number[];
+  allowedActions?: ActionRequest['kind'][];
+  region?: Region;
+  retreat?: { x: number; y: number; active: boolean };
 }
+
+export interface Region {
+  name: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+/** 从产生动作的快照继承，桥不得用当前会话覆盖它。 */
+export interface ActionContext {
+  session: number;
+  sessionKey: string;
+  seq: number;
+}
+
+export { validateActions, inRegion } from './validate-actions.ts';
 
 /** 任务脚本单次 step 的执行结果。 */
 export interface StepOutcome {

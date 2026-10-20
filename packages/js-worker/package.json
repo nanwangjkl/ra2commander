@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@ra2c/command": "workspace:*",
-    "@ra2c/contracts": "workspace:*"
+    "@ra2c/contracts": "workspace:*",
+    "quickjs-emscripten": "^0.32.0"
   }
 }

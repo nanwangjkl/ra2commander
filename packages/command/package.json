@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@ra2c/contracts": "workspace:*",
-    "@ra2c/model-providers": "workspace:*"
+    "@ra2c/model-providers": "workspace:*",
+    "acorn": "^8.19.0"
   }
 }

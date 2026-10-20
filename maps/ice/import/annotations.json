@@ -1,0 +1,285 @@
+{
+  "schemaVersion": 1,
+  "mapId": "ra2:mp32s8",
+  "mapName": "冰天雪地",
+  "expectedMapSha256": "df5419036db3cdfb39de5a6fb9a09c7737a60aad79dbda9431193d92ca460bc1",
+  "schemeId": "nanwang",
+  "schemeVersion": "0.1.0",
+  "title": "冰天雪地楼层分区",
+  "image": "mp32s83.png",
+  "boundaryColor": "#d26571",
+  "labelColor": "#07379a",
+  "analysisScale": 3,
+  "colorTolerance": 12,
+  "regions": [
+    {
+      "id": "floor-1",
+      "name": "一楼",
+      "level": 1,
+      "labelPixel": [
+        2953,
+        1243
+      ],
+      "aliases": []
+    },
+    {
+      "id": "floor-2-nw",
+      "name": "二楼左上",
+      "level": 2,
+      "labelPixel": [
+        1526,
+        751
+      ],
+      "aliases": []
+    },
+    {
+      "id": "floor-2-n",
+      "name": "二楼上方",
+      "level": 2,
+      "labelPixel": [
+        2461,
+        701
+      ],
+      "aliases": []
+    },
+    {
+      "id": "floor-2-ne",
+      "name": "二楼右上",
+      "level": 2,
+      "labelPixel": [
+        3642,
+        812
+      ],
+      "aliases": []
+    },
+    {
+      "id": "floor-2-w",
+      "name": "二楼左方",
+      "level": 2,
+      "labelPixel": [
+        1071,
+        1513
+      ],
+      "aliases": []
+    },
+    {
+      "id": "floor-2-e",
+      "name": "二楼右方",
+      "level": 2,
+      "labelPixel": [
+        4331,
+        1354
+      ],
+      "aliases": []
+    },
+    {
+      "id": "floor-2-sw",
+      "name": "二楼左下",
+      "level": 2,
+      "labelPixel": [
+        1427,
+        1944
+      ],
+      "aliases": []
+    },
+    {
+      "id": "floor-2-s",
+      "name": "二楼下方",
+      "level": 2,
+      "labelPixel": [
+        2215,
+        2289
+      ],
+      "aliases": []
+    },
+    {
+      "id": "island",
+      "name": "小岛",
+      "level": 2,
+      "labelPixel": [
+        3642,
+        1624
+      ],
+      "aliases": []
+    },
+    {
+      "id": "floor-3-nw",
+      "name": "三楼左上",
+      "level": 3,
+      "labelPixel": [
+        689,
+        209
+      ],
+      "aliases": []
+    },
+    {
+      "id": "floor-3-n",
+      "name": "三楼上方",
+      "level": 3,
+      "labelPixel": [
+        2486,
+        172
+      ],
+      "aliases": []
+    },
+    {
+      "id": "floor-3-ne",
+      "name": "三楼右上",
+      "level": 3,
+      "labelPixel": [
+        4380,
+        148
+      ],
+      "aliases": []
+    },
+    {
+      "id": "floor-3-w",
+      "name": "三楼左方",
+      "level": 3,
+      "labelPixel": [
+        394,
+        1083
+      ],
+      "aliases": []
+    },
+    {
+      "id": "floor-3-e",
+      "name": "三楼右方",
+      "level": 3,
+      "labelPixel": [
+        4897,
+        1107
+      ],
+      "aliases": []
+    },
+    {
+      "id": "floor-3-sw",
+      "name": "三楼左下",
+      "level": 3,
+      "labelPixel": [
+        541,
+        2633
+      ],
+      "aliases": []
+    },
+    {
+      "id": "floor-3-s",
+      "name": "三楼下方",
+      "level": 3,
+      "labelPixel": [
+        3322,
+        2584
+      ],
+      "aliases": []
+    },
+    {
+      "id": "floor-3-se",
+      "name": "三楼右下",
+      "level": 3,
+      "labelPixel": [
+        4602,
+        2116
+      ],
+      "aliases": []
+    }
+  ],
+  "expectedImageSha256": "673c617ffdff82b2ef02a82d76e095a910a2e2110da5ef609170afc0552a24b5",
+  "cropOffsetCorrection": [
+    0,
+    15
+  ],
+  "textureAlignment": {
+    "samples": 2007,
+    "bestOffsetCorrection": [
+      0,
+      15
+    ],
+    "score": 0.7658402203856749,
+    "quadrants": [
+      {
+        "quadrant": 0,
+        "samples": 423,
+        "best": [
+          [
+            0.8033573141486811,
+            0,
+            15
+          ],
+          [
+            0.7511961722488039,
+            0,
+            14
+          ],
+          [
+            0.7458033573141487,
+            1,
+            15
+          ]
+        ]
+      },
+      {
+        "quadrant": 1,
+        "samples": 745,
+        "best": [
+          [
+            0.7531556802244039,
+            0,
+            15
+          ],
+          [
+            0.7170868347338936,
+            0,
+            14
+          ],
+          [
+            0.6991643454038997,
+            -2,
+            15
+          ]
+        ]
+      },
+      {
+        "quadrant": 2,
+        "samples": 315,
+        "best": [
+          [
+            0.7567567567567568,
+            0,
+            15
+          ],
+          [
+            0.7432950191570882,
+            0,
+            14
+          ],
+          [
+            0.7307692307692307,
+            -3,
+            16
+          ]
+        ]
+      },
+      {
+        "quadrant": 3,
+        "samples": 524,
+        "best": [
+          [
+            0.755868544600939,
+            0,
+            15
+          ],
+          [
+            0.7183098591549296,
+            1,
+            15
+          ],
+          [
+            0.711943793911007,
+            0,
+            14
+          ]
+        ]
+      }
+    ]
+  }
+}

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -22,6 +23,7 @@ import {
 import { setupCdnProxy, WerhdBridge } from '@ra2c/game-werhd'
 import { dismissStartupDialogs } from './auto-import.ts'
 import { startStaticServer } from './static-server.ts'
+import { combatOptions, productionOptions } from './command-options.ts'
 
 // import.meta.dirname = apps/companion/src，仓库根需上溯三级。
 const ROOT = resolve(import.meta.dirname, '../../..')
@@ -94,11 +96,11 @@ function usage(): string {
     '  providers              列出已配置的云模型',
     '  form create <名> <tanks|infantry|vehicles|all> [--force]  建编队（冲突不静默抢占）',
     '  form list / form transfer <ids> <名> / form dissolve <名>',
-    '  task new <id> [@编队] <命令>  编译并部署战斗任务（@编队 绑定编队，否则当前全部车辆/步兵）',
+    '  task new <id> [@编队] --region=x1,y1,x2,y2 [--mode=hold|move|assault] [--retreat=0.6,x,y] <命令>',
     '  task list              任务与运行状态',
     '  task stop <id>         立即撤权停止任务',
     '  task pause <id> / task resume <id>',
-    '  produce <目标建筑或单位名>  生产任务（自动计算必要前置闭包，授权仅限闭包内）',
+    '  produce <目标名> [数量=1] [--pause-queues=0,2] [指令]  限量生产（前置各一次，缺省无队列权限）',
     '  prod                   显示生产状态（电力/队列/可造）',
     '  model <名称>           切换编译用的云模型',
     '  shot                   截图到 .runtime/shots/',
@@ -259,93 +261,84 @@ async function handleCommand(line: string, ctx: CommandContext): Promise<string>
     }
     case 'produce': {
       const target = args[0]
-      if (!target) return '用法: produce <目标名> [附加指令]（如 produce MTNK 暂停步兵队列优先坦克）'
+      if (!target || !/^[A-Za-z0-9_]+$/.test(target)) return '用法: produce <目标名> [数量] [--pause-queues=0,2] [指令]'
+      const options = productionOptions(args.slice(1))
       const snap = bridge.latest
       if (!snap?.production) return '尚无生产数据（未进局）'
-      // 固定程序计算必要前置闭包（模型不参与）。
-      const closure = await computePrerequisiteClosure(
-        target,
-        {
+      const id = `prod-${target}-${randomUUID().slice(0, 8)}`
+      const lease = ctx.runtime.beginCommand(id, snap)
+      console.log(`[companion] 准备生产任务 ${id}（task stop ${id} 可取消）`)
+      try {
+        const closure = await computePrerequisiteClosure(target, {
           prerequisites: async (name: string) => {
-            // 建筑外也可能是车辆/步兵/空军目标，按类型探测规则。
             for (const type of [2, 7, 3, 1]) {
+              lease.signal.throwIfAborted()
               const r = (await bridge.rules(name, type)) as { prerequisite?: string[] } | undefined | null
               if (r?.prerequisite) return r.prerequisite
             }
             return undefined
           },
-          available: async () => bridge.latest?.production?.available ?? [],
-        },
-        snap.self,
-      )
-      if (closure.unknown.length) {
-        return `规则查询失败（名称可能无效）: ${closure.unknown.join(',')}；用 prod 查看可造清单`
-      }
-      const list = [...closure.toBuild, closure.target]
-      console.log(`[companion] 必要前置闭包: ${list.join(' → ')}${closure.toBuild.length ? '' : '（已有全部前置）'}`)
-      const provider = ctx.currentProvider()
-      console.log(`[companion] 编译中：${provider.config.name} …`)
-      const input: CompileInput = {
-        rawText: `尽快完成生产目标 ${target}${args.length > 1 ? `；${args.slice(1).join(' ')}` : ''}`,
-        binding: { unitIds: [], production: { target, closure: closure.toBuild } },
-        snapshot: snap,
-      }
-      const outcome = await compileCommand(provider, input, ctx.executor)
-      const spec: TaskSpec = {
-        id: `prod-${target}-${Date.now() % 10000}`,
-        rawText: `生产 ${target}`,
-        unitIds: [],
-        originalMembers: [],
-        allowedProduce: list,
-      }
-      ctx.compileInputs.set(spec.id, input)
-      ctx.runtime.deploy(spec, outcome.code)
-      return `生产任务 ${spec.id} 已部署（授权仅限: ${list.join(',')}）`
+          available: async () => snap.production?.available ?? [],
+        }, snap.self)
+        lease.signal.throwIfAborted()
+        if (closure.unknown.length) return `规则查询失败: ${closure.unknown.join(',')}；用 prod 查看可造清单`
+        const list = [...closure.toBuild, closure.target]
+        const limits = Object.fromEntries([...closure.toBuild.map(name => [name, 1]), [target, options.quantity]])
+        const input: CompileInput = {
+          rawText: `生产 ${options.quantity} 个 ${target}；${options.text}`,
+          binding: { unitIds: [], production: { target, closure: closure.toBuild, quantity: options.quantity, queues: options.queues } },
+          snapshot: snap,
+        }
+        const spec: TaskSpec = { id, rawText: input.rawText, unitIds: [], originalMembers: [], allowedProduce: list, produceLimits: limits, allowedQueueTypes: options.queues }
+        console.log(`[companion] 授权生产 ${JSON.stringify(limits)}，可暂停队列 ${options.queues.join(',') || '无'}；编译中…`)
+        const outcome = await compileCommand(ctx.currentProvider(), input, ctx.executor, { signal: lease.signal })
+        if (!ctx.runtime.commitCommand(lease, spec, outcome.code)) return `任务 ${id} 的编译结果已失效`
+        ctx.compileInputs.set(id, input)
+        ctx.repairCounts.delete(id)
+        return `生产任务 ${id} 已部署（累计额度: ${JSON.stringify(limits)}）`
+      } finally { ctx.runtime.releaseCommand(lease) }
     }
     case 'task': {
       const sub = args[0]
       if (sub === 'new') {
         const id = args[1]
         const rest = args.slice(2)
-        const formationId = rest[0]?.startsWith('@') ? rest[0]!.slice(1) : undefined
-        const text = (formationId ? rest.slice(1) : rest).join(' ')
-        if (!id || !text) return '用法: task new <id> [@编队] <命令文本>'
+        const formationId = rest[0]?.startsWith('@') ? rest.shift()!.slice(1) : undefined
+        if (!id) return '用法: task new <id> [@编队] --region=x1,y1,x2,y2 <命令>'
         const snap = bridge.latest
         if (!snap) return '尚无快照：请先进入对局'
-        let unitIds: number[]
-        let originalMembers: number[]
-        if (formationId) {
-          unitIds = ctx.formations.membersOf(formationId)
-          originalMembers = ctx.formations.originalOf(formationId)
-          if (!unitIds.length) return `编队 "${formationId}" 不存在或无成员（form list 查看）`
-        } else {
-          const units = snap.self.filter((u) => u.type === 3 || u.type === 7)
-          if (!units.length) return '当前没有可绑定的车辆/步兵单位'
-          unitIds = units.map((u) => u.id)
-          originalMembers = unitIds
-        }
-        const provider = ctx.currentProvider()
-        console.log(`[companion] 编译中：${provider.config.name} 绑定 ${unitIds.length} 个单位${formationId ? `（编队 ${formationId}）` : ''}…`)
-        // 形态转换映射（rules.deploysInto 预查）：展开/转换不算阵亡的口径依据。
-        const transforms: Record<string, string> = {}
-        for (const name of new Set(units0names(snap, unitIds))) {
-          const r = (await bridge.rules(name, 7)) as { deploysInto?: string } | undefined | null
-          if (r?.deploysInto) transforms[name] = r.deploysInto
-        }
-        const input: CompileInput = {
-          rawText: text,
-          binding: { unitIds, ...(Object.keys(transforms).length ? { transforms } : {}) },
-          snapshot: snap,
-        }
-        const outcome = await compileCommand(provider, input, ctx.executor)
-        const spec: TaskSpec = { id, rawText: text, unitIds, originalMembers, ...(formationId ? { formationId } : {}) }
-        ctx.compileInputs.set(id, input)
-        ctx.runtime.deploy(spec, outcome.code)
-        const last = outcome.log[outcome.log.length - 1]!
-        return `任务 ${id} 已部署（v1，${outcome.attempts} 轮编译，${last.model} ${last.durationMs}ms）`
+        const options = combatOptions(rest, snap)
+        const ids = formationId ? ctx.formations.membersOf(formationId) : snap.self.filter(u => (u.type === 3 || u.type === 7) && !ctx.formations.ownerOf(u.id)).map(u => u.id)
+        const unitIds = ids.filter(id => snap.self.some(u => u.id === id))
+        if (!unitIds.length) return '没有可绑定的存活成员；已有编队请使用 @编队名'
+        const lease = ctx.runtime.beginCommand(id, snap, false, unitIds)
+        try {
+          const transforms: Record<string, string> = {}
+          for (const name of units0names(snap, unitIds)) {
+            for (const type of [7, 2, 3]) {
+              lease.signal.throwIfAborted()
+              const r = (await bridge.rules(name, type)) as { deploysInto?: string; undeploysInto?: string } | undefined | null
+              const into = r?.deploysInto ?? r?.undeploysInto
+              if (into) { transforms[name] = into; transforms[into] = name; break }
+            }
+          }
+          const originalMembers = [...unitIds]
+          const spec: TaskSpec = { id, rawText: options.text, unitIds, originalMembers, region: options.region, allowedActions: options.allowedActions, transforms, ...(options.retreat ? { retreat: options.retreat } : {}), ...(formationId ? { formationId } : {}) }
+          const input: CompileInput = {
+            rawText: options.text,
+            binding: { unitIds, originalMembers, region: options.region, allowedActions: options.allowedActions, transforms, ...(options.retreat ? { retreat: options.retreat } : {}) }, snapshot: snap,
+          }
+          console.log(`[companion] 任务 ${id} 授权 ${unitIds.length} 个单位，地域 ${JSON.stringify(options.region)}，回撤 ${JSON.stringify(options.retreat ?? '未授权')}；编译中…`)
+          const outcome = await compileCommand(ctx.currentProvider(), input, ctx.executor, { signal: lease.signal })
+          if (!ctx.runtime.commitCommand(lease, spec, outcome.code)) return `任务 ${id} 的编译结果已失效`
+          ctx.compileInputs.set(id, input)
+          ctx.repairCounts.delete(id)
+          return `任务 ${id} 已部署（v${ctx.runtime.tasks.get(id)!.script!.version}，${outcome.attempts} 轮编译）`
+        } finally { ctx.runtime.releaseCommand(lease) }
       }
       if (sub === 'list') {
         const lines: string[] = []
+        for (const id of ctx.runtime.pendingCommandIds()) lines.push(`  ${id} [compiling]（task stop ${id} 可取消）`)
         for (const t of ctx.runtime.tasks.values()) {
           const s = t.stats
           // 编队任务显示动态成员数（转编后授权实时收窄）。
@@ -392,6 +385,7 @@ async function handleCommand(line: string, ctx: CommandContext): Promise<string>
     case 'stop': {
       const ids = parseIds(args[0] ?? '', bridge.latest)
       if (!ids?.length) return '用法: stop <ids|all>'
+      await ctx.runtime.stopUnits(ids)
       return JSON.stringify(await bridge.submit({ kind: 'stop', unitIds: ids }))
     }
     case 'shot': {
@@ -443,7 +437,7 @@ async function main(): Promise<void> {
   console.log('[companion] 浏览器常驻模式（CDP）：companion 重启不再关闭对局')
   // 游戏 CDN 对本地 origin 无 CORS 头，经 Node 侧转发并补头；资源随后缓存进 profile。
   await setupCdnProxy(context)
-  const bridge = new WerhdBridge(context)
+  const bridge = new WerhdBridge(context, server.url)
   await bridge.install()
 
   // M2/M3：任务运行时（执行器 + 批量提交通道 + 编队注册表 + 同授权修复）。
@@ -454,12 +448,16 @@ async function main(): Promise<void> {
   const runtime = new TaskRuntime({
     executor,
     formations,
-    submit: async (actions) => {
+    submit: async (actions, context, guard) => {
       const results = []
-      for (const a of actions) results.push(await bridge.submit(a))
+      for (const a of actions) {
+        if (!guard()) break
+        results.push(await bridge.submit(a, context, guard))
+      }
       return results
     },
     onTaskFaulted: (taskId) => {
+      if (runtime.hasPendingCommand(taskId)) return
       const input = compileInputs.get(taskId)
       const count = (repairCounts.get(taskId) ?? 0) + 1
       repairCounts.set(taskId, count)
@@ -468,20 +466,22 @@ async function main(): Promise<void> {
         return
       }
       console.log(`[companion] 任务 ${taskId} 第 ${count} 次同授权修复编译…`)
+      const snap = bridge.latest
+      if (!snap) return
+      const lease = runtime.beginCommand(taskId, snap, true)
       void (async () => {
         try {
           const provider = providers.values().next().value
           if (!provider) return
-          const out = await compileCommand(provider, input, executor)
-          // 保留原 spec（含编队/生产授权），仅替换代码。
-          const task = runtime.tasks.get(taskId)
-          if (!task) return
-          runtime.deploy(task.spec, out.code)
-          runtime.resume(taskId)
-          console.log(`[companion] 任务 ${taskId} 修复完成并恢复（v${task.script ? task.script.version + 1 : 1}）`)
+          const task = lease.repairTask!
+          const repairedInput = { ...input, snapshot: snap, diagnostic: { code: task.script!.code, error: task.stats.lastError ?? '任务运行失败' } }
+          const out = await compileCommand(provider, repairedInput, executor, { signal: lease.signal })
+          if (runtime.commitCommand(lease, lease.repairTask!.spec, out.code)) {
+            console.log(`[companion] 任务 ${taskId} 修复完成并恢复`)
+          }
         } catch (err) {
-          console.log(`[companion] 任务 ${taskId} 修复失败: ${String(err).slice(0, 120)}`)
-        }
+          if (!lease.signal.aborted) console.log(`[companion] 任务 ${taskId} 修复失败: ${String(err).slice(0, 120)}`)
+        } finally { runtime.releaseCommand(lease) }
       })()
     },
     log: (msg) => console.log(msg),
@@ -505,8 +505,8 @@ async function main(): Promise<void> {
     lastSession = state.session
     const restored = restoreState(runtime, formations, state)
     console.log(`[companion] 已恢复 ${restored} 个任务、${state.formations.length} 个编队（对局代次 ${state.session}）`)
-  } catch {
-    // 无状态文件（首次运行）。
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.log(`[companion] 未恢复旧状态: ${String(err).slice(0, 160)}`)
   }
   setInterval(() => {
     if (stateDirty) {
@@ -565,11 +565,13 @@ async function main(): Promise<void> {
   }
   let running = true
   const runLine = async (line: string): Promise<string> => {
+    if (!running) return '程序正在退出'
     const out = await handleCommand(line, ctx)
     markDirty() // 命令可能改变了任务/编队状态
     if (out === '__QUIT__' || out === '__QUIT_HARD__') {
       hardQuit = out === '__QUIT_HARD__'
       running = false
+      runtime.cancelAllCommands()
       saveState()
       return 'bye'
     }
@@ -579,19 +581,20 @@ async function main(): Promise<void> {
 
   // 命令通道：一行一命令，回显结果（自动化脚本与外部进程用）。
   const cmdServer = createServer((socket) => {
-    socket.on('data', async (buf) => {
-      for (const raw of buf.toString('utf8').split('\n')) {
+    let pendingText = ''
+    socket.setEncoding('utf8')
+    socket.on('data', (buf) => {
+      pendingText += buf
+      if (pendingText.length > 65_536) { socket.destroy(); return }
+      const lines = pendingText.split('\n')
+      pendingText = lines.pop() ?? ''
+      for (const raw of lines) {
         const line = raw.trim()
         if (!line) continue
-        try {
-          socket.write(`${await runLine(line)}\n`)
-        } catch (err) {
-          socket.write(`错误: ${String(err)}\n`)
-        }
-        if (!running) {
-          socket.end()
-          return
-        }
+        void runLine(line).then(out => {
+          if (!socket.destroyed) socket.write(`${out}\n`)
+          if (!running) socket.end()
+        }).catch(err => { if (!socket.destroyed) socket.write(`错误: ${String(err)}\n`) })
       }
     })
     socket.on('error', () => {})
@@ -608,15 +611,18 @@ async function main(): Promise<void> {
   // 本地终端入口（后台运行无 TTY 时跳过）。
   if (process.stdin.isTTY) {
     const rl = createInterface({ input, output })
-    while (running) {
-      const line = (await rl.question('ra2c> ')).trim()
-      if (!line) continue
-      try {
-        console.log(await runLine(line))
-      } catch (err) {
-        console.error(`错误: ${String(err)}`)
-      }
-    }
+    rl.setPrompt('ra2c> ')
+    rl.prompt()
+    await new Promise<void>(resolve => {
+      rl.on('line', line => {
+        if (!line.trim()) { rl.prompt(); return }
+        void runLine(line.trim()).then(out => {
+          console.log(out)
+          if (!running) { rl.close(); resolve() } else rl.prompt()
+        }).catch(err => { console.error(`错误: ${String(err)}`); rl.prompt() })
+      })
+      rl.on('close', resolve)
+    })
     rl.close()
   } else {
     await new Promise<void>((res) => {
@@ -629,6 +635,7 @@ async function main(): Promise<void> {
     })
   }
 
+  runtime.cancelAllCommands()
   if (hardQuit) {
     const session = await browser.newBrowserCDPSession()
     await session.send('Browser.close').catch(() => {})

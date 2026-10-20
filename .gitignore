@@ -1,3 +1,6 @@
+# macOS
+.DS_Store
+
 # Logs
 logs
 *.log
@@ -150,3 +153,7 @@ vite.config.ts.timestamp-*
 
 # ra2commander 运行时数据（浏览器 profile、截图、日志）
 .runtime/
+
+# Offline map tools
+__pycache__/
+*.pyc

@@ -1,5 +1,5 @@
-import type { ActionRequest, ActionResult, Snapshot, StepConstraints } from '@ra2c/contracts'
-import { StepExecutor, codeHash } from '@ra2c/js-worker'
+import { validateActions, inRegion, type ActionRequest, type ActionResult, type ActionContext, type Snapshot, type StepConstraints, type Region } from '@ra2c/contracts'
+import { codeHash, type StepExecutor } from '@ra2c/js-worker'
 import { FormationRegistry } from './formation.ts'
 
 export { FormationRegistry } from './formation.ts'
@@ -9,253 +9,325 @@ export type { RulesLookup, PrerequisiteClosure } from './production.ts'
 export { persistState, restoreState } from './persist.ts'
 export type { PersistedState } from './persist.ts'
 
-export type TaskStatus = 'compiling' | 'active' | 'paused' | 'stopped' | 'replaced'
+export type TaskStatus = 'active' | 'paused' | 'stopped'
 
-/**
- * 生产队列账本：记录每个任务暂停过的队列。
- * 任务撤权/终结时只恢复"自己暂停的、且当前仍处于暂停态"的队列——
- * 后续命令改变过的不动（需求：结束后仅恢复它自己暂停且未被改变的队列）。
- */
 export class ProductionLedger {
-  private pausedBy = new Map<string, Set<number>>()
-
-  pause(taskId: string, queueType: number): void {
-    const s = this.pausedBy.get(taskId) ?? new Set<number>()
-    s.add(queueType)
-    this.pausedBy.set(taskId, s)
-  }
-
-  resume(taskId: string, queueType: number): void {
-    this.pausedBy.get(taskId)?.delete(queueType)
-  }
-
-  /** 取走该任务暂停过的队列（清账）；调用方按当前状态决定是否 resume。 */
+  private owner = new Map<number, string>()
+  pause(taskId: string, queue: number): void { this.owner.set(queue, taskId) }
+  resume(_taskId: string, queue: number): void { this.owner.delete(queue) }
   takePaused(taskId: string): number[] {
-    const s = [...(this.pausedBy.get(taskId) ?? [])]
-    this.pausedBy.delete(taskId)
-    return s
+    const queues = [...this.owner].filter(([, id]) => id === taskId).map(([q]) => q)
+    for (const q of queues) this.owner.delete(q)
+    return queues
   }
+  clear(): void { this.owner.clear() }
+  export(): Array<[number, string]> { return [...this.owner] }
+  restore(entries: Array<[number, string]>): void { this.owner = new Map(entries) }
+  pausedFor(taskId: string): number[] { return [...this.owner].filter(([, owner]) => owner === taskId).map(([q]) => q) }
 }
 
 export interface TaskSpec {
   id: string
-  /** 玩家原话。 */
   rawText: string
-  /** 授权操纵单位（战斗任务）。 */
   unitIds: number[]
-  /** 战损口径基准（任务生效时原始成员）。 */
   originalMembers: number[]
-  /** 授权地域（可选）。 */
-  region?: { name: string; x1: number; y1: number; x2: number; y2: number }
-  /** 绑定编队（可选）：成员随编队动态变化（转编自动收窄授权），优先于 unitIds。 */
+  region?: Region
   formationId?: string
-  /** 生产任务：可操作项目闭包（produce/cancel/place 授权名单）。 */
+  allowedActions?: ActionRequest['kind'][]
   allowedProduce?: string[]
+  produceLimits?: Record<string, number>
+  allowedQueueTypes?: number[]
+  retreat?: { lossAbove: number; x: number; y: number }
+  transforms?: Record<string, string>
 }
 
 export interface TaskState {
   spec: TaskSpec
   status: TaskStatus
+  generation: number
   script?: { code: string; version: number; hash: string }
   memory: unknown
-  stats: {
-    steps: number
-    actions: number
-    rejected: number
-    errors: number
-    lastError?: string | undefined
-    lastActionSig?: string | undefined
+  authority: {
+    produced: Record<string, number>
+    retreatTriggered: boolean
+    lossRatio: number
+    members: Array<{ id: number; name: string; rx: number; ry: number }>
   }
+  stats: { steps: number; actions: number; rejected: number; errors: number; lastError?: string | undefined; lastActionSig?: string | undefined }
+}
+
+export interface CommandLease {
+  readonly id: string
+  readonly session: number
+  readonly sessionKey: string
+  readonly signal: AbortSignal
+  readonly formationRevision: number
+  readonly unitIds: readonly number[]
+  readonly repairTask?: TaskState
 }
 
 export interface RuntimeDeps {
-  executor: StepExecutor
-  /** 动作提交通道（经桥，带会话与存活复查）。 */
-  submit: (actions: ActionRequest[]) => Promise<ActionResult[]>
-  /** 编队注册表（可选；任务绑定编队时用于动态成员）。 */
+  executor: Pick<StepExecutor, 'run'>
+  /** guard 在每次向浏览器发送前同步调用，避免批次中间撤权后继续发送。 */
+  submit: (actions: ActionRequest[], context: ActionContext, guard: () => boolean) => Promise<ActionResult[]>
   formations?: FormationRegistry
-  /** 任务因连续失败暂停时的回调（用于触发同授权修复）。 */
   onTaskFaulted?: (taskId: string) => void
   log?: (msg: string) => void
 }
 
-const MAX_CONSECUTIVE_ERRORS = 3
-
-/**
- * 任务运行时：管理每条命令的任务（版本、成员、授权、故障隔离），
- * 由最新快照驱动各任务脚本步进。云生成等待期间已有任务继续运行。
- */
 export class TaskRuntime {
   private session = -1
+  private sessionKey = ''
+  private retiredSessions = new Set<string>()
+  private lastSnapshot?: Snapshot
+  private draining?: Promise<void> | undefined
+  private pending = new Map<string, { lease: CommandLease; abort: AbortController }>()
   readonly tasks = new Map<string, TaskState>()
-  /** 生产队列账本：谁暂停的谁负责恢复。 */
   readonly ledger = new ProductionLedger()
 
   constructor(private readonly deps: RuntimeDeps) {}
 
-  /** 部署脚本：新任务或普通改令的原子版本切换（就绪后替换，等待期旧任务继续）。 */
-  deploy(spec: TaskSpec, code: string): void {
-    const existing = this.tasks.get(spec.id)
-    const version = existing ? (existing.script?.version ?? 0) + 1 : 1
-    this.tasks.set(spec.id, {
-      spec,
-      status: 'active',
-      script: { code, version, hash: codeHash(code) },
-      memory: {},
-      stats: { steps: 0, actions: 0, rejected: 0, errors: 0 },
-    })
-    this.deps.log?.(
-      `[runtime] 任务 ${spec.id} v${version} 部署（${spec.unitIds.length} 单位）「${spec.rawText}」`,
-    )
+  get battleKey(): string { return this.sessionKey }
+
+  beginCommand(id: string, context: ActionContext, repair = false, unitIds?: number[]): CommandLease {
+    if (context.session !== this.session || context.sessionKey !== this.sessionKey) throw new Error('命令所属对局已失效')
+    this.cancelCommand(id)
+    const abort = new AbortController()
+    const task = this.tasks.get(id)
+    if (repair && (!task || task.status !== 'paused')) throw new Error('任务不处于故障暂停态')
+    const lease: CommandLease = { id, session: context.session, sessionKey: context.sessionKey, signal: abort.signal, unitIds: [...(unitIds ?? task?.spec.unitIds ?? [])], formationRevision: this.deps.formations?.revision ?? 0, ...(repair && task ? { repairTask: task } : {}) }
+    this.pending.set(id, { lease, abort })
+    return lease
   }
 
-  /** 停止/禁止类命令：立即撤权并尝试停住其单位；后续动作一律拒绝。恢复其暂停过的队列。 */
+  cancelCommand(id: string): void {
+    this.pending.get(id)?.abort.abort()
+    this.pending.delete(id)
+  }
+
+  releaseCommand(lease: CommandLease): void {
+    if (this.pending.get(lease.id)?.lease === lease) this.cancelCommand(lease.id)
+  }
+
+  cancelAllCommands(): void {
+    for (const id of this.pending.keys()) this.cancelCommand(id)
+  }
+
+  hasPendingCommand(id: string): boolean { return this.pending.has(id) }
+  pendingCommandIds(): string[] { return [...this.pending.keys()] }
+
+  async stopUnits(unitIds: number[]): Promise<void> {
+    const selected = new Set(unitIds)
+    for (const { lease } of this.pending.values()) {
+      if (lease.unitIds.some(id => selected.has(id))) this.cancelCommand(lease.id)
+    }
+    // 同步撤销所有相关任务，再异步等待停车回执。
+    const stops = [...this.tasks.values()].filter(task => task.status !== 'stopped' && this.boundIds(task).some(id => selected.has(id))).map(task => this.stop(task.spec.id))
+    await Promise.all(stops)
+  }
+
+  commitCommand(lease: CommandLease, spec: TaskSpec, code: string): boolean {
+    if (this.pending.get(lease.id)?.lease !== lease || lease.signal.aborted || lease.session !== this.session || lease.sessionKey !== this.sessionKey || spec.id !== lease.id || lease.formationRevision !== (this.deps.formations?.revision ?? 0)) return false
+    if (lease.repairTask && (this.tasks.get(lease.id) !== lease.repairTask || lease.repairTask.status !== 'paused')) return false
+    const previous = lease.repairTask
+    const currentSpec = previous?.spec ?? { ...spec, originalMembers: spec.originalMembers.filter(id => this.lastSnapshot?.self.some(u => u.id === id)) }
+    this.deploy(currentSpec, code)
+    if (previous) {
+      const task = this.tasks.get(spec.id)!
+      task.authority = previous.authority
+      // 修复沿用战损、回撤阶段与生产累计额度，memory 交给新脚本重新观测。
+    }
+    return true
+  }
+
+  deploy(spec: TaskSpec, code: string): void {
+    if (spec.unitIds.length && !spec.region) throw new Error('战斗任务必须显式绑定授权地域')
+    const snap = this.lastSnapshot
+    const point = (x: number, y: number) => Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && (!snap || (x < snap.mapWidth && y < snap.mapHeight))
+    if (spec.region && (!point(spec.region.x1, spec.region.y1) || !point(spec.region.x2, spec.region.y2) || spec.region.x1 > spec.region.x2 || spec.region.y1 > spec.region.y2)) throw new Error('授权地域非法')
+    if (spec.retreat && !point(spec.retreat.x, spec.retreat.y)) throw new Error('回撤地点非法')
+    if (spec.retreat && (!spec.region || spec.retreat.lossAbove < 0 || spec.retreat.lossAbove >= 1 || !Number.isFinite(spec.retreat.lossAbove))) throw new Error('回撤条件非法')
+    if (Object.values(spec.produceLimits ?? {}).some(n => !Number.isSafeInteger(n) || n < 0)) throw new Error('生产额度非法')
+    for (const other of this.tasks.values()) {
+      if (other.spec.id !== spec.id && other.status !== 'stopped' && this.boundIds(other).some(id => spec.unitIds.includes(id))) throw new Error(`单位已被任务 ${other.spec.id} 授权占用，请先停止或明确转编`)
+    }
+    const existing = this.tasks.get(spec.id)
+    if (existing) existing.status = 'stopped'
+    this.cancelCommand(spec.id)
+    const snapshot = this.lastSnapshot
+    const version = (existing?.script?.version ?? 0) + 1
+    this.tasks.set(spec.id, {
+      spec: structuredClone(spec), status: 'active', generation: 0, script: { code, version, hash: codeHash(code) }, memory: {},
+      authority: { produced: Object.create(null) as Record<string, number>, retreatTriggered: false, lossRatio: 0, members: spec.originalMembers.map(id => {
+        const u = snapshot?.self.find(u => u.id === id)
+        return { id, name: u?.name ?? '', rx: u?.rx ?? 0, ry: u?.ry ?? 0 }
+      }) },
+      stats: { steps: 0, actions: 0, rejected: 0, errors: 0 },
+    })
+    this.deps.log?.(`[runtime] 任务 ${spec.id} v${version} 部署「${spec.rawText}」`)
+  }
+
+  private boundIds(task: TaskState): number[] {
+    return task.spec.formationId
+      ? this.deps.formations?.membersOf(task.spec.formationId) ?? []
+      : task.spec.unitIds.filter(id => !this.deps.formations?.ownerOf(id))
+  }
+
   async stop(id: string): Promise<void> {
+    this.cancelCommand(id)
     const task = this.tasks.get(id)
     if (!task) return
     task.status = 'stopped'
-    const alive = this.lastSnapshot
-      ? task.spec.unitIds.filter((uid) => this.lastSnapshot!.self.some((u) => u.id === uid))
-      : task.spec.unitIds
-    if (alive.length) await this.deps.submit([{ kind: 'stop', unitIds: alive }])
-    await this.restorePausedQueues(id)
-    this.deps.log?.(`[runtime] 任务 ${id} 已撤权停止`)
-  }
-
-  /** 只恢复本任务暂停过、且当前仍处于 OnHold(2) 的队列（未被后续命令改变的不动）。 */
-  private async restorePausedQueues(id: string): Promise<void> {
-    const paused = this.ledger.takePaused(id)
-    if (!paused.length || !this.lastSnapshot) return
-    const queues = this.lastSnapshot.production?.queues ?? []
-    for (const queueType of paused) {
-      const q = queues.find((x) => x.type === queueType)
-      if (q && q.status === 2) {
-        await this.deps.submit([{ kind: 'resumeQueue', queueType }])
-        this.deps.log?.(`[runtime] 任务 ${id} 结束，恢复其暂停的队列 type${queueType}`)
+    task.generation++
+    const snap = this.lastSnapshot
+    if (!snap) return
+    const alive = this.boundIds(task).filter(id => snap.self.some(u => u.id === id))
+    const guard = () => this.tasks.get(id) === task && task.status === 'stopped' && this.sessionKey === snap.sessionKey
+    if (alive.length) await this.deps.submit([{ kind: 'stop', unitIds: alive }], snap, guard)
+    for (const queueType of this.ledger.takePaused(id)) {
+      const latest = this.lastSnapshot
+      if (latest?.production?.queues.some(q => q.type === queueType && q.status === 2) && guard()) {
+        await this.deps.submit([{ kind: 'resumeQueue', queueType }], latest, guard)
       }
     }
   }
 
   pause(id: string): void {
-    const t = this.tasks.get(id)
-    if (t && t.status === 'active') t.status = 'paused'
+    this.cancelCommand(id)
+    const task = this.tasks.get(id)
+    if (task?.status === 'active') { task.status = 'paused'; task.generation++ }
   }
 
   resume(id: string): void {
-    const t = this.tasks.get(id)
-    if (t && t.status === 'paused') {
-      t.status = 'active'
-      t.stats.errors = 0
-    }
+    this.cancelCommand(id)
+    const task = this.tasks.get(id)
+    if (task?.status === 'paused') { task.status = 'active'; task.stats.errors = 0; task.generation++ }
   }
 
-  private lastSnapshot?: Snapshot
+  adoptSession(session: number, sessionKey: string): void { this.session = session; this.sessionKey = sessionKey }
 
-  /**
-   * 恢复持久化状态时同时采纳当时的对局代次：
-   * 恢复后第一个快照若与该代次不符，按换局处理（旧任务全部终结），
-   * 避免旧局任务在新局复活（跨局状态不复用）。
-   */
-  adoptSession(session: number): void {
-    this.session = session
-  }
-
-  /** 快照入口：会话变化使旧任务全部失效；驱动各 active 任务步进。 */
   async onSnapshot(snap: Snapshot): Promise<void> {
-    if (snap.session !== this.session) {
-      const old = this.session
-      this.session = snap.session
-      this.lastSnapshot = snap
-      if (old >= 0) {
-        for (const t of this.tasks.values()) t.status = 'stopped'
-        this.deps.log?.(`[runtime] 对局会话 ${old} → ${snap.session}，旧任务全部失效`)
+    if (this.retiredSessions.has(snap.sessionKey)) return
+    if (snap.sessionKey !== this.sessionKey) {
+      if (this.sessionKey) {
+        this.retiredSessions.add(this.sessionKey)
+        for (const id of this.pending.keys()) this.cancelCommand(id)
+        for (const task of this.tasks.values()) task.status = 'stopped'
+        this.deps.formations?.clear()
+        this.ledger.clear()
       }
-      return
-    }
+      this.session = snap.session
+      this.sessionKey = snap.sessionKey
+    } else if (this.lastSnapshot && snap.seq <= this.lastSnapshot.seq) return
     this.lastSnapshot = snap
+    // 最新快照替换待处理状态，不并行推进同一份 task.memory。
+    if (!this.draining) {
+      this.draining = this.drain().finally(() => { this.draining = undefined })
+    }
+    await this.draining
+  }
 
-    for (const task of this.tasks.values()) {
-      if (task.status !== 'active' || !task.script) continue
-      await this.step(task, snap)
+  private async drain(): Promise<void> {
+    let consumed: Snapshot | undefined
+    while (this.lastSnapshot && consumed !== this.lastSnapshot) {
+      const snap = this.lastSnapshot
+      consumed = snap
+      for (const task of this.tasks.values()) {
+        if (this.lastSnapshot !== snap) break
+        if (task.status === 'active' && task.script) await this.step(task, snap)
+      }
+    }
+  }
+
+  private constraints(task: TaskState, snap: Snapshot): StepConstraints {
+    const occupied = new Set(task.authority.members.map(m => m.id))
+    let dead = 0
+    for (const member of task.authority.members) {
+      let unit = snap.self.find(u => u.id === member.id)
+      if (!unit) {
+        const form = task.spec.transforms?.[member.name]
+        unit = form ? snap.self.find(u => u.name === form && !occupied.has(u.id) && Math.hypot(u.rx - member.rx, u.ry - member.ry) <= 2) : undefined
+        if (unit) { occupied.add(unit.id); member.id = unit.id }
+      }
+      if (unit) { member.name = unit.name; member.rx = unit.rx; member.ry = unit.ry } else dead++
+    }
+    const retreat = task.spec.retreat
+    task.authority.lossRatio = task.authority.members.length ? dead / task.authority.members.length : 0
+    if (retreat && task.authority.lossRatio > retreat.lossAbove) task.authority.retreatTriggered = true
+    const remaining = Object.fromEntries(Object.entries(task.spec.produceLimits ?? {}).map(([name, limit]) => [name, Math.max(0, limit - (Object.hasOwn(task.authority.produced, name) ? task.authority.produced[name]! : 0))]))
+    return {
+      allowedUnitIds: this.boundIds(task).filter(id => snap.self.some(u => u.id === id)),
+      enemyIds: snap.enemies.map(u => u.id), mapWidth: snap.mapWidth, mapHeight: snap.mapHeight,
+      allowedProduce: task.spec.allowedProduce ?? [], produceRemaining: remaining,
+      allowedQueueTypes: task.spec.allowedQueueTypes ?? [], allowedActions: task.spec.allowedActions ?? [],
+      resumableQueueTypes: this.ledger.pausedFor(task.spec.id),
+      ...(task.spec.region ? { region: task.spec.region } : {}),
+      ...(retreat ? { retreat: { x: retreat.x, y: retreat.y, active: task.authority.retreatTriggered } } : {}),
     }
   }
 
   private async step(task: TaskState, snap: Snapshot): Promise<void> {
-    const script = task.script
-    if (!script) return
-    const aliveSelf = new Set(snap.self.map((u) => u.id))
-    // 编队任务：成员动态取自注册表（转编后旧任务授权自动收窄）。
-    const boundIds = task.spec.formationId
-      ? (this.deps.formations?.membersOf(task.spec.formationId) ?? task.spec.unitIds)
-      : task.spec.unitIds
-    const constraints: StepConstraints = {
-      allowedUnitIds: boundIds.filter((uid) => aliveSelf.has(uid)),
-      enemyIds: snap.enemies.map((u) => u.id),
-      mapWidth: snap.mapWidth,
-      mapHeight: snap.mapHeight,
-      ...(task.spec.allowedProduce ? { allowedProduce: task.spec.allowedProduce } : {}),
+    const script = task.script!
+    const generation = task.generation
+    const formationRevision = this.deps.formations?.revision ?? 0
+    const authorized = () => this.tasks.get(task.spec.id) === task && task.status === 'active' && task.generation === generation && task.script === script && this.sessionKey === snap.sessionKey
+    const valid = () => authorized() && this.lastSnapshot === snap && formationRevision === (this.deps.formations?.revision ?? 0)
+    const constraints = this.constraints(task, snap)
+    if (task.spec.unitIds.length && !constraints.allowedUnitIds.length) { task.status = 'stopped'; return }
+    // 纠正原生 Attack/Gather 造成的地域偏移，不依赖生成脚本主动上报。
+    if (task.spec.region && !task.authority.retreatTriggered) {
+      const region = task.spec.region
+      const outside = snap.self.filter(u => constraints.allowedUnitIds.includes(u.id) && !inRegion(u.rx, u.ry, region))
+      if (outside.length) {
+        const actions: ActionRequest[] = [{ kind: 'stop', unitIds: outside.map(u => u.id) }, ...outside.map(u => ({ kind: 'move' as const, unitIds: [u.id], x: Math.max(region.x1, Math.min(region.x2, u.rx)), y: Math.max(region.y1, Math.min(region.y2, u.ry)) }))]
+        await this.deps.submit(actions, snap, valid)
+        this.deps.log?.(`[runtime] 任务 ${task.spec.id} 纠正 ${outside.length} 个单位的地域偏移`)
+        return
+      }
     }
-    // 战斗任务全灭：自然结束（生产任务无单位，不适用）。
-    if (boundIds.length && !constraints.allowedUnitIds.length) {
-      task.status = 'stopped'
-      this.deps.log?.(`[runtime] 任务 ${task.spec.id} 无存活成员，结束`)
-      return
-    }
-
-    const outcome = await this.deps.executor.run(
-      script.code,
-      snap,
-      task.memory,
-      constraints,
-    )
+    const input = { ...snap, execution: { retreatActive: task.authority.retreatTriggered, lossRatio: task.authority.lossRatio, produceRemaining: constraints.produceRemaining ?? {} } }
+    const outcome = await this.deps.executor.run(script.code, input, task.memory, constraints)
+    if (!valid()) return
     task.stats.steps++
-
-    if (!outcome.ok) {
+    // 执行器的返回值不携带权限；宿主使用最新归属再次验证。
+    const error = outcome.ok ? validateActions(outcome.actions, this.constraints(task, snap), snap) : outcome.error ?? '执行失败'
+    if (error) {
+      task.stats.lastError = error
       task.stats.errors++
-      task.stats.lastError = outcome.error
-      this.deps.log?.(`[runtime] 任务 ${task.spec.id} step 失败(${task.stats.errors}): ${outcome.error}`)
-      if (task.stats.errors >= MAX_CONSECUTIVE_ERRORS) {
+      if (task.stats.errors >= 3) {
         task.status = 'paused'
-        if (constraints.allowedUnitIds.length) {
-          await this.deps.submit([{ kind: 'stop', unitIds: constraints.allowedUnitIds }])
-        }
-        this.deps.log?.(`[runtime] 任务 ${task.spec.id} 连续失败，暂停（触发同授权修复）`)
-        this.deps.onTaskFaulted?.(task.spec.id)
+        task.generation++
+        const alive = this.constraints(task, snap).allowedUnitIds
+        if (alive.length) await this.deps.submit([{ kind: 'stop', unitIds: alive }], snap, () => this.tasks.get(task.spec.id) === task && task.status === 'paused' && this.sessionKey === snap.sessionKey)
+        if (this.tasks.get(task.spec.id) === task && task.status === 'paused' && this.sessionKey === snap.sessionKey && !this.hasPendingCommand(task.spec.id)) this.deps.onTaskFaulted?.(task.spec.id)
       }
       return
     }
-
     task.stats.errors = 0
-    task.memory = outcome.memory
-
-    // 相同订单节流：本轮动作包签名与上次完全相同则不重发（重新选敌/改目标会破签名，不受影响）。
-    // 生产动作不节流：队列被玩家取消/回收后脚本需要重新下单，"重复"是合法且必要的。
-    const combatActions = outcome.actions.filter((a) => 'unitIds' in a)
-    const sig = combatActions.map(actionSignature).join('|')
-    if (sig && sig === task.stats.lastActionSig && combatActions.length === outcome.actions.length) return
-    task.stats.lastActionSig = sig
-
-    if (!outcome.actions.length) return
-    // 生产队列操作记账（撤权/终结时只恢复自己暂停的）。
-    for (const a of outcome.actions) {
-      if (a.kind === 'pauseQueue') this.ledger.pause(task.spec.id, a.queueType)
-      else if (a.kind === 'resumeQueue') this.ledger.resume(task.spec.id, a.queueType)
+    for (const action of outcome.actions) {
+      if (!valid()) return
+      const fresh = this.constraints(task, snap)
+      const denied = validateActions([action], fresh, snap)
+      if (denied) { task.stats.rejected++; task.stats.lastError = denied; return }
+      // 发送前保留额度。静默拒绝/断连不自动退款，防止不确定结果造成超造。
+      const before = action.kind === 'produce' && Object.hasOwn(task.authority.produced, action.name) ? task.authority.produced[action.name]! : 0
+      if (action.kind === 'produce') Object.defineProperty(task.authority.produced, action.name, { value: before + action.quantity, writable: true, enumerable: true, configurable: true })
+      let results: ActionResult[]
+      try { results = await this.deps.submit([action], snap, valid) }
+      catch (err) { task.stats.rejected++; task.stats.lastError = `提交结果不确定: ${String(err).slice(0, 100)}`; return }
+      if (!results.length || results.some(r => !r.ok)) {
+        const notSent = !results.length || results.every(r => !r.ok && r.submitted === 0 && ['stale-session', 'stale-snapshot', 'revoked-or-no-snapshot', 'no-api'].includes(r.reason ?? ''))
+        if (action.kind === 'produce' && notSent) task.authority.produced[action.name] = before
+        task.stats.rejected++
+        task.stats.lastError = notSent ? `动作未发送: ${results[0]?.reason ?? '已撤权'}` : '提交结果不确定，保留生产额度防止超造'
+        this.deps.log?.(`[runtime] 任务 ${task.spec.id} ${task.stats.lastError}`)
+        return
+      }
+      if (action.kind === 'pauseQueue' && snap.production?.queues.some(q => q.type === action.queueType && q.status !== 2)) this.ledger.pause(task.spec.id, action.queueType)
+      if (action.kind === 'resumeQueue') this.ledger.resume(task.spec.id, action.queueType)
+      task.stats.actions++
     }
-    const results = await this.deps.submit(outcome.actions)
-    for (const r of results) {
-      if (!r.ok) task.stats.rejected++
-    }
-    task.stats.actions += outcome.actions.length
+    // 已确认的动作需要保留对应进度；同局新采样不抹掉已下单记录。
+    if (authorized()) task.memory = outcome.memory
   }
-}
-
-function actionSignature(a: ActionRequest): string {
-  if ('unitIds' in a) {
-    const ids = [...a.unitIds].sort((x, y) => x - y).join(',')
-    if (a.kind === 'attack') return `attack:${ids}:${a.targetId}`
-    if ('x' in a && 'y' in a) return `${a.kind}:${ids}:${a.x},${a.y}`
-    return `${a.kind}:${ids}`
-  }
-  if ('name' in a) return `${a.kind}:${a.name}:${'quantity' in a ? a.quantity : ''}`
-  return `${a.kind}:${a.queueType}`
 }

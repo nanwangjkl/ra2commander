@@ -1,11 +1,12 @@
 import { readFile } from 'node:fs/promises'
 import type { BrowserContext, Page } from 'playwright'
-import { BINDING, type ActionRequest, type ActionResult, type Snapshot } from '@ra2c/contracts'
+import { BINDING, type ActionRequest, type ActionResult, type Snapshot, type ActionContext } from '@ra2c/contracts'
 
 /** 页面内桥状态（window.__ra2cState() 的返回）。 */
 export interface BridgeState {
   installed: boolean
   session: number
+  sessionKey: string
   sessionNote: string
   apiAlive: boolean
   hookedSession: number
@@ -20,17 +21,18 @@ export interface BridgeState {
  * install() 必须在打开任何页面之前调用（exposeBinding/addInitScript 是 context 级）。
  */
 /** 桥版本（与 bridge.js 的 BRIDGE_VERSION 保持一致；升级后对已开页面重装）。 */
-const BRIDGE_VERSION = 2
+const BRIDGE_VERSION = 3
 
 export class WerhdBridge {
   private latestSnapshot?: Snapshot
   private readonly listeners = new Set<(s: Snapshot) => void>()
 
-  constructor(private readonly context: BrowserContext) {}
+  constructor(private readonly context: BrowserContext, private readonly gameUrl?: string) {}
 
   async install(): Promise<void> {
     const source = await readFile(new URL('./bridge.js', import.meta.url), 'utf8')
-    await this.context.exposeBinding(BINDING.snapshot, (_source, snapshot: Snapshot) => {
+    await this.context.exposeBinding(BINDING.snapshot, (source, snapshot: Snapshot) => {
+      if (this.gameUrl && !source.page.url().startsWith(this.gameUrl)) return
       this.latestSnapshot = snapshot
       for (const cb of this.listeners) cb(snapshot)
     })
@@ -56,7 +58,7 @@ export class WerhdBridge {
 
   private page(): Page {
     const pages = this.context.pages()
-    const page = pages[pages.length - 1]
+    const page = this.gameUrl ? pages.find(p => p.url().startsWith(this.gameUrl!)) : pages[pages.length - 1]
     if (!page) throw new Error('游戏页面尚未打开')
     return page
   }
@@ -86,13 +88,14 @@ export class WerhdBridge {
   }
 
   /** 提交动作；会话不一致或单位失效时被拒绝。 */
-  async submit(action: ActionRequest): Promise<ActionResult> {
-    const st = await this.state()
+  async submit(action: ActionRequest, context: ActionContext | undefined = this.latestSnapshot, guard: () => boolean = () => true): Promise<ActionResult> {
+    if (!context || !guard()) return { ok: false, reason: 'revoked-or-no-snapshot', submitted: 0, session: context?.session ?? -1 }
+    // guard 与 evaluate 之间不 await；撤权后不再向浏览器排入旧动作。
     return this.page().evaluate(
-      ([session, act]) => (window as unknown as {
-        __ra2cSubmit: (s: number, a: ActionRequest) => ActionResult
-      }).__ra2cSubmit(session, act),
-      [st.session, action] as const,
+      ([ctx, act]) => (window as unknown as {
+        __ra2cSubmit: (s: number, a: ActionRequest, seq: number, key: string) => ActionResult
+      }).__ra2cSubmit(ctx.session, act, ctx.seq, ctx.sessionKey),
+      [context, action] as const,
     )
   }
 }
