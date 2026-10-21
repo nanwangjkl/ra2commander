@@ -72,20 +72,30 @@ pnpm companion
 - 终端交互（TTY 前台运行时）：`ra2c>` 提示符直接输入。
 - TCP 命令通道（始终可用，供自动化脚本）：`printf 'move all 50 60\n' | nc 127.0.0.1 8790`。
 
-战斗任务须显式提供调试授权参数；生产数量和队列权限也独立于模型保存。例如（坐标须按当前地图选择）：
+战斗任务须显式提供调试授权参数；生产数量和队列权限也独立于模型保存。例如（单位 ID 用 `units` 查询，坐标须按当前地图选择；建队目标完成后再给该队下令）：
 
 ```text
-form create 一队 tanks
+form create 一队 101,102
 task new 守区 @一队 --region=40,40,60,60 --retreat=0.6,20,20 守区，战损超过六成回撤
 task stop 守区
 produce MTNK 5 --pause-queues=2 优先生产
+goal list
+reinforce @一队 MTNK 6
 ```
 
 `--mode=hold` 为默认守区模式；`move` 只允许赶路，`assault` 额外允许区内攻击移动。`--retreat=比例,x,y` 只在任务原始成员阵亡比例严格超过阈值后允许回撤，触发后不自动返回。缺省无队列暂停/恢复权限；恢复仅限本任务实际暂停的队列，无法观测状态的队列会反馈限制。`--pause-queues` 编号为 0=建筑、1=防御、2=步兵、3=车辆、4=飞机、5=船。生产前置各授权一次，目标按数量累计，修复和重启不重置额度；不确定提交结果保留额度并报告。额外自然语言条件尚未形成通用授权解析器，当前支持显式地域和战损阈值；语音、地名绑定仍待实现。
 
-终端与 TCP 在编译期间仍接收停止命令；`task list` 同时列出编译中的任务。TCP 按换行分帧，多条并发命令按完成顺序回显。`stop <ids|all>` 会撤销涉及单位的整项任务和待编译命令，然后停车。
+每队独立一份脚本，全局一份脚本。`produce`、`form create/transfer/dissolve`、`reinforce` 和 `rally` 都更新全局目标并整体替换其代码；`task new <标签> @编队 ...` 仅替换对应编队代码。`form create` 也支持单位 ID、范围或兵种筛选。编队成员变更停车提交确认后交接，`form list` 查看实际归属。
 
-持久化状态已升级为 v2（含独立对局 UUID、生产额度、战损身份与队列归属）。旧 v1 状态不自动恢复，启动时报告并要求重新下令。升级页面桥也会使旧授权失效；游戏与资源 profile 保留。
+`goal list` 显示目标状态、待生效变更和生产提交记录；`goal edit <生产目标ID> <总量>` 保留已提交进度；`goal cancel <目标ID>` 立即停止该目标的后续执行，其余全局目标继续。`global pause/resume` 控制全局脚本，`task stop/pause/resume @编队` 控制编队，旧任务标签也可解析到对应编队。普通改令失败时旧目标继续，新增目标显示待生效及失败原因。
+
+`reinforce @编队 <兵种名> <维持数量> [--source=@来源编队]` 持续补员，缺省只使用未编队单位，不额外生产；`rally <ids|all> <x> <y>` 给未编队单位建立集结目标。底层 `move/amove/gather/attack` 仅供调试，涉及活动脚本或待编译命令管理的单位时先停止对应控制对象。
+
+生产提交与实际完成分开记录；`submitted` 表示进入游戏 API 调用，不保证已经成功入队。游戏缺少完整产物出生事件，同名目标按已有提交顺序观察；不会因已造单位阵亡再次下单。不确定或静默未入队的提交先保留额度，人工核对后可用 `goal resolve <提交ID> sent|not-sent` 修正，仅在确认未发送时释放额度。
+
+终端与 TCP 在编译期间仍接收停止命令；`task list` 同时列出全局与编队的脚本版本和编译状态。TCP 按换行分帧，多条并发命令按完成顺序回显。`stop <ids|all>` 会撤销相关编队任务、待编译版本和涉及这些单位的全局管理目标，然后停车。
+
+持久化状态已升级为 v3（目标与当前脚本分离，包含生产记录、战损基准、队列与交接归属）。v1/v2 状态不自动合并，首次写入新格式前保留旧文件备份；核对已有游戏队列后重新下令。v3 等到当前快照确认同局才恢复，预留未决记录不自动重放。升级页面桥也会使旧授权失效；游戏与资源 profile 保留。
 
 环境变量覆盖：`RA2C_GAME_DIR`、`RA2C_PACK`、`RA2C_PORT`、`RA2C_PROFILE`。
 
@@ -96,7 +106,7 @@ apps/companion/            # 启动器：静态伺服、自动导入、文本 CL
 packages/contracts/        # 桥契约、宿主动作校验 + vendored werhd API 类型声明
 packages/game-werhd/       # 页面桥（bridge.js 注入 + 宿主侧 WerhdBridge）
 packages/command/          # Acorn 语法/契约检查、生成与有限修复
-packages/runtime/          # 命令代次、授权、编队、战损、生产额度和持久化
+packages/runtime/          # 控制对象、目标、脚本切换、生产记录、归属与 v3 持久化
 packages/js-worker/        # 独立子进程中的 QuickJS WASM 隔离执行器
 packages/model-providers/  # 可取消的云模型接入
 packages/maps/             # 分区方案读取、空间查询与离线提取工具

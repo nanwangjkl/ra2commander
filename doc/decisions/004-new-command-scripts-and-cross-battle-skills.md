@@ -1,9 +1,12 @@
 ---
 status: accepted
 date: 2026-10-06
+partially_superseded_by: '006'
 ---
 
 # 每条命令生成新脚本，跨局能力沉淀为 Skill
+
+2026-10-21：“每命令新任务”的粒度已由 [ADR 006](006-script-per-control-owner.md) 替代，下文保留原决策背景；Skill 与跨局状态隔离原则继续适用。
 
 本项目基于 [ra2web](https://github.com/ra2web/ra2web.github.io) 设计独立的本机语音指挥伴随程序。
 
