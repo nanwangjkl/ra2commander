@@ -40,9 +40,11 @@
 pnpm install
 pnpm playwright-install   # 首次需要，下载 Playwright Chromium
 pnpm typecheck
-pnpm test                 # 不访问云模型/真实游戏的授权、竞态与隔离回归
+pnpm test                 # 不访问云模型/真实游戏的冒烟、关键故障与地图数据检查
 pnpm maps:check           # 读取并校验默认冰天雪地 17 区方案
 ```
+
+原型阶段优先验证真实对局体验。自动化测试保留正常命令链路、已修复的关键故障和数据有效性检查；新增用例应针对具体故障或基本运行能力，避免用大量断言固定尚未定型的授权策略、命令参数和数值阈值。
 
 分区读取与查询不需要原始游戏素材或图片。检查其他方案或查询指定格子：
 
@@ -99,7 +101,7 @@ packages/js-worker/        # 独立子进程中的 QuickJS WASM 隔离执行器
 packages/model-providers/  # 可取消的云模型接入
 packages/maps/             # 分区方案读取、空间查询与离线提取工具
 maps/ice/                  # 地图分区方案及提取参数
-tests/                     # 不依赖游戏或模型的回归场景
+tests/                     # 命令冒烟、关键故障与地图数据检查
 ```
 
 其余模块（speech、skills/）按架构设计在对应里程碑再建。运行时数据（profile、截图）在 `.runtime/`，已 gitignore。

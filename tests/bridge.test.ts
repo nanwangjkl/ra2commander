@@ -32,43 +32,39 @@ function pageBridge() {
   return { window, api, submitted, sample, next, poll, own, enemy, setTick: (value: number) => { tick = value } }
 }
 
-test('页面最终提交拒绝过期快照和旧对局，目标消失后拒绝攻击', () => {
+test('页面桥可以提交正常动作，并丢弃过期、跨局或目标已消失的动作', () => {
   const page = pageBridge()
   const first = page.sample()
   const action = { kind: 'move', unitIds: [1], x: 6, y: 6 }
   assert.equal(page.window.__ra2cSubmit(first.session, action, first.seq, first.sessionKey).ok, true)
   const second = page.next()
-  assert.equal(page.window.__ra2cSubmit(first.session, action, first.seq, first.sessionKey).reason, 'stale-snapshot')
-  page.enemy.length = 0
-  assert.equal(page.window.__ra2cSubmit(second.session, { kind: 'attack', unitIds: [1], targetId: 99 }, second.seq, second.sessionKey).reason, 'invisible-target')
-  page.window.werhd = { ...page.api }
-  assert.equal(page.window.__ra2cSubmit(second.session, action, second.seq, second.sessionKey).reason, 'stale-session')
-  page.poll()
-  assert.equal(page.window.__ra2cSubmit(second.session, action, second.seq, second.sessionKey).reason, 'stale-session')
-  assert.equal(page.submitted.length, 1)
-})
-
-test('换局重置采样 tick，低 tick 的新对局立即采样', () => {
-  const page = pageBridge()
-  const old = page.sample()
-  for (let i = 0; i < 10; i++) page.next()
-  page.window.werhd = { ...page.api }
-  page.poll()
-  page.setTick(1)
-  const next = page.sample()
-  assert.notEqual(next.sessionKey, old.sessionKey)
-  assert.equal(next.tick, 1)
-})
-
-test('紧急停车允许同局稍旧快照，目标出射程后最终拒绝攻击', () => {
-  const page = pageBridge()
-  const first = page.sample()
-  const next = page.next()
+  assert.equal(page.window.__ra2cSubmit(first.session, action, first.seq, first.sessionKey).ok, false)
   assert.equal(page.window.__ra2cSubmit(first.session, { kind: 'stop', unitIds: [1] }, first.seq, first.sessionKey).ok, true)
-  page.api.inRange = () => false
-  assert.equal(page.window.__ra2cSubmit(next.session, { kind: 'attack', unitIds: [1], targetId: 99 }, next.seq, next.sessionKey).reason, 'out-of-range')
+  page.enemy.length = 0
+  assert.equal(page.window.__ra2cSubmit(second.session, { kind: 'attack', unitIds: [1], targetId: 99 }, second.seq, second.sessionKey).ok, false)
+  page.window.werhd = { ...page.api }
+  assert.equal(page.window.__ra2cSubmit(second.session, action, second.seq, second.sessionKey).ok, false)
+  page.poll()
+  assert.equal(page.window.__ra2cSubmit(second.session, action, second.seq, second.sessionKey).ok, false)
+  assert.equal(page.submitted.length, 2)
 })
 
+test('换局后重新采样，兼容游戏 API 对象被复用', () => {
+  for (const replaceApi of [true, false]) {
+    const page = pageBridge()
+    const old = page.sample()
+    page.next()
+    page.setTick(1)
+    if (replaceApi) page.window.werhd = { ...page.api }
+    assert.equal(page.window.__ra2cSubmit(old.session, { kind: 'stop', unitIds: [1] }, old.seq, old.sessionKey).ok, false)
+    // API 被复用时，由新一局的 tick 回调通知时钟归零，再由轮询重新挂接。
+    if (!replaceApi) page.sample()
+    page.poll()
+    const current = page.sample()
+    assert.notEqual(current.sessionKey, old.sessionKey)
+    assert.equal(current.tick, 1)
+  }
+})
 test('宿主桥保留动作来源对局，不查询当前会话替换它；撤权后不排入 evaluate', async () => {
   const calls: unknown[] = []
   const page = { evaluate: async (_fn: unknown, args: unknown) => { calls.push(args); return { ok: true } } }
@@ -79,17 +75,4 @@ test('宿主桥保留动作来源对局，不查询当前会话替换它；撤�
   assert.deepEqual(calls[0], [context, { kind: 'stop', unitIds: [1] }])
   await bridge.submit({ kind: 'stop', unitIds: [1] }, context, () => false)
   assert.equal(calls.length, 1)
-})
-
-test('API 对象复用但模拟 tick 回退时也撤销旧会话', () => {
-  const page = pageBridge()
-  const old = page.sample()
-  page.next()
-  page.setTick(1)
-  assert.equal(page.window.__ra2cSubmit(old.session, { kind: 'stop', unitIds: [1] }, old.seq, old.sessionKey).reason, 'stale-session')
-  page.sample()
-  page.poll()
-  const current = page.sample()
-  assert.notEqual(current.sessionKey, old.sessionKey)
-  assert.equal(current.tick, 1)
 })

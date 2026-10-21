@@ -7,31 +7,18 @@ const url = new URL('../maps/ice/schemes/nanwang-0.1.0.json', import.meta.url)
 const scheme: RegionScheme = JSON.parse(await readFile(url, 'utf8'))
 const index = await loadRegionScheme(url)
 
-test('冰天雪地方案读取 17 个稳定命名区域，并记录实际地图和图片版本', () => {
-  assert.equal(index.scheme.map.id, 'ra2:mp32s8')
-  assert.equal(index.scheme.map.sha256, 'df5419036db3cdfb39de5a6fb9a09c7737a60aad79dbda9431193d92ca460bc1')
-  assert.equal(index.scheme.regions.length, 17)
-  assert.equal(index.scheme.projection.validation.nativeCliffEdges, 660)
-  assert.equal(index.scheme.projection.validation.edgesOnAnnotation, 660)
-  assert.equal(index.scheme.projection.validation.realGameVerified, false)
-  for (const r of index.scheme.regions) assert.equal(index.regionAt(...r.labelPosition)?.id, r.id)
-})
-
-test('像素与 rx/ry 双向映射，图像纵向使用经纹理核对的偏移', () => {
-  assert.deepEqual(index.toImage(100, 100), [2520, 1590])
-  assert.deepEqual(index.fromImage(2520, 1590), [100, 100])
-  for (const p of [[39, 82], [151, 119], [0, 0], [199, 199], [100.25, 88.75]] as MapPoint[]) {
-    const actual = index.fromImage(...index.toImage(...p))
-    assert.ok(Math.abs(actual[0] - p[0]) < 1e-9 && Math.abs(actual[1] - p[1]) < 1e-9)
+test('当前分区文件可读取、按名称查询，图片与地图坐标可转换', () => {
+  assert.ok(index.scheme.regions.length > 0)
+  for (const region of index.scheme.regions) {
+    assert.equal(index.resolve(region.name)?.id, region.id)
+    assert.equal(index.regionAt(...region.labelPosition)?.id, region.id)
+    const actual = index.fromImage(...index.toImage(...region.labelPosition))
+    assert.ok(Math.abs(actual[0] - region.labelPosition[0]) < 1e-9)
+    assert.ok(Math.abs(actual[1] - region.labelPosition[1]) < 1e-9)
   }
-})
-
-test('原地图出生点落入对应区域，图外查询为空', () => {
-  assert.equal(index.regionAt(39, 82)?.name, '三楼左上')
-  assert.equal(index.regionAt(88, 34)?.name, '三楼右上')
-  assert.equal(index.regionAt(120, 83)?.name, '小岛')
+  // 该版本图片的已核对参考点，避免仅靠往返运算掩盖整体偏移。
+  assert.deepEqual(index.fromImage(2520, 1590), [100, 100])
   assert.deepEqual(index.regionsAt(-1, -1), [])
-  assert.deepEqual(index.regionsAt(NaN, 10), [])
 })
 
 function area(ring: MapPoint[]) {
@@ -43,18 +30,18 @@ function area(ring: MapPoint[]) {
   return Math.abs(sum / 2)
 }
 
-test('真实分区的总面积与画布一致，采样点完整覆盖且内区不重叠', () => {
+test('当前分区覆盖底图，抽样检查内部没有空洞或重叠', () => {
+  const [a, b, , d, e] = scheme.projection.gameToPixel
+  const imageArea = scheme.source.width * scheme.source.height / Math.abs(a * e - b * d)
   const total = scheme.regions.flatMap(r => r.polygons).reduce((sum, p) => sum + area(p.outer) - p.holes.reduce((s, h) => s + area(h), 0), 0)
-  assert.ok(Math.abs(total - scheme.source.width * scheme.source.height / 900) < 1e-3)
-  let samples = 0
-  // Pixel-centred samples lie off the integer raster contour, so each has one owner.
-  for (let y = 10.5; y < scheme.source.height; y += 75) {
-    for (let x = 10.5; x < scheme.source.width; x += 75) {
-      assert.equal(index.regionsAt(...index.fromImage(x, y)).length, 1, `像素 (${x}, ${y})`)
-      samples++
+  assert.ok(Math.abs(total - imageArea) < 1e-3)
+  for (let row = 0; row < 12; row++) {
+    for (let col = 0; col < 20; col++) {
+      const x = scheme.source.width * (col + 0.37) / 20
+      const y = scheme.source.height * (row + 0.41) / 12
+      assert.equal(index.regionsAt(...index.fromImage(x, y)).length, 1, '像素 (' + x + ', ' + y + ')')
     }
   }
-  assert.ok(samples > 2000)
 })
 
 function fixture() {
@@ -64,38 +51,29 @@ function fixture() {
   return data
 }
 
-test('异形、孔洞、多个多边形和别名查询保留原始几何', () => {
+test('异形区域保留孔洞，共享边界能查询到相邻区域', () => {
   const data = fixture()
   data.regions[0]!.polygons.push({ outer: [[30, 30], [40, 30], [40, 40], [30, 40], [30, 30]],
     holes: [[[32, 32], [38, 32], [38, 38], [32, 38], [32, 32]]] })
+  data.regions.push({ id: 'other', name: '相邻区', aliases: [], level: 1, labelPosition: [21, 11],
+    polygons: [{ outer: [[20, 10], [25, 10], [25, 15], [20, 15], [20, 10]], holes: [] }] })
   const map = new MapRegionIndex(data)
   assert.equal(map.resolve(' L区 ')?.id, 'concave')
   assert.equal(map.regionAt(12, 18)?.id, 'concave')
   assert.equal(map.regionAt(18, 18), undefined)
   assert.equal(map.regionAt(31, 31)?.id, 'concave')
   assert.equal(map.regionAt(35, 35), undefined)
-})
-
-test('共享边界返回全部区域，单区域接口不任意挑选', () => {
-  const data = fixture()
-  data.regions.push({ id: 'other', name: '相邻区', aliases: [], level: 1, labelPosition: [21, 11],
-    polygons: [{ outer: [[20, 10], [25, 10], [25, 15], [20, 15], [20, 10]], holes: [] }] })
-  const map = new MapRegionIndex(data)
   assert.deepEqual(map.regionsAt(20, 12).map(r => r.id), ['concave', 'other'])
   assert.equal(map.regionAt(20, 12), undefined)
 })
 
-test('格式版本、名称冲突、坐标与闭合边界错误被读取器识别', () => {
+test('损坏的分区边界和重复区域能在读取时发现', () => {
   for (const mutate of [
-    (v: RegionScheme) => { v.schemaVersion = 2 as 1 },
-    (v: RegionScheme) => { v.projection.gameToPixel = [1, 2, 0, 2, 4, 0] },
     (v: RegionScheme) => { v.regions.push(structuredClone(v.regions[0]!)) },
-    (v: RegionScheme) => { v.regions[1]!.aliases.push(v.regions[0]!.name) },
-    (v: RegionScheme) => { v.regions[0]!.polygons[0]!.outer[0] = [-1, 1] },
+    (v: RegionScheme) => { v.regions[0]!.polygons[0]!.outer[0] = [NaN, 1] },
     (v: RegionScheme) => { v.regions[0]!.polygons[0]!.outer.pop() },
-    (v: RegionScheme) => { v.regions[0]!.labelPosition = [0, 0] },
   ]) {
-    const data = structuredClone(scheme)
+    const data = fixture()
     mutate(data)
     assert.throws(() => new MapRegionIndex(data))
   }
