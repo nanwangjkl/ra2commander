@@ -1,0 +1,12 @@
+{
+  "name": "冰天雪地六句模拟语音实机验收",
+  "map": "ice",
+  "steps": [
+    { "text": "展开基地", "expect": "base", "timeoutSeconds": 60 },
+    { "text": "制造战车工厂", "expect": "factory", "timeoutSeconds": 300 },
+    { "text": "制造5辆坦克并编入1队", "expect": "five-tanks", "timeoutSeconds": 300 },
+    { "text": "1队去三楼右下", "expect": "region", "regionName": "三楼右下", "timeoutSeconds": 360 },
+    { "text": "制造间谍卫星，保持电量健康", "expect": "satellite-power", "continuousPower": true, "timeoutSeconds": 360 },
+    { "text": "摧毁全部敌人", "expect": "victory", "timeoutSeconds": 600 }
+  ]
+}

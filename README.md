@@ -16,6 +16,7 @@ M1（公共 API 桥）与 M2 单队循环已实测：文本命令经云模型（
 | [地图分区数据](doc/spec/map-regions.md) | 如何读取冰天雪地分区、核对坐标和提交其他方案？ |
 | [实施与验证计划](doc/roadmap/implementation-plan.md) | 先做什么，如何测量和验证首版？ |
 | [编队与全局脚本改造方案](doc/roadmap/script-ownership-refactor.md) | 如何改为每编队一份脚本、全局一份脚本，并统一替换？ |
+| [六句模拟语音测试](doc/roadmap/voice-six-commands.md) | 展开、建设、造兵编队、地名移动、补电和进攻的实机效果如何？ |
 | [领域术语](doc/spec/CONTEXT.md) | 玩家、编队、战损、授权条件与 Skill 分别指什么？ |
 | [架构决策记录](doc/decisions/README.md) | 为什么选择当前方案，有哪些取舍和后果？ |
 

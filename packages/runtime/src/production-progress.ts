@@ -10,12 +10,25 @@ export function productionProgress(goal: ProductionGoal, records: ProductionReco
   const sent: Record<string, number> = Object.create(null)
   const observed: Record<string, number[]> = Object.create(null)
   const uncertain: string[] = []
+  let quantity = goal.quantity
+  if (goal.maintainPower && snap.production) {
+    const own = records.filter(r => r.goalId === goal.id && r.name === goal.target && r.state !== 'rejected')
+    const count = own.reduce((n, r) => n + r.quantity, 0)
+    const pending = own.reduce((n, r) => n + r.quantity - r.observedIds.length, 0)
+    const futureDrain = Object.entries(goal.powerCosts ?? {}).reduce((n, [name, cost]) => {
+      // 不将已经落地的建筑再次计入未来耗电。
+      return n + Math.max(0, -cost) * records.filter(r => r.name === name && r.building && r.state !== 'rejected').reduce((sum, r) => sum + r.quantity - r.observedIds.length, 0)
+    }, 0)
+    const power = snap.production.power
+    const needed = Math.max(0, Math.ceil((power.drain + futureDrain + goal.maintainPower.reserve - power.total) / goal.maintainPower.output))
+    quantity = count + Math.max(0, needed - pending)
+  }
   for (const name of [...new Set([...goal.prerequisites, goal.target])]) {
     const own = records.filter(r => r.name === name && r.state !== 'rejected' && (name !== goal.target || r.goalId === goal.id))
     sent[name] = own.reduce((n, r) => n + r.quantity, 0)
     observed[name] = [...new Set(own.flatMap(r => r.observedIds))]
     if (name !== goal.target && snap.self.some(u => u.type === 2 && u.name === name)) observed[name] = snap.self.filter(u => u.type === 2 && u.name === name).map(u => u.id)
-    remaining[name] = name === goal.target ? Math.max(0, goal.quantity - sent[name]!) : sent[name] || observed[name]!.length ? 0 : 1
+    remaining[name] = name === goal.target ? Math.max(0, quantity - sent[name]!) : sent[name] || observed[name]!.length ? 0 : 1
     if (own.some(r => r.state === 'reserved' || r.state === 'unknown')) uncertain.push(name)
   }
   // 同名产物缺少可靠出生事件，前一个提交尚未观察完成时不再提交同名目标。

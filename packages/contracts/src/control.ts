@@ -11,7 +11,9 @@ export interface CombatGoal extends GoalBase {
   allowedActions: ActionRequest['kind'][]
   retreat?: { lossAbove: number; x: number; y: number }
   transforms?: Record<string, string>
+  destination?: { x: number; y: number; name?: string }
 }
+export interface DeployGoal extends GoalBase { kind: 'deploy'; unitIds: number[]; target: string }
 export interface ProductionGoal extends GoalBase {
   kind: 'production'
   target: string
@@ -20,6 +22,10 @@ export interface ProductionGoal extends GoalBase {
   queues: number[]
   targetType?: number
   queueTypes?: Record<string, number>
+  formationId?: string
+  /** 明确要求持续补电时，按实时电力及未完成建设的电耗计算目标总量。 */
+  maintainPower?: { reserve: number; output: number }
+  powerCosts?: Record<string, number>
 }
 export type FormationRequest =
   | { kind: 'createFormation'; formationId: string; unitIds: number[]; force?: boolean }
@@ -35,7 +41,7 @@ export interface ReinforceGoal extends GoalBase {
   source: string | null
 }
 export interface RallyGoal extends GoalBase { kind: 'rally'; unitIds: number[]; x: number; y: number }
-export type GoalSpec = CombatGoal | ProductionGoal | FormationGoal | ReinforceGoal | RallyGoal
+export type GoalSpec = CombatGoal | DeployGoal | ProductionGoal | FormationGoal | ReinforceGoal | RallyGoal
 export const goalOwner = (goal: GoalSpec): ScriptOwner => goal.kind === 'combat' ? { kind: 'formation', formationId: goal.formationId } : { kind: 'global' }
 
 export interface ScriptAction { goalId: string; request: ActionRequest | FormationRequest }

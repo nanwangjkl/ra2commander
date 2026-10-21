@@ -27,6 +27,7 @@ export interface SnapshotUnit {
   hitPoints?: number;
   maxHitPoints?: number;
   isIdle: boolean;
+  canDeploy?: boolean;
   veteranLevel?: number;
   primaryWeapon?: { maxRange: number; minRange: number; aa: boolean; ag: boolean };
   secondaryWeapon?: { maxRange: number; minRange: number; aa: boolean; ag: boolean };
@@ -79,6 +80,7 @@ export type ActionRequest =
   | { kind: 'gather'; unitIds: number[]; x: number; y: number }
   | { kind: 'attack'; unitIds: number[]; targetId: number }
   | { kind: 'stop'; unitIds: number[] }
+  | { kind: 'deploy'; unitIds: number[] }
   | { kind: 'scatter'; unitIds: number[] }
   | { kind: 'guard'; unitIds: number[] }
   | { kind: 'produce'; name: string; quantity: number }

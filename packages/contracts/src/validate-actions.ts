@@ -74,9 +74,13 @@ export function validateActions(value: unknown, c: StepConstraints, snapshot?: S
       if (snapshot && !snapshot.production?.queues.some(q => q.type === a.queueType)) return '队列状态不可观测，无法安全操作'
       continue
     }
-    if (!['move', 'attackMove', 'gather', 'attack', 'stop', 'scatter', 'guard'].includes(a.kind)) return '未知动作类型'
+    if (!['move', 'attackMove', 'gather', 'attack', 'stop', 'deploy', 'scatter', 'guard'].includes(a.kind)) return '未知动作类型'
     if (a.kind !== 'stop' && !c.allowedActions?.includes(a.kind)) return `未授权动作: ${a.kind}`
     if (!Array.isArray(a.unitIds) || !a.unitIds.length || a.unitIds.some(id => !Number.isSafeInteger(id) || !allowed.has(id))) return '引用未授权或失效单位'
+    if (a.kind === 'deploy') {
+      if (snapshot && a.unitIds.some(id => !snapshot.self.find(u => u.id === id)?.canDeploy)) return '单位当前不能展开'
+      continue
+    }
     if (c.retreat?.active) {
       if (a.kind !== 'stop' && !(a.kind === 'move' && tile(a.x, a.y, c) && a.x === c.retreat.x && a.y === c.retreat.y)) return '回撤阶段只能停驻或前往授权回撤点'
       continue

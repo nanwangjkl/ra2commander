@@ -76,8 +76,11 @@ export class TaskRuntime {
       const r = goal.region
       if (!r || !point(r.x1, r.y1) || !point(r.x2, r.y2) || r.x1 > r.x2 || r.y1 > r.y2) throw new Error('授权地域非法')
       if (goal.retreat && (!point(goal.retreat.x, goal.retreat.y) || !Number.isFinite(goal.retreat.lossAbove) || goal.retreat.lossAbove < 0 || goal.retreat.lossAbove >= 1)) throw new Error('回撤条件非法')
+    } else if (goal.kind === 'deploy') {
+      if (!goal.unitIds.length || goal.unitIds.some(id => !snap.self.some(u => u.id === id && u.canDeploy))) throw new Error('没有可展开的基地车')
     } else if (goal.kind === 'production') {
       if (!/^[A-Za-z0-9_]+$/.test(goal.target) || !Number.isSafeInteger(goal.quantity) || goal.quantity < 1 || goal.queues.some(q => !Number.isInteger(q) || q < 0 || q > 5)) throw new Error('生产目标非法')
+      if (goal.maintainPower && (!Number.isFinite(goal.maintainPower.reserve) || goal.maintainPower.reserve < 0 || !Number.isFinite(goal.maintainPower.output) || goal.maintainPower.output <= 0)) throw new Error('补电参数非法')
     } else if (goal.kind === 'formation') {
       const r = goal.request
       if (!r.formationId) throw new Error('缺少编队名')
@@ -173,8 +176,9 @@ export class TaskRuntime {
       if (goal.status === 'cancelled' || goal.status === 'completed') continue
       goal.activeSpec = structuredClone(spec)
       goal.status = 'active'
-      if (!goal.facts.initialized && spec.kind === 'combat') {
-        goal.facts.members = this.latest!.self.filter(u => this.formations.membersOf(spec.formationId).includes(u.id)).map(u => ({ id: u.id, name: u.name, rx: u.rx, ry: u.ry }))
+      if (!goal.facts.initialized && (spec.kind === 'combat' || spec.kind === 'deploy')) {
+        const ids = spec.kind === 'combat' ? this.formations.membersOf(spec.formationId) : spec.unitIds
+        goal.facts.members = this.latest!.self.filter(u => ids.includes(u.id)).map(u => ({ id: u.id, name: u.name, rx: u.rx, ry: u.ry }))
       }
       goal.facts.initialized = true
       program.activeGoalIds.push(spec.id)
@@ -277,6 +281,7 @@ export class TaskRuntime {
       return { ...base, allowedUnitIds: alive(this.formations.membersOf(spec.formationId)), allowedActions: spec.allowedActions, region: spec.region,
         ...(spec.retreat ? { retreat: { x: spec.retreat.x, y: spec.retreat.y, active: facts.retreatTriggered } } : {}) }
     }
+    if (spec.kind === 'deploy') return { ...base, allowedUnitIds: alive(spec.unitIds).filter(id => snap.self.some(u => u.id === id && u.canDeploy)), allowedActions: ['deploy'] }
     if (spec.kind === 'production') {
       const desired = this.goals.get(spec.id)?.spec
       // 减少产量属于立即收紧；增量仍需等候新代码激活。
@@ -289,7 +294,10 @@ export class TaskRuntime {
         const pending = this.production.filter(r => r.state !== 'rejected' && (r.queueType ?? (r.building ? 0 : 3)) === queue.type).reduce((n, r) => n + Math.max(0, r.quantity - r.observedIds.length), 0)
         queueSpace[queue.type] = Math.max(0, queue.maxSize - Math.max(queue.size, pending))
       }
-      return { ...base, allowedProduce: [...spec.prerequisites, spec.target], allowedPlace, productionQueueTypes, queueSpace, produceRemaining: progress.remaining, allowedQueueTypes: spec.queues, resumableQueueTypes: [...this.pausedQueues].filter(([, id]) => id === spec.id).map(([q]) => q) }
+      const members = spec.formationId ? alive(progress.observed[spec.target] ?? []).filter(id => !this.formations.ownerOf(id)) : []
+      const exists = spec.formationId && this.formations.list().some(f => f.id === spec.formationId)
+      return { ...base, allowedProduce: [...spec.prerequisites, spec.target], allowedPlace, productionQueueTypes, queueSpace, produceRemaining: progress.remaining, allowedQueueTypes: spec.queues, resumableQueueTypes: [...this.pausedQueues].filter(([, id]) => id === spec.id).map(([q]) => q),
+        ...(spec.formationId ? { management: { kind: exists ? 'transferUnits' as const : 'createFormation' as const, formationId: spec.formationId, allowedUnitIds: members, maxUnits: members.length } } : {}) }
     }
     if (spec.kind === 'rally') return { ...base, allowedUnitIds: alive(spec.unitIds).filter(id => !this.formations.ownerOf(id)), allowedActions: ['move', 'stop'], region: { name: '集结路径', x1: 0, y1: 0, x2: snap.mapWidth - 1, y2: snap.mapHeight - 1 }, destination: { x: spec.x, y: spec.y } }
     if (spec.kind === 'formation') {
@@ -348,7 +356,10 @@ export class TaskRuntime {
       const spec = goal.activeSpec
       if (spec.kind === 'production') {
         const progress = productionProgress(spec, this.production, snap)
-        if ((progress.observed[spec.target]?.length ?? 0) >= spec.quantity && !progress.uncertain.includes(spec.target)) this.complete(goal)
+        const assigned = !spec.formationId || (progress.observed[spec.target] ?? []).filter(id => snap.self.some(u => u.id === id)).every(id => this.formations.ownerOf(id) === spec.formationId && !this.locked(id))
+        if (!spec.maintainPower && assigned && (progress.observed[spec.target]?.length ?? 0) >= spec.quantity && !progress.uncertain.includes(spec.target)) this.complete(goal)
+      } else if (spec.kind === 'deploy') {
+        if (goal.facts.members.some(m => snap.self.some(u => u.name === spec.target && Math.hypot(u.rx - m.rx, u.ry - m.ry) <= 3))) this.complete(goal)
       } else if (spec.kind === 'rally') {
         const units = snap.self.filter(u => spec.unitIds.includes(u.id))
         if (units.length && units.every(u => Math.hypot(u.rx - spec.x, u.ry - spec.y) <= 1)) this.complete(goal)

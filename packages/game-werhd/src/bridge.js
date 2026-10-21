@@ -9,7 +9,7 @@
 // 且带性能护栏（超预算自动降频）。
 (() => {
   'use strict';
-  var BRIDGE_VERSION = 3;
+  var BRIDGE_VERSION = 4;
   if (window.__ra2cInstalled && window.__ra2cVersion === BRIDGE_VERSION) return;
   if (window.__ra2cInterval) { try { clearInterval(window.__ra2cInterval) } catch (e) {} }
   window.__ra2cInstalled = true;
@@ -77,6 +77,7 @@
       hitPoints: u.hitPoints,
       maxHitPoints: u.maxHitPoints,
       isIdle: u.isIdle,
+      canDeploy: u.canDeploy,
       veteranLevel: u.veteranLevel,
       primaryWeapon: u.primaryWeapon,
       secondaryWeapon: u.secondaryWeapon,
@@ -226,6 +227,9 @@
           w.attack(ids, action.targetId); break;
         }
         case 'stop': w.stop(ids); break;
+        case 'deploy':
+          if (!w.deploy(ids)) return { ok: false, reason: 'deploy-rejected', submitted: 0, session: session };
+          break;
         case 'scatter': ids.forEach(function (id) { w.order([id], { type: 16 }); }); break;
         case 'guard': ids.forEach(function (id) { w.order([id], { type: 5 }); }); break;
         default: return { ok: false, reason: 'unknown-kind', submitted: 0, session: session };

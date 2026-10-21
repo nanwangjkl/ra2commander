@@ -8,11 +8,15 @@ import type { TaskRuntime, FormationRegistry } from '@ra2c/runtime'
 import type { WerhdBridge } from '@ra2c/game-werhd'
 import { ProgramController } from './controller.ts'
 import { combatOptions, productionOptions } from './command-options.ts'
+import { loadRegionScheme, type MapRegionIndex } from '../../../packages/maps/src/index.ts'
+import { runTranscript } from './transcript.ts'
 const ROOT = resolve(import.meta.dirname, '../../..')
 
 export function usage(): string {
   return [
     '命令：',
+    '  say <文字>             把文字作为模拟语音转写，解析目标并生成脚本',
+    '  map use ice            显式绑定冰天雪地默认分区（不自动识别地图）',
     '  status                 桥状态、会话代次、采样统计',
     '  units [n]              列出最近快照中的己方单位（默认前 20）',
     '  move <ids|all> <x> <y> 移动',
@@ -67,6 +71,9 @@ export interface CommandContext {
   formations: FormationRegistry
   providers: Map<string, OpenAICompatibleProvider>
   currentProvider: () => OpenAICompatibleProvider
+  mapRegions?: MapRegionIndex
+  mapSessionKey?: string
+  transcriptAbort?: AbortController
 }
 
 const TYPE_LABEL: Record<number, string> = { 1: '空军', 2: '建筑', 3: '步兵', 7: '车辆' }
@@ -93,7 +100,15 @@ function debugBusy(ids: number[], ctx: CommandContext): boolean {
 export async function handleCommand(line: string, ctx: CommandContext): Promise<string> {
   const [cmd, ...args] = line.split(/\s+/)
   const { bridge, page } = ctx
+  if (cmd === 'stop' || cmd === 'quit' || (cmd === 'task' && ['stop', 'pause'].includes(args[0] ?? '')) || (cmd === 'global' && args[0] === 'pause')) ctx.transcriptAbort?.abort()
   switch (cmd) {
+    case 'say': return runTranscript(line.slice(3).trim(), ctx, ROOT)
+    case 'map': {
+      if (args[0] !== 'use' || args[1] !== 'ice') return '用法: map use ice（请确认当前对局使用冰天雪地）'
+      ctx.mapRegions = await loadRegionScheme(join(ROOT, 'maps/ice/schemes/nanwang-0.1.0.json'))
+      ctx.mapSessionKey = ctx.runtime.battleKey
+      return `已显式绑定冰天雪地 ${ctx.mapRegions.scheme.scheme.version} 分区；目的地仍需实机到达确认`
+    }
     case 'help':
       return usage()
     case 'status': {
