@@ -8,7 +8,6 @@ export {
 export { compileCommand, CompileError } from './compile.ts'
 export type {
   CompileInput,
-  CompileBinding,
   CompileOutcome,
   CompileAttemptLog,
   DryRunExecutor,

@@ -1,4 +1,44 @@
 import type { ActionRequest, Region, Snapshot, StepConstraints } from './index.ts'
+import type { ScriptAction } from './control.ts'
+
+/** 脚本统一使用目标包装；页面桥仍接收原有游戏动作。 */
+export function validateScriptActions(value: unknown, c: StepConstraints, snapshot?: Snapshot): string | undefined {
+  if (!Array.isArray(value) || value.length > (c.maxActions ?? 20)) return '动作数组非法或超过上限'
+  const spent: Record<string, number> = Object.create(null)
+  for (const item of value as ScriptAction[]) {
+    if (!item || typeof item.goalId !== 'string' || !item.request || typeof item.request !== 'object') return '动作必须包含 goalId 和 request'
+    const goal = c.goals?.[item.goalId]
+    if (!goal) { if (c.ignoreInactiveGoals) continue; return '动作引用未生效目标' }
+    const a = item.request
+    if (a.kind === 'createFormation' || a.kind === 'transferUnits' || a.kind === 'dissolveFormation') {
+      const m = goal.management
+      if (!m || m.kind !== a.kind || m.formationId !== a.formationId) return '编队管理请求与目标不符'
+      if (a.kind !== 'dissolveFormation') {
+        if (!Array.isArray(a.unitIds) || !a.unitIds.length || new Set(a.unitIds).size !== a.unitIds.length || a.unitIds.some(id => !Number.isSafeInteger(id) || !m.allowedUnitIds.includes(id))) return '管理请求引用失效成员'
+        const key = item.goalId + ':members'
+        spent[key] = (spent[key] ?? 0) + a.unitIds.length
+        if (spent[key]! > m.maxUnits) return '管理请求超过目标成员数量'
+        if (m.exact && a.unitIds.length !== m.maxUnits) return '管理请求必须包含完整目标成员'
+        if (a.kind === 'createFormation' && !!a.force !== !!m.force) return '建队归属条件不符'
+      }
+      continue
+    }
+    const error = validateActions([a], goal, snapshot)
+    if (error) return error
+    if (a.kind === 'produce') {
+      const key = item.goalId + ':' + a.name
+      spent[key] = (spent[key] ?? 0) + a.quantity
+      if (spent[key]! > (goal.produceRemaining?.[a.name] ?? 0)) return '生产额度不足'
+      const queue = goal.productionQueueTypes?.[a.name]
+      if (queue !== undefined && goal.queueSpace?.[queue] !== undefined) {
+        const queueKey = 'queue:' + queue
+        spent[queueKey] = (spent[queueKey] ?? 0) + a.quantity
+        if (spent[queueKey]! > goal.queueSpace[queue]!) return '同一批次超过生产队列空位'
+      }
+    }
+    if (goal.destination && a.kind === 'move' && (a.x !== goal.destination.x || a.y !== goal.destination.y)) return '集结目标不符'
+  }
+}
 
 export function inRegion(x: number, y: number, r: Region): boolean {
   return x >= r.x1 && x <= r.x2 && y >= r.y1 && y <= r.y2
@@ -16,11 +56,15 @@ export function validateActions(value: unknown, c: StepConstraints, snapshot?: S
       if (a.kind === 'cancel') return '未授权取消已投入生产的项目'
       if (typeof a.name !== 'string' || !c.allowedProduce?.includes(a.name)) return '未授权生产项目'
       if (a.kind === 'produce') {
+        if (snapshot && !snapshot.production?.available.includes(a.name)) return `项目尚未解锁或当前不可造: ${a.name}`
         if (!Number.isSafeInteger(a.quantity) || a.quantity < 1) return '生产数量非法'
+        const queue = c.productionQueueTypes?.[a.name]
+        if (queue !== undefined && c.queueSpace?.[queue] !== undefined && a.quantity > c.queueSpace[queue]!) return '生产队列空位不足'
         quantities[a.name] = (quantities[a.name] ?? 0) + a.quantity
         if (quantities[a.name]! > (Object.hasOwn(c.produceRemaining ?? {}, a.name) ? c.produceRemaining![a.name]! : 0)) return `生产额度不足: ${a.name}`
-      } else if (a.x !== undefined || a.y !== undefined) {
-        if (!tile(a.x, a.y, c)) return '建筑坐标非法'
+      } else {
+        if (c.allowedPlace && !c.allowedPlace.includes(a.name)) return '没有该目标或共享前置的待落地建筑'
+        if ((a.x !== undefined || a.y !== undefined) && !tile(a.x, a.y, c)) return '建筑坐标非法'
       }
       continue
     }

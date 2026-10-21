@@ -17,6 +17,7 @@ const PREREQ_CATEGORY: Record<string, string[]> = {
   POWER: ['GAPOWR', 'NAPOWR', 'NAAPWR', 'YAPOWR'],
   BARRACKS: ['GAPILE', 'NAPILE', 'YAPILE'],
   REFINERY: ['GAREFN', 'NAREFN', 'YAREFN'],
+  PROC: ['GAREFN', 'NAREFN', 'YAREFN'],
   FACTORY: ['GAWEAP', 'NAWEAP', 'YAWEAP'],
   RADAR: ['GAAIRC', 'NARADR', 'YARADR'],
   TECH: ['GATECH', 'NATECH', 'YATECH'],
@@ -60,6 +61,11 @@ export async function computePrerequisiteClosure(
       if (built) return undefined
       const buildable = family.find((b) => available.has(b))
       if (buildable) return buildable
+      // gonghui 的 PROC/POWER 可能在前置未满足时完全不在 available 中。
+      // 按已观测建造厂确定固定目录内的阵营，再递归查询其真实前置。
+      const prefix = ['GA', 'NA', 'YA'].find(p => existing.has(`${p}CNST`))
+      const factionBuilding = prefix ? family.find(b => b.startsWith(prefix)) : undefined
+      if (factionBuilding) return factionBuilding
     }
     return name
   }

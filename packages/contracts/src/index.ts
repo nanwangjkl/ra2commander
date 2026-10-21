@@ -67,11 +67,12 @@ export interface Snapshot {
   enemies: SnapshotUnit[];
   /** 生产态势（进局后采集；游戏 API 不可用时缺省）。 */
   production?: ProductionState;
-  /** 宿主为当前任务计算；脚本不能通过修改 memory 改变这些授权事实。 */
-  execution?: { retreatActive: boolean; lossRatio: number; produceRemaining: Record<string, number> };
+  /** 宿主为当前控制对象计算动态目标与执行事实。 */
+  control?: import('./control.ts').ControlFrame;
+  constraints?: StepConstraints;
 }
 
-/** MVP 动作请求；宿主提交前做会话与存活复查。生产动作无 unitIds，按名单授权。 */
+/** 游戏动作请求；脚本返回时外包 goalId，页面桥仍只接收此原语。 */
 export type ActionRequest =
   | { kind: 'move'; unitIds: number[]; x: number; y: number }
   | { kind: 'attackMove'; unitIds: number[]; x: number; y: number }
@@ -104,6 +105,9 @@ export interface StepConstraints {
   maxActions?: number;
   /** 生产任务可操作的项目名（必要前置闭包）；produce/cancel/place 只能操作名单内。 */
   allowedProduce?: string[];
+  allowedPlace?: string[];
+  productionQueueTypes?: Record<string, number>;
+  queueSpace?: Record<number, number>;
   /** 缺省为空权限；额度按任务累计消耗，不能通过多次 step/修复重置。 */
   produceRemaining?: Record<string, number>;
   allowedQueueTypes?: number[];
@@ -112,6 +116,8 @@ export interface StepConstraints {
   allowedActions?: ActionRequest['kind'][];
   region?: Region;
   retreat?: { x: number; y: number; active: boolean };
+  goals?: Record<string, import('./control.ts').GoalConstraints>;
+  ignoreInactiveGoals?: boolean;
 }
 
 export interface Region {
@@ -129,12 +135,13 @@ export interface ActionContext {
   seq: number;
 }
 
-export { validateActions, inRegion } from './validate-actions.ts';
+export { validateActions, validateScriptActions, inRegion } from './validate-actions.ts';
+export * from './control.ts';
 
 /** 任务脚本单次 step 的执行结果。 */
 export interface StepOutcome {
   ok: boolean;
-  actions: ActionRequest[];
+  actions: import('./control.ts').ScriptAction[];
   memory: unknown;
   error?: string | undefined;
 }

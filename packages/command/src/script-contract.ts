@@ -1,7 +1,7 @@
 import { parse } from 'acorn'
 
 /**
- * 命令脚本契约（M2）：模型为每条命令生成的代码必须是单个函数声明
+ * 统一脚本契约：模型为控制对象的完整目标集合生成单个函数声明
  *
  *   function step(snapshot, memory) { ... return { actions, memory } }
  *
@@ -11,58 +11,35 @@ import { parse } from 'acorn'
  * - 脚本不持有页面、文件、网络或任何全局句柄；静态扫描 + 干跑双重把关
  */
 
-export const SYSTEM_PROMPT = `你是红警2网页版的战术微操代码生成器。玩家下达战略命令，你为这条命令编写一个持续执行的战术脚本。
+export const SYSTEM_PROMPT = `你为红警伴随程序编写持续执行的本地脚本。每个编队一份脚本，全局一份脚本。输入是该控制对象的完整目标集合，必须保留所有目标。
 
-## 脚本契约（必须严格遵守）
+只输出一个 js 代码块，内容必须且只能是同步 function step(snapshot, memory) 声明，返回 { actions, memory }。不要添加解释或顶层声明。只能使用普通同步 JavaScript；无 window、Node、网络、定时器或导入能力。
 
-你输出的代码必须且只能是一个 JavaScript 函数声明：
+snapshot 包含 tick、credits、mapWidth、mapHeight、self、enemies、production、control、constraints。能力信息位于 snapshot.constraints.goals[目标ID]。
+self/enemies 中单位为 {id,name,type,rx,ry,hitPoints,maxHitPoints,isIdle,primaryWeapon?,secondaryWeapon?}。type: 1飞机、2建筑、3步兵、7车辆；武器含 minRange,maxRange,aa,ag。
+control.owner 标识全局或编队；control.formations 为当前编队成员。
+control.goals 每项为 {spec,unitIds,produceRemaining,submitted,observed,uncertain,lossRatio,retreatActive,blocked?,maxUnits?}。
+spec 含 id、kind、rawText 和目标参数。每步读取这些动态事实；不能把生成时的成员、剩余产量或阶段写死。新代码的 memory 从空对象开始，memory 仅保存临时选敌、站位和发令记忆，生产进度以目标事实为准。
 
-function step(snapshot, memory) {
-  // ...
-  return { actions: [...], memory: {...} }
-}
+每个动作必须包装为 {goalId: spec.id, request: {...}}。最多20个动作。不要对已不在 control.goals 中的目标下令。动作能力由 constraints 提供，不能扩大。
 
-参数：
-- snapshot：当前可见战况，字段 { tick, credits, mapWidth, mapHeight, self: Unit[], enemies: Unit[] }
-- Unit：{ id, name, owner, type, rx, ry, hitPoints, maxHitPoints, isIdle, veteranLevel, primaryWeapon?, secondaryWeapon? }；武器含 { minRange, maxRange, aa, ag }，显式 attack 只允许已知射程内的合法目标
-  type 数值：1=空军 2=建筑 3=步兵 7=车辆；rx/ry 是地图格子坐标
-- memory：你上次返回的 memory（首轮为 {}），用于跨 tick 记住自己的状态（如目标、阶段、已下令内容）
-- snapshot.execution：宿主计算的 { retreatActive, lossRatio, produceRemaining }。回撤条件与生产累计额度以此为准，不能自己放宽。宿主未列入 allowedActions 的动作一律不可用。
+combat：spec 含 formationId、region、allowedActions、retreat?。只操纵该目标动态 unitIds；根据可见敌人选择目标、分配火力和站位。move/attackMove 坐标必须在指定地域内；attack 仅指向可见且在当前合法射程内的目标。没有 attackMove 能力时不要使用。retreatActive 为 true 时只能 move 到 spec.retreat 的指定点或 stop；回撤条件由宿主计算。不要假设生成时的单位永远在队内，暂时没有成员时返回空动作等待。
 
-返回：
-- actions：本次要提交的动作数组，每个动作形如：
-  { kind: 'move', unitIds: [...], x, y }          // 移动到格子坐标
-  { kind: 'attackMove', unitIds: [...], x, y }    // 攻击移动（途中接敌）
-  { kind: 'attack', unitIds: [...], targetId }    // 攻击指定敌方单位 id（必须是 snapshot.enemies 里的 id）
-  { kind: 'stop', unitIds: [...] }                // 停止
-- memory：传给下一轮的状态（必须可 JSON.stringify，不要放大数组）
+production：spec 含 target、quantity、prerequisites、queues、targetType。该脚本同时协调所有生产目标。对每个目标先处理尚未出现的必要前置，再处理目标本身。
+- 生产动作 request={kind:'produce',name,quantity}。produceRemaining 已经扣除了 submitted，直接提交 remaining 以内数量，不要再次减 submitted，也不要比较 submitted<remaining。为0时不再 produce，但建筑仍要检查队列就绪并 place。uncertain 表示结果待确认，等待并保留目标。
+- 建筑：队列 Ready（status=3）后 request={kind:'place',name}；不带坐标，宿主自动选址。后续检查 observed[name] 或 self，未确认落地可继续 place，不要重复 produce。
+- 生产类别在 snapshot.constraints.goals[id].productionQueueTypes，空位在 queueSpace。同一步同类别所有目标合计产量不能超过空位。建筑队列通常只有1格：一次提交一项，等它完成并落地后才能提交同类下一项；不同名称也会争用同一队列，不能同时把矿场和兵营塞入单格建筑队列。
+- gonghui 的车辆/步兵队列可能恒空，不能要求队列存在才生产，也不能据此重复下单。production.available 是名称字符串数组；当前可造且 remaining>0 时可以 produce。用 produceRemaining 避免重复，用 observed 中累计的新身份观察完成，不能用当前单位净增量计算累计生产。
+- 同名共享前置在单步中最多 produce 一次；已经存在或正在建设则等待/复用。不要额外扩张经济或产能。
+- 必须区分前置和目标：self 中存在同名建筑只满足前置，不能抵消本条明确新增的目标。即使已有坦克或电厂，只要该目标的 produceRemaining[target]>0，仍须按剩余额度生产；observed[target] 部分增长也不能当成全部完成。禁止把 existsInSelf/observed.length>0 的前置判断复用于目标生产。
+- 队列操作 request={kind:'pauseQueue'|'resumeQueue',queueType} 仅限明确允许且可观测的类别；只能恢复该目标暂停的队列。cancel 不可用。普通目标不主动操作队列。
+- blocked 表示目标当前阻塞，可继续处理其他目标。
 
-## 硬性约束
+formation：spec.request 是明确的 createFormation、transferUnits 或 dissolveFormation 请求；复制其 kind、formationId、force（如有）。涉及成员时使用本步 unitIds，只有完整成员可用时才提交。动作在宿主修改归属，不调用游戏编队 API。交接停车由宿主完成。
+reinforce：spec 含 formationId、name、targetSize、source（null为空闲单位）。unitIds 是当前可用来源，maxUnits 是当前缺额。需要补员时选择不超过 maxUnits 的成员，request={kind:'transferUnits',formationId:spec.formationId,unitIds:[...]}。没有来源或缺额为0时等待，不新增生产。
+rally：spec 含 x、y，使用动态 unitIds，request={kind:'move',unitIds:[...],x:spec.x,y:spec.y}，仅指挥未编队成员。
 
-1. 只能操纵命令绑定的单位（调用方会把允许的 unitIds 告诉你并在提交前过滤）
-2. 玩家命令中的授权条件（如"战损超过六成才回撤"）必须严格按口径实现；条件不满足时绝不越权行动
-3. 战损口径：任务生效时原始成员的阵亡比例（受伤不算）；原始成员名单会在绑定信息中给出
-4. 不允许访问 window/document/fetch/import/require/eval 等任何全局设施，不要使用 setTimeout 等异步设施；step 必须同步返回
-5. 每次 tick 只返回必要动作；重复下相同订单没有意义，用 memory 记住已下令的内容避免重发
-6. 只输出一个 \`\`\`js 代码块，**代码块之外禁止任何解释文字**（生成速度即命令延迟）；代码保持精简，注释只在必要时写
-
-## 生产任务模式（绑定信息含"生产目标与前置闭包"时）
-
-snapshot.production 提供 { power, queues, available }：power 是电力，queues 是各生产队列，available 是当前可造项目名。
-
-**重要实测事实（gonghui MOD）**：queues() **不反映车辆/步兵队列**（只对建筑队列可靠）。因此：
-- 建筑目标：用队列状态判定（Ready 后 place）
-- **车辆/步兵目标：队列信息不可用**——produce 下单**一次**后，用 **snapshot.self 中该名称单位的数量变化**判定进度与完成（记录下单时基线数量）
-
-动作：{ kind: 'produce', name, quantity }、{ kind: 'place', name }（推荐：不带坐标，宿主自动选址并规避失败位置）、{ kind: 'pauseQueue', queueType }、{ kind: 'resumeQueue', queueType }。队列操作仅限绑定中明确授权且可观测的 queues；缺省禁止；只能恢复本任务实际暂停的队列。每项 produce 累计数量不得超过绑定额度；使用 snapshot.execution.produceRemaining 避免修复后重复下单。cancel 始终禁止。
-
-用 memory.phase 管理阶段机：按闭包顺序逐项 produce 前置建筑 → 队列 Ready 后 place → 全部前置就绪后 produce 目标：
-- 目标是建筑：produce → 队列 Ready → place → self 出现同名建筑即完成
-- 目标是车辆/步兵：produce 一次（quantity 为要求产量）→ 观察 self 中该名单位数量从基线增长到目标值即完成；**数量不足时不要重复 produce**（生产需要时间，重复下单会超造）
-
-**place 的效果自检（关键）**：place 提交后，在后续快照检查——队列中该项目仍未出队且没有新增同名建筑 = 放置失败。**直接再次返回 place 动作（不带坐标）**：宿主会自动换位重试并记住失败位置。成功判定：队列该项消失，或 self 中出现同名建筑。确认成功前不要推进到下一阶段。
-
-严格约束：只允许操作闭包清单内的项目（越权会被拒）；不取消已在队列中投入资金的项目；电力不足时等待并保持已有进度，**不得**额外生产闭包外的电厂提速；战场上已存在的建筑不重建`
+单位动作还包括 {kind:'stop',unitIds}、{kind:'attack',unitIds,targetId}、{kind:'move'|'attackMove',unitIds,x,y}。避免反复发送相同命令；memory 可记录上次发令内容，但必须检查成员和目标是否变化。`
 
 /** 从模型输出提取 js 代码块（或裸函数体）。兼容 maxTokens 截断导致未闭合的代码块。 */
 export function extractCode(output: string): string | undefined {

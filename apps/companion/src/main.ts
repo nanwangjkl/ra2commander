@@ -1,29 +1,28 @@
 import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createServer } from 'node:net'
 import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
-import type { ActionRequest, Snapshot } from '@ra2c/contracts'
-import { compileCommand, type CompileInput } from '@ra2c/command'
 import { StepExecutor } from '@ra2c/js-worker'
 import { configuredProviderNames, providerFromEnv, type OpenAICompatibleProvider } from '@ra2c/model-providers'
 import {
-  computePrerequisiteClosure,
   FormationRegistry,
   persistState,
   restoreState,
   TaskRuntime,
   type PersistedState,
-  type TaskSpec,
+  saveStateFile,
+  readStateFile,
 } from '@ra2c/runtime'
 import { setupCdnProxy, WerhdBridge } from '@ra2c/game-werhd'
 import { dismissStartupDialogs } from './auto-import.ts'
 import { startStaticServer } from './static-server.ts'
-import { combatOptions, productionOptions } from './command-options.ts'
+import { handleCommand, usage, type CommandContext } from './commands.ts'
+import { ProgramController } from './controller.ts'
+import { prepareGoals } from './prepare-goals.ts'
 
 // import.meta.dirname = apps/companion/src，仓库根需上溯三级。
 const ROOT = resolve(import.meta.dirname, '../../..')
@@ -82,332 +81,6 @@ async function ensureBrowserContext(): Promise<{ browser: Browser; context: Brow
   return { browser, context }
 }
 
-function usage(): string {
-  return [
-    '命令：',
-    '  status                 桥状态、会话代次、采样统计',
-    '  units [n]              列出最近快照中的己方单位（默认前 20）',
-    '  move <ids|all> <x> <y> 移动',
-    '  amove <ids|all> <x> <y> 攻击移动',
-    '  gather <ids|all> <x> <y> 集结',
-    '  attack <ids|all> <targetId> 攻击目标',
-    '  stop <ids|all>         停止',
-    '  enemy [n]              列出当前可见敌人（默认前 20）',
-    '  providers              列出已配置的云模型',
-    '  form create <名> <tanks|infantry|vehicles|all> [--force]  建编队（冲突不静默抢占）',
-    '  form list / form transfer <ids> <名> / form dissolve <名>',
-    '  task new <id> [@编队] --region=x1,y1,x2,y2 [--mode=hold|move|assault] [--retreat=0.6,x,y] <命令>',
-    '  task list              任务与运行状态',
-    '  task stop <id>         立即撤权停止任务',
-    '  task pause <id> / task resume <id>',
-    '  produce <目标名> [数量=1] [--pause-queues=0,2] [指令]  限量生产（前置各一次，缺省无队列权限）',
-    '  prod                   显示生产状态（电力/队列/可造）',
-    '  model <名称>           切换编译用的云模型',
-    '  shot                   截图到 .runtime/shots/',
-    '  quit                   退出（断开连接，浏览器与对局保留）',
-    '  quit hard              退出并关闭常驻浏览器',
-  ].join('\n')
-}
-
-function parseIds(spec: string, snap: Snapshot | undefined): number[] | undefined {
-  if (!snap) return undefined
-  if (spec === 'all') return snap.self.filter((u) => u.type === 3 || u.type === 7).map((u) => u.id)
-  const ids: number[] = []
-  for (const part of spec.split(',')) {
-    const range = part.match(/^(\d+)-(\d+)$/)
-    if (range) {
-      for (let i = Number(range[1]); i <= Number(range[2]); i++) ids.push(i)
-    } else if (/^\d+$/.test(part)) {
-      ids.push(Number(part))
-    } else {
-      return undefined
-    }
-  }
-  return ids
-}
-
-interface CommandContext {
-  browser: Browser
-  bridge: WerhdBridge
-  page: Page
-  runtime: TaskRuntime
-  executor: StepExecutor
-  formations: FormationRegistry
-  providers: Map<string, OpenAICompatibleProvider>
-  currentProvider: () => OpenAICompatibleProvider
-  /** 任务原始编译输入（同授权修复用）。 */
-  compileInputs: Map<string, CompileInput>
-  repairCounts: Map<string, number>
-}
-
-const TYPE_LABEL: Record<number, string> = { 1: '空军', 2: '建筑', 3: '步兵', 7: '车辆' }
-
-/** 绑定单位名的去重列表（供规则预查）。 */
-function units0names(snap: Snapshot, ids: number[]): string[] {
-  const set = new Set(ids)
-  return [...new Set(snap.self.filter((u) => set.has(u.id)).map((u) => u.name))]
-}
-
-/** 单条命令 → 输出文本；quit 由调用方根据返回值处理。 */
-async function handleCommand(line: string, ctx: CommandContext): Promise<string> {
-  const [cmd, ...args] = line.split(/\s+/)
-  const { bridge, page } = ctx
-  switch (cmd) {
-    case 'help':
-      return usage()
-    case 'status': {
-      const st = await bridge.state()
-      const snap = bridge.latest
-      const lines = [JSON.stringify(st, null, 2)]
-      lines.push(
-        snap
-          ? `最新快照: session=${snap.session} seq=${snap.seq} tick=${snap.tick} 单位=${snap.self.length} 资金=${snap.credits}`
-          : '尚无快照（未进局或资源未就绪）',
-      )
-      return lines.join('\n')
-    }
-    case 'units': {
-      const snap = bridge.latest
-      if (!snap) return '尚无快照'
-      const n = args[0] ? Number(args[0]) : 20
-      const lines = snap.self.slice(0, n).map((u) =>
-        `  #${u.id} ${u.name} (${TYPE_LABEL[u.type] ?? `type${u.type}`}) (${u.rx},${u.ry}) hp=${u.hitPoints ?? '?'}/${u.maxHitPoints ?? '?'} ${u.isIdle ? 'idle' : 'busy'}`,
-      )
-      lines.push(`  共 ${snap.self.length} 个单位；可见敌人 ${snap.enemies.length}；地图 ${snap.mapWidth}x${snap.mapHeight}`)
-      return lines.join('\n')
-    }
-    case 'enemy': {
-      const snap = bridge.latest
-      if (!snap) return '尚无快照'
-      const n = args[0] ? Number(args[0]) : 20
-      const lines = snap.enemies.slice(0, n).map((u) =>
-        `  #${u.id} ${u.name} (${TYPE_LABEL[u.type] ?? `type${u.type}`}) (${u.rx},${u.ry}) hp=${u.hitPoints ?? '?'}/${u.maxHitPoints ?? '?'}`,
-      )
-      lines.push(`  可见敌人 ${snap.enemies.length} 个`)
-      return lines.join('\n')
-    }
-    case 'providers': {
-      const list = [...ctx.providers.values()]
-        .map((p) => `  ${p.config.name}: ${p.model} @ ${p.config.baseUrl}`)
-      return list.length ? list.join('\n') : '（未配置任何云模型：检查 .env 的 *_API_KEY）'
-    }
-    case 'model': {
-      const name = args[0]
-      const p = name ? ctx.providers.get(name) : undefined
-      if (!p) return `用法: model <${[...ctx.providers.keys()].join('|')}>`
-      ctx.currentProvider = () => p
-      return `编译模型切换为 ${p.config.name} (${p.model})`
-    }
-    case 'form': {
-      const sub = args[0]
-      const snap = bridge.latest
-      if (sub === 'create') {
-        const name = args[1]
-        const filter = args[2]
-        if (!name || !filter) return '用法: form create <名> <tanks|infantry|vehicles|all> [--force]'
-        if (!snap) return '尚无快照'
-        const force = args.includes('--force')
-        const matched = snap.self.filter((u) => {
-          if (u.type === 3) return filter === 'infantry' || filter === 'all'
-          if (u.type === 7) {
-            if (filter === 'vehicles' || filter === 'all') return true
-            // tanks：按规则排除矿车/维修车等非战斗车辆（名称启发式，待规则目录化）。
-            if (filter === 'tanks') return !/HARV|CMIN|MINR|TRUCK|AMBULANCE/i.test(u.name)
-            return false
-          }
-          return false
-        })
-        if (!matched.length) return '没有匹配的单位'
-        const result = ctx.formations.create(
-          name,
-          matched.map((u) => u.id),
-          { force },
-        )
-        if (!result.ok) {
-          const detail = result.conflicts?.map((c) => `#${c.unit}(在${c.from})`).slice(0, 5).join('，')
-          return `建队失败: ${result.reason}${detail ? `；冲突: ${detail}` : ''}`
-        }
-        return `编队 "${name}" 建立：${result.formation!.memberIds.length} 个单位（原始成员基准同此）`
-      }
-      if (sub === 'list') {
-        const lines = ctx.formations.list().map(
-          (f) => `  ${f.id}: 成员 ${f.memberIds.length}/${f.originalMemberIds.length}（原始基准）`,
-        )
-        return lines.length ? lines.join('\n') : '（无编队）'
-      }
-      if (sub === 'transfer') {
-        const ids = parseIds(args[1] ?? '', snap)
-        const to = args[2]
-        if (!ids?.length || !to) return '用法: form transfer <ids> <编队名>'
-        const r = ctx.formations.transfer(ids, to)
-        return r.ok ? `已转编 ${ids.length} 个单位到 "${to}"` : `转编失败: ${r.reason}`
-      }
-      if (sub === 'dissolve') {
-        ctx.formations.dissolve(args[1] ?? '')
-        return `编队 ${args[1]} 已解散`
-      }
-      return '用法: form create|list|transfer|dissolve …'
-    }
-    case 'prod': {
-      const p = bridge.latest?.production
-      if (!p) return '尚无生产数据（未进局）'
-      const lines = [`电力: ${p.power.drain}/${p.power.total}${p.power.isLowPower ? '（低电）' : ''} 资金: ${Math.floor(bridge.latest!.credits)}`]
-      for (const q of p.queues) {
-        const items = q.items.map((i) => `${i.name}x${i.quantity}@${Math.floor(i.progress * 100)}%`).join(', ')
-        lines.push(`  队列 type${q.type} [${['空闲', '生产中', '暂停', '就绪'][q.status] ?? q.status}] ${items || '空'}`)
-      }
-      lines.push(`可造(${p.available.length}): ${p.available.slice(0, 40).join(',')}`)
-      return lines.join('\n')
-    }
-    case 'produce': {
-      const target = args[0]
-      if (!target || !/^[A-Za-z0-9_]+$/.test(target)) return '用法: produce <目标名> [数量] [--pause-queues=0,2] [指令]'
-      const options = productionOptions(args.slice(1))
-      const snap = bridge.latest
-      if (!snap?.production) return '尚无生产数据（未进局）'
-      const id = `prod-${target}-${randomUUID().slice(0, 8)}`
-      const lease = ctx.runtime.beginCommand(id, snap)
-      console.log(`[companion] 准备生产任务 ${id}（task stop ${id} 可取消）`)
-      try {
-        const closure = await computePrerequisiteClosure(target, {
-          prerequisites: async (name: string) => {
-            for (const type of [2, 7, 3, 1]) {
-              lease.signal.throwIfAborted()
-              const r = (await bridge.rules(name, type)) as { prerequisite?: string[] } | undefined | null
-              if (r?.prerequisite) return r.prerequisite
-            }
-            return undefined
-          },
-          available: async () => snap.production?.available ?? [],
-        }, snap.self)
-        lease.signal.throwIfAborted()
-        if (closure.unknown.length) return `规则查询失败: ${closure.unknown.join(',')}；用 prod 查看可造清单`
-        const list = [...closure.toBuild, closure.target]
-        const limits = Object.fromEntries([...closure.toBuild.map(name => [name, 1]), [target, options.quantity]])
-        const input: CompileInput = {
-          rawText: `生产 ${options.quantity} 个 ${target}；${options.text}`,
-          binding: { unitIds: [], production: { target, closure: closure.toBuild, quantity: options.quantity, queues: options.queues } },
-          snapshot: snap,
-        }
-        const spec: TaskSpec = { id, rawText: input.rawText, unitIds: [], originalMembers: [], allowedProduce: list, produceLimits: limits, allowedQueueTypes: options.queues }
-        console.log(`[companion] 授权生产 ${JSON.stringify(limits)}，可暂停队列 ${options.queues.join(',') || '无'}；编译中…`)
-        const outcome = await compileCommand(ctx.currentProvider(), input, ctx.executor, { signal: lease.signal })
-        if (!ctx.runtime.commitCommand(lease, spec, outcome.code)) return `任务 ${id} 的编译结果已失效`
-        ctx.compileInputs.set(id, input)
-        ctx.repairCounts.delete(id)
-        return `生产任务 ${id} 已部署（累计额度: ${JSON.stringify(limits)}）`
-      } finally { ctx.runtime.releaseCommand(lease) }
-    }
-    case 'task': {
-      const sub = args[0]
-      if (sub === 'new') {
-        const id = args[1]
-        const rest = args.slice(2)
-        const formationId = rest[0]?.startsWith('@') ? rest.shift()!.slice(1) : undefined
-        if (!id) return '用法: task new <id> [@编队] --region=x1,y1,x2,y2 <命令>'
-        const snap = bridge.latest
-        if (!snap) return '尚无快照：请先进入对局'
-        const options = combatOptions(rest, snap)
-        const ids = formationId ? ctx.formations.membersOf(formationId) : snap.self.filter(u => (u.type === 3 || u.type === 7) && !ctx.formations.ownerOf(u.id)).map(u => u.id)
-        const unitIds = ids.filter(id => snap.self.some(u => u.id === id))
-        if (!unitIds.length) return '没有可绑定的存活成员；已有编队请使用 @编队名'
-        const lease = ctx.runtime.beginCommand(id, snap, false, unitIds)
-        try {
-          const transforms: Record<string, string> = {}
-          for (const name of units0names(snap, unitIds)) {
-            for (const type of [7, 2, 3]) {
-              lease.signal.throwIfAborted()
-              const r = (await bridge.rules(name, type)) as { deploysInto?: string; undeploysInto?: string } | undefined | null
-              const into = r?.deploysInto ?? r?.undeploysInto
-              if (into) { transforms[name] = into; transforms[into] = name; break }
-            }
-          }
-          const originalMembers = [...unitIds]
-          const spec: TaskSpec = { id, rawText: options.text, unitIds, originalMembers, region: options.region, allowedActions: options.allowedActions, transforms, ...(options.retreat ? { retreat: options.retreat } : {}), ...(formationId ? { formationId } : {}) }
-          const input: CompileInput = {
-            rawText: options.text,
-            binding: { unitIds, originalMembers, region: options.region, allowedActions: options.allowedActions, transforms, ...(options.retreat ? { retreat: options.retreat } : {}) }, snapshot: snap,
-          }
-          console.log(`[companion] 任务 ${id} 授权 ${unitIds.length} 个单位，地域 ${JSON.stringify(options.region)}，回撤 ${JSON.stringify(options.retreat ?? '未授权')}；编译中…`)
-          const outcome = await compileCommand(ctx.currentProvider(), input, ctx.executor, { signal: lease.signal })
-          if (!ctx.runtime.commitCommand(lease, spec, outcome.code)) return `任务 ${id} 的编译结果已失效`
-          ctx.compileInputs.set(id, input)
-          ctx.repairCounts.delete(id)
-          return `任务 ${id} 已部署（v${ctx.runtime.tasks.get(id)!.script!.version}，${outcome.attempts} 轮编译）`
-        } finally { ctx.runtime.releaseCommand(lease) }
-      }
-      if (sub === 'list') {
-        const lines: string[] = []
-        for (const id of ctx.runtime.pendingCommandIds()) lines.push(`  ${id} [compiling]（task stop ${id} 可取消）`)
-        for (const t of ctx.runtime.tasks.values()) {
-          const s = t.stats
-          // 编队任务显示动态成员数（转编后授权实时收窄）。
-          const memberCount = t.spec.formationId
-            ? ctx.formations.membersOf(t.spec.formationId).length
-            : t.spec.unitIds.length
-          lines.push(
-            `  ${t.spec.id} [${t.status}] v${t.script?.version ?? '-'} 「${t.spec.rawText.slice(0, 30)}」 单位=${memberCount}${t.spec.formationId ? `（编队${t.spec.formationId}）` : ''}${t.spec.allowedProduce ? ` 生产=${t.spec.allowedProduce.length}项` : ''} steps=${s.steps} actions=${s.actions} 拒绝=${s.rejected}${s.lastError ? ` 错误=${s.lastError.slice(0, 60)}` : ''}`,
-          )
-        }
-        return lines.length ? lines.join('\n') : '（无任务）'
-      }
-      if (sub === 'stop') {
-        await ctx.runtime.stop(args[1] ?? '')
-        return `任务 ${args[1]} 已停止`
-      }
-      if (sub === 'pause') {
-        ctx.runtime.pause(args[1] ?? '')
-        return `任务 ${args[1]} 已暂停`
-      }
-      if (sub === 'resume') {
-        ctx.runtime.resume(args[1] ?? '')
-        return `任务 ${args[1]} 已恢复`
-      }
-      return '用法: task new|list|stop|pause|resume …'
-    }
-    case 'move':
-    case 'amove':
-    case 'gather': {
-      const ids = parseIds(args[0] ?? '', bridge.latest)
-      const x = Number(args[1])
-      const y = Number(args[2])
-      if (!ids?.length || !Number.isFinite(x) || !Number.isFinite(y)) return `用法: ${cmd} <ids|all> <x> <y>`
-      const kind = cmd === 'move' ? 'move' : cmd === 'amove' ? 'attackMove' : 'gather'
-      const action: ActionRequest = { kind, unitIds: ids, x, y }
-      return JSON.stringify(await bridge.submit(action))
-    }
-    case 'attack': {
-      const ids = parseIds(args[0] ?? '', bridge.latest)
-      const targetId = Number(args[1])
-      if (!ids?.length || !Number.isFinite(targetId)) return '用法: attack <ids|all> <targetId>'
-      return JSON.stringify(await bridge.submit({ kind: 'attack', unitIds: ids, targetId }))
-    }
-    case 'stop': {
-      const ids = parseIds(args[0] ?? '', bridge.latest)
-      if (!ids?.length) return '用法: stop <ids|all>'
-      await ctx.runtime.stopUnits(ids)
-      return JSON.stringify(await bridge.submit({ kind: 'stop', unitIds: ids }))
-    }
-    case 'shot': {
-      mkdirSync(join(ROOT, '.runtime/shots'), { recursive: true })
-      const file = join(ROOT, `.runtime/shots/${Date.now()}.png`)
-      await page.screenshot({ path: file })
-      return `截图: ${file}`
-    }
-    case 'eval': {
-      // 调试：页面内求值（只读诊断/受控实验用）。用法: eval <表达式>
-      const expr = line.slice(line.indexOf('eval') + 4).trim()
-      if (!expr) return '用法: eval <JS 表达式（页面上下文）>'
-      const value = await page.evaluate(`(() => { try { return { ok: true, value: (${expr}) } } catch (e) { return { ok: false, error: String(e) } } })()`)
-      return JSON.stringify(value, null, 2).slice(0, 2000)
-    }
-    case 'quit':
-      return args[0] === 'hard' ? '__QUIT_HARD__' : '__QUIT__'
-    default:
-      return `未知命令: ${cmd}\n${usage()}`
-  }
-}
-
 async function main(): Promise<void> {
   try {
     process.loadEnvFile(join(ROOT, '.env'))
@@ -440,92 +113,78 @@ async function main(): Promise<void> {
   const bridge = new WerhdBridge(context, server.url)
   await bridge.install()
 
-  // M2/M3：任务运行时（执行器 + 批量提交通道 + 编队注册表 + 同授权修复）。
   const executor = new StepExecutor()
   const formations = new FormationRegistry()
-  const compileInputs = new Map<string, CompileInput>()
-  const repairCounts = new Map<string, number>()
-  const runtime = new TaskRuntime({
-    executor,
-    formations,
+  let controller!: ProgramController
+  let currentProvider: OpenAICompatibleProvider | undefined
+  const currentModel = () => {
+    currentProvider ??= providers.values().next().value
+    if (!currentProvider) throw new Error('没有可用的云模型（检查 .env 的 *_API_KEY）')
+    return currentProvider
+  }
+  const runtime: TaskRuntime = new TaskRuntime({
+    executor, formations,
+    checkpoint: () => saveStateFile(STATE_FILE, persistState(runtime)),
     submit: async (actions, context, guard) => {
       const results = []
-      for (const a of actions) {
+      for (const action of actions) {
         if (!guard()) break
-        results.push(await bridge.submit(a, context, guard))
+        results.push(await bridge.submit(action, context, guard))
       }
       return results
     },
-    onTaskFaulted: (taskId) => {
-      if (runtime.hasPendingCommand(taskId)) return
-      const input = compileInputs.get(taskId)
-      const count = (repairCounts.get(taskId) ?? 0) + 1
-      repairCounts.set(taskId, count)
-      if (!input || count > 2) {
-        console.log(`[companion] 任务 ${taskId} 不再自动修复（${!input ? '无原始输入' : `已达修复限额(${count - 1})`}）`)
-        return
-      }
-      console.log(`[companion] 任务 ${taskId} 第 ${count} 次同授权修复编译…`)
-      const snap = bridge.latest
-      if (!snap) return
-      const lease = runtime.beginCommand(taskId, snap, true)
-      void (async () => {
-        try {
-          const provider = providers.values().next().value
-          if (!provider) return
-          const task = lease.repairTask!
-          const repairedInput = { ...input, snapshot: snap, diagnostic: { code: task.script!.code, error: task.stats.lastError ?? '任务运行失败' } }
-          const out = await compileCommand(provider, repairedInput, executor, { signal: lease.signal })
-          if (runtime.commitCommand(lease, lease.repairTask!.spec, out.code)) {
-            console.log(`[companion] 任务 ${taskId} 修复完成并恢复`)
-          }
-        } catch (err) {
-          if (!lease.signal.aborted) console.log(`[companion] 任务 ${taskId} 修复失败: ${String(err).slice(0, 120)}`)
-        } finally { runtime.releaseCommand(lease) }
-      })()
+    onProgramFaulted: id => controller.fault(id),
+    log: message => console.log(message),
+  })
+  controller = new ProgramController({
+    runtime, executor, provider: currentModel,
+    prepare: (goals, signal) => {
+      const snap = runtime.snapshot
+      if (!snap) throw new Error('当前没有有效快照')
+      return prepareGoals(goals, snap, (name, type) => bridge.rules(name, type), signal)
     },
-    log: (msg) => console.log(msg),
+    log: message => console.log(message),
   })
 
-  let lastSession = 0
+  let pendingRestore: PersistedState | undefined
+  try { pendingRestore = readStateFile(STATE_FILE) }
+  catch (err) { if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.log(`[companion] 未恢复旧状态：${String(err).slice(0, 180)}`) }
+  let lastSessionKey = ''
   let stateDirty = false
-  const markDirty = () => {
-    stateDirty = true
-  }
+  const markDirty = () => { stateDirty = true }
   const saveState = () => {
-    try {
-      writeFileSync(STATE_FILE, JSON.stringify(persistState(runtime, formations, lastSession)))
-    } catch (err) {
-      console.log(`[companion] 状态保存失败: ${String(err).slice(0, 80)}`)
-    }
+    // 等待当前页面的第一份快照时，不能用空状态覆盖待恢复文件。
+    if (!runtime.snapshot) return
+    try { saveStateFile(STATE_FILE, persistState(runtime)); stateDirty = false }
+    catch (err) { console.log(`[companion] 状态保存失败：${String(err).slice(0, 120)}`) }
   }
-  // 启动恢复：任务/编队从上次会话恢复（换局后由 runtime 的会话失效机制自然终结）。
-  try {
-    const state = JSON.parse(readFileSync(STATE_FILE, 'utf8')) as PersistedState
-    lastSession = state.session
-    const restored = restoreState(runtime, formations, state)
-    console.log(`[companion] 已恢复 ${restored} 个任务、${state.formations.length} 个编队（对局代次 ${state.session}）`)
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.log(`[companion] 未恢复旧状态: ${String(err).slice(0, 160)}`)
-  }
-  setInterval(() => {
-    if (stateDirty) {
-      stateDirty = false
-      saveState()
-    }
-  }, 3000).unref()
+  setInterval(() => { if (stateDirty) saveState() }, 3000).unref()
 
-  bridge.onSnapshot((snap) => {
-    if (snap.session !== lastSession) {
-      lastSession = snap.session
-      console.log(`\n[companion] 检测到对局会话 #${snap.session}，快照 tick=${snap.tick}，己方单位 ${snap.self.length}，可见敌人 ${snap.enemies.length}`)
-      markDirty()
+  bridge.onSnapshot(snap => {
+    if (snap.sessionKey !== lastSessionKey) {
+      lastSessionKey = snap.sessionKey
+      console.log(`[companion] 当前对局 ${snap.sessionKey}，tick=${snap.tick}，己方=${snap.self.length}`)
     }
-    // 快照驱动任务运行时；异常不阻断桥回调。memory 每步演进，标记脏供定时持久化。
-    void runtime
-      .onSnapshot(snap)
-      .then(() => markDirty())
-      .catch((err) => console.error(`[runtime] 快照处理错误: ${String(err)}`))
+    const advance = runtime.onSnapshot(snap)
+    let restored = false
+    if (pendingRestore) {
+      const state = pendingRestore
+      pendingRestore = undefined
+      try {
+        const count = restoreState(runtime, state)
+        restored = true
+        console.log(`[companion] 同局恢复 ${count} 份脚本、${runtime.goals.size} 个目标`)
+      } catch (err) { console.log(`[companion] 未恢复：${String(err).slice(0, 180)}`) }
+    }
+    void advance.then(() => {
+      markDirty()
+      if (restored) {
+        for (const program of runtime.programs.values()) {
+          const waiting = program.goalIds.some(id => { const goal = runtime.goals.get(id); return goal && goal.status !== 'cancelled' && goal.status !== 'completed' && JSON.stringify(goal.spec) !== JSON.stringify(goal.activeSpec) })
+          if (waiting && program.status !== 'paused' && program.status !== 'stopped') void controller.refresh(program.id).catch(err => console.log(`[companion] 恢复待生效目标失败：${String(err)}`))
+        }
+      }
+    }).catch(err => console.error(`[runtime] 快照处理错误：${String(err)}`))
   })
 
   // 找到游戏页（companion 重启后页面还在，桥也还在）。
@@ -546,28 +205,17 @@ async function main(): Promise<void> {
   if (!providers.size) {
     console.log('[companion] 未配置任何云模型 key（.env），task new 不可用；桥命令不受影响。')
   }
-  let currentProvider: OpenAICompatibleProvider | undefined
   const ctx: CommandContext = {
-    browser,
-    bridge,
-    page,
-    runtime,
-    executor,
-    formations,
-    providers,
-    compileInputs,
-    repairCounts,
-    currentProvider: () => {
-      if (!currentProvider) currentProvider = providers.values().next().value
-      if (!currentProvider) throw new Error('没有可用的云模型（检查 .env 的 *_API_KEY）')
-      return currentProvider
-    },
+    browser, bridge, page, runtime, formations, providers, controller,
+    currentProvider: currentModel,
   }
+  controller.setProvider(() => ctx.currentProvider())
   let running = true
   const runLine = async (line: string): Promise<string> => {
     if (!running) return '程序正在退出'
-    const out = await handleCommand(line, ctx)
-    markDirty() // 命令可能改变了任务/编队状态
+    let out: string
+    try { out = await handleCommand(line, ctx) }
+    finally { markDirty(); saveState() } // 成功和失败的目标变更都在回显前保存
     if (out === '__QUIT__' || out === '__QUIT_HARD__') {
       hardQuit = out === '__QUIT_HARD__'
       running = false

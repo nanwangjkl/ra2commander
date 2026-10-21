@@ -1,80 +1,88 @@
-import type { TaskRuntime, TaskSpec, TaskState } from './index.ts'
-import type { FormationRegistry } from './formation.ts'
+import { closeSync, constants, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { ownerId, goalOwner } from '@ra2c/contracts'
+import type { TaskRuntime } from './index.ts'
+import type { Formation } from './formation.ts'
+import type { GoalState, ProgramState, ProductionRecord, Handoff } from './state.ts'
 
-/** 持久化状态（.runtime/state.json）：companion 重启后恢复指挥。 */
 export interface PersistedState {
-  version: 2
-  /** 保存时的对局代次（恢复后换局由 runtime 的会话失效机制自动终结旧任务）。 */
+  version: 3
   session: number
   sessionKey: string
-  pausedQueues: Array<[number, string]>
   savedAt: number
-  formations: Array<{ id: string; memberIds: number[]; originalMemberIds: number[]; createdAt: number }>
-  tasks: Array<{
-    spec: TaskSpec
-    code: string
-    version: number
-    memory: unknown
-    status: string
-    authority: TaskState['authority']
-  }>
+  formations: Formation[]
+  programs: ProgramState[]
+  goals: Array<[string, GoalState]>
+  production: ProductionRecord[]
+  seenUnitIds: number[]
+  pausedQueues: Array<[number, string]>
+  handoffs: Handoff[]
+}
+export function persistState(runtime: TaskRuntime): PersistedState {
+  return structuredClone({ version: 3, session: runtime.session, sessionKey: runtime.battleKey, savedAt: Date.now(), formations: runtime.formations.list(), programs: [...runtime.programs.values()], goals: [...runtime.goals], production: runtime.production, seenUnitIds: [...runtime.seenUnitIds], pausedQueues: [...runtime.pausedQueues], handoffs: runtime.handoffs })
 }
 
-/** 全量导出（stopped 任务不导出；memory 保持脚本自己的 JSON 结构）。 */
-export function persistState(
-  runtime: TaskRuntime,
-  formations: FormationRegistry,
-  session: number,
-): PersistedState {
-  const tasks: PersistedState['tasks'] = []
-  for (const t of runtime.tasks.values()) {
-    if (!t.script || t.status === 'stopped') continue
-    tasks.push({ spec: t.spec, code: t.script.code, version: t.script.version, memory: t.memory, status: t.status, authority: t.authority })
+/** 恢复前先观察页面；持久化文件不能替代当前对局身份证明。 */
+export function restoreState(runtime: TaskRuntime, state: PersistedState): number {
+  if (state.version !== 3) throw new Error('旧 v1/v2 任务不能合并到新脚本协议，请核对游戏队列后重新下令')
+  if (!state.sessionKey || runtime.snapshot?.sessionKey !== state.sessionKey) throw new Error('保存状态与当前对局不符，未恢复')
+  if (runtime.programs.size || runtime.goals.size) throw new Error('当前已有目标，不能覆盖恢复')
+  if (!Array.isArray(state.programs) || !Array.isArray(state.goals) || !Array.isArray(state.formations) || !Array.isArray(state.production) || !Array.isArray(state.handoffs) || !Array.isArray(state.seenUnitIds) || !Array.isArray(state.pausedQueues)) throw new Error('状态结构不完整')
+  const ids = new Set(state.goals.map(([id]) => id))
+  if (ids.size !== state.goals.length) throw new Error('重复目标 ID')
+  const programIds = new Set(state.programs.map(p => p.id))
+  if (programIds.size !== state.programs.length) throw new Error('重复控制对象')
+  for (const p of state.programs) {
+    if (p.id !== ownerId(p.owner) || !['idle', 'active', 'paused', 'stopped'].includes(p.status) || !Number.isSafeInteger(p.revision) || !Number.isSafeInteger(p.generation) || !Array.isArray(p.goalIds) || !Array.isArray(p.activeGoalIds) || [...p.goalIds, ...p.activeGoalIds].some(id => !ids.has(id))) throw new Error('控制对象状态非法')
   }
-  return {
-    version: 2,
-    session,
-    sessionKey: runtime.battleKey,
-    pausedQueues: runtime.ledger.export(),
-    savedAt: Date.now(),
-    formations: formations.list().map((f) => ({ ...f, memberIds: [...f.memberIds], originalMemberIds: [...f.originalMemberIds] })),
-    tasks,
+  for (const [id, goal] of state.goals) {
+    if (id !== goal.spec.id || !programIds.has(goal.ownerId) || goal.ownerId !== ownerId(goalOwner(goal.spec)) || (goal.activeSpec && (goal.activeSpec.id !== id || ownerId(goalOwner(goal.activeSpec)) !== goal.ownerId)) || !goal.facts || !Array.isArray(goal.facts.members) || !['pending', 'active', 'completed', 'cancelled'].includes(goal.status)) throw new Error('目标状态非法')
   }
-}
-
-/**
- * 恢复：编队原样重建（跨局无效成员由快照存活过滤自然终结）；
- * 任务按原状态恢复（active/paused），执行器在每次运行前重新检查代码契约。
- */
-export function restoreState(
-  runtime: TaskRuntime,
-  formations: FormationRegistry,
-  state: PersistedState,
-): number {
-  if (state.version !== 2 || !state.sessionKey) throw new Error('旧状态缺少独立授权或对局标识，请重新下令')
-  for (const t of state.tasks) {
-    if (!t.authority || !Array.isArray(t.authority.members) || t.authority.members.length !== t.spec.originalMembers.length || typeof t.authority.retreatTriggered !== 'boolean' || Object.values(t.authority.produced).some(n => !Number.isSafeInteger(n) || n < 0)) throw new Error('持久化授权状态非法')
-  }
+  for (const p of state.programs) if ([...p.goalIds, ...p.activeGoalIds].some(id => state.goals.find(([key]) => key === id)![1].ownerId !== p.id)) throw new Error('目标归属非法')
+  for (const r of state.production) if (!ids.has(r.goalId) || !Number.isSafeInteger(r.quantity) || r.quantity < 1 || !Array.isArray(r.observedIds) || !['reserved', 'submitted', 'unknown', 'rejected'].includes(r.state)) throw new Error('生产记录非法')
+  const unitOwners = new Set<number>()
+  const formationIds = new Set<string>()
   for (const f of state.formations) {
-    formations.create(f.id, f.memberIds, { force: true })
-    // 保留原始成员基准（create 会把当前成员当基准；补一次修正）。
-    const created = formations.list().find((x) => x.id === f.id)
-    if (created) created.originalMemberIds = [...f.originalMemberIds]
+    if (formationIds.has(f.id) || !Array.isArray(f.memberIds) || !Array.isArray(f.originalMemberIds) || f.memberIds.some(id => !Number.isSafeInteger(id) || unitOwners.has(id))) throw new Error('编队归属非法')
+    formationIds.add(f.id)
+    for (const id of f.memberIds) unitOwners.add(id)
   }
-  let restored = 0
-  runtime.adoptSession(state.session, state.sessionKey)
-  for (const t of state.tasks) {
-    if (t.status !== 'active' && t.status !== 'paused') continue
-    runtime.deploy(t.spec, t.code)
-    const task = runtime.tasks.get(t.spec.id) as TaskState | undefined
-    if (task) {
-      task.memory = t.memory
-      task.authority = t.authority
-      task.script!.version = t.version
-      if (t.status === 'paused') task.status = 'paused'
-      restored++
+  for (const h of state.handoffs) if (!ids.has(h.goalId) || !Array.isArray(h.unitIds) || !Array.isArray(h.owners) || h.unitIds.some(id => !h.owners.some(([unit]) => unit === id))) throw new Error('交接记录非法')
+  // 验证通过后一次导入；不恢复编译中的候选或旧请求令牌。
+  for (const f of state.formations) {
+    runtime.formations.create(f.id, f.memberIds)
+    Object.assign(runtime.formations.list().find(item => item.id === f.id)!, structuredClone(f))
+  }
+  for (const p of state.programs) runtime.programs.set(p.id, structuredClone(p))
+  for (const [id, goal] of state.goals) runtime.goals.set(id, structuredClone(goal))
+  runtime.production.push(...structuredClone(state.production).map(r => ({ ...r, state: r.state === 'reserved' ? 'unknown' as const : r.state })))
+  runtime.seenUnitIds.clear()
+  for (const id of state.seenUnitIds) runtime.seenUnitIds.add(id)
+  for (const [queue, id] of state.pausedQueues) if (ids.has(id) && Number.isInteger(queue) && queue >= 0 && queue <= 5) runtime.pausedQueues.set(queue, id)
+  runtime.handoffs.push(...structuredClone(state.handoffs))
+  return state.programs.filter(p => p.script).length
+}
+
+export function readStateFile(path: string): PersistedState {
+  const state = JSON.parse(readFileSync(path, 'utf8')) as PersistedState
+  if (state.version !== 3) throw new Error('发现旧 v1/v2 状态；文件保留，请先核对游戏中已有生产，再重新下令')
+  return state
+}
+
+/** JSON 检查点先 fsync 再替换。保留旧格式备份，不修改浏览器资源。 */
+export function saveStateFile(path: string, state: PersistedState): void {
+  mkdirSync(dirname(path), { recursive: true })
+  if (existsSync(path)) {
+    const previous = JSON.parse(readFileSync(path, 'utf8')) as { version?: number }
+    if (previous.version !== 3) {
+      try { copyFileSync(path, `${path}.v${previous.version ?? 'unknown'}.bak`, constants.COPYFILE_EXCL) }
+      catch (err) { if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err }
     }
   }
-  runtime.ledger.restore(state.pausedQueues.filter(([q, id]) => Number.isInteger(q) && q >= 0 && q <= 5 && runtime.tasks.get(id)?.spec.allowedQueueTypes?.includes(q)))
-  return restored
+  const temp = `${path}.${process.pid}.tmp`
+  try {
+    const fd = openSync(temp, 'w', 0o600)
+    try { writeFileSync(fd, JSON.stringify(state)); fsyncSync(fd) } finally { closeSync(fd) }
+    renameSync(temp, path)
+  } finally { if (existsSync(temp)) unlinkSync(temp) }
 }
