@@ -21,7 +21,7 @@
 
 持续补电目前能在出现需求后补足，但建设与电厂的队列安排仍可能造成短暂缺电。本轮将其保留为部分达标，不以最终电力充足覆盖过程中的违例。
 
-## 重跑和查看
+## 重跑
 
 测试定义：`tests/scenarios/voice-six-commands.json`。执行器：`apps/companion/tools/run-voice-scenario.mjs`。
 
@@ -29,9 +29,8 @@
 pnpm companion
 pnpm scenario:voice          # 需先在游戏中新开只有基地车的盟军冰天雪地对局
 pnpm scenario:voice --resume # 仅续测同局，已完成步骤和已激活目标不重放
-pnpm scenario:report        # 生成本地报告；安装ffmpeg后同时导出约6倍速画面片段
 ```
 
-`.runtime/voice-six/report.html` 包含录像、六步截图、模型理解、目标和受阻记录；`result.json` 保存实际观测，`frames/000100.jpg` 是本轮缺电证据。原话、解析和目标记录在 `.runtime/transcripts/`。这些运行时产物不纳入版本库。
+2026-10-22 按用户要求移除了测试提示、自动跟随镜头、定时截图和报告/录像生成。用户自行观看游戏，执行器只下达指令、读取状态并在终端反馈进度。`.runtime/voice-six/progress.json` 仅保存续测所需的步骤、指令响应和末次败北状态；旧版 `result.json` 可用于迁移续测进度。原话、解析和目标仍记录在 `.runtime/transcripts/`。这些运行时数据不纳入版本库。
 
 自动化新增4项基本接入检查：转写名称绑定及目标合并、实际展开确认、新产物编队、持续补电不重复下单。它们不证明建设过程始终有电，实机部分达标的结果单独保留。

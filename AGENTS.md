@@ -46,6 +46,8 @@ pnpm maps:check           # 读取并校验默认冰天雪地 17 区方案
 
 原型阶段优先验证真实对局体验。自动化测试保留正常命令链路、已修复的关键故障和数据有效性检查；新增用例应针对具体故障或基本运行能力，避免用大量断言固定尚未定型的授权策略、命令参数和数值阈值。
 
+实机测试由用户自行观看。除非用户明确要求，不自动截图、录屏、生成测试报告，也不添加游戏内测试提示或自动移动镜头。
+
 分区读取与查询不需要原始游戏素材或图片。检查其他方案或查询指定格子：
 
 ```sh
@@ -76,10 +78,9 @@ pnpm companion
 ```sh
 pnpm scenario:voice
 pnpm scenario:voice --resume  # 同局续测，已完成项目不重放
-pnpm scenario:report         # 本地HTML报告；视频导出需要ffmpeg
 ```
 
-测试定义在 `tests/scenarios/voice-six-commands.json`，按原话依次调用模型；观察实际建造、产出、编队、分区位置、电力与敌方败北状态。补电同时检查过程缺电，最终健康但曾缺电会标记部分达标；已确认败北的玩家可能不再是combatant。画面字幕、分步截图、连续帧和结果保存在 `.runtime/voice-six/`。本测试访问已配置云模型并会执行真实游戏动作，不属于 `pnpm test`。首次实机结果见[六句测试记录](doc/roadmap/voice-six-commands.md)。
+测试定义在 `tests/scenarios/voice-six-commands.json`，按原话依次调用模型；读取实际建造、产出、编队、分区位置、电力与敌方败北状态，在终端反馈进度。补电同时检查过程缺电，最终健康但曾缺电会标记部分达标；已确认败北的玩家可能不再是combatant。执行器仅在 `.runtime/voice-six/progress.json` 保存续测所需的步骤、指令响应和末次败北状态，不采集画面或生成报告；`--resume` 也可读取旧版 `result.json` 迁移进度。本测试访问已配置云模型并会执行真实游戏动作，不属于 `pnpm test`。首次实机结果见[六句测试记录](doc/roadmap/voice-six-commands.md)。
 
 命令有两个入口，命令集相同（`help` 查看）：
 
