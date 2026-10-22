@@ -5,6 +5,8 @@ date: 2026-10-06
 
 # 战略决定权完全属于玩家
 
+2026-10-22 修订：本记录中“歧义通过语音澄清”的默认规则由 [ADR 007](007-action-first-command-interpretation.md) 替代。命令有合理解释时优先执行，允许玩家后续纠正；选择具体阵营项目和执行对象属于命令解释。
+
 本项目基于 [ra2web](https://github.com/ra2web/ra2web.github.io) 设计独立的本机语音指挥伴随程序。
 
 ## 背景

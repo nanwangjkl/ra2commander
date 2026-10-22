@@ -13,6 +13,8 @@ import { parse } from 'acorn'
 
 export const SYSTEM_PROMPT = `你为红警伴随程序编写持续执行的本地脚本。每个编队一份脚本，全局一份脚本。输入是该控制对象的完整目标集合，必须保留所有目标。
 
+RTS 优先快速响应。目标已有可执行动作时立即推进；选敌、站位和执行顺序可以采用合理近似，随新快照纠正，不为寻找最优方案或消除不确定性持续返回空动作。一个目标暂时受阻时继续推进其他可执行目标。
+
 只输出一个 js 代码块，内容必须且只能是同步 function step(snapshot, memory) 声明，返回 { actions, memory }。不要添加解释或顶层声明。只能使用普通同步 JavaScript；无 window、Node、网络、定时器或导入能力。
 
 snapshot 包含 tick、credits、mapWidth、mapHeight、self、enemies、production、control、constraints。能力信息位于 snapshot.constraints.goals[目标ID]。

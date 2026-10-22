@@ -6,9 +6,10 @@ import { join } from 'node:path'
 import { StepExecutor } from '../packages/js-worker/src/index.ts'
 import { ProgramController } from '../apps/companion/src/controller.ts'
 import { runTranscript } from '../apps/companion/src/transcript.ts'
+import { prepareGoals } from '../apps/companion/src/prepare-goals.ts'
 import { activate, harness, production, snapshot } from './helpers.ts'
 
-test('模拟转写保留原话，将唯一显示名绑定为内部名并合并卫星与补电目标', async () => {
+test('模拟转写保留原话，将显示名绑定为内部名并合并卫星与补电目标', async () => {
   const executor = new StepExecutor()
   const folder = mkdtempSync(join(tmpdir(), 'ra2c-transcript-'))
   const inputs: Array<{ messages: Array<{ content: string }> }> = []
@@ -30,6 +31,58 @@ test('模拟转写保留原话，将唯一显示名绑定为内部名并合并�
     assert.deepEqual(goals.map(g => g.spec.kind === 'production' ? g.spec.target : ''), ['GASPYSAT', 'GAPOWR'])
     assert.equal(runtime.programs.get('global')!.script!.version, 1)
     assert.equal(JSON.parse(inputs[0]!.messages[1]!.content).faction, 'Allied 盟军')
+  } finally { await executor.dispose(); rmSync(folder, { recursive: true, force: true }) }
+})
+
+test('同名重工和模型阵营误选都能落到本局可用项目并提交生产', async () => {
+  for (const example of [
+    { self: snapshot().self, available: 'NAWEAP', target: 'War Factory' },
+    { self: [{ ...snapshot().self[0]!, name: 'GACNST', type: 2 }], available: 'GAWEAP', target: 'NAWEAP' },
+  ]) {
+    const executor = new StepExecutor()
+    const folder = mkdtempSync(join(tmpdir(), 'ra2c-transcript-'))
+    let calls = 0
+    const provider = { generate: async () => ({ text: ++calls === 1
+      ? JSON.stringify({ summary: '制造重工', operations: [{ kind: 'produce', target: example.target, quantity: 1 }] })
+      : 'function step(s,m){const g=s.control.goals[0];return {actions:g.produceRemaining[g.spec.target]>0?[{goalId:g.spec.id,request:{kind:"produce",name:g.spec.target,quantity:1}}]:[],memory:m}}', model: 'fixture', durationMs: 0 }) }
+    const rules = async (name: string, type: number) => type === 2 && ['GAWEAP', 'NAWEAP'].includes(name)
+      ? { label: 'War Factory', power: 0, prerequisite: [] } : undefined
+    try {
+      const { runtime, submitted } = await harness(executor)
+      const snap = snapshot({ seq: 2, self: example.self, production: { power: { total: 100, drain: 0, isLowPower: false }, queues: [], available: [example.available] } })
+      await runtime.onSnapshot(snap)
+      const controller = new ProgramController({ runtime, executor, provider: () => provider as never,
+        prepare: (goals, signal) => prepareGoals(goals, runtime.snapshot!, rules, signal) })
+      const output = await runTranscript('制造重工', { runtime, controller, formations: runtime.formations, currentProvider: () => provider, bridge: { rules } } as never, folder)
+      assert.match(output, /已生效/)
+      await runtime.onSnapshot({ ...snap, seq: 3 })
+      assert.deepEqual(submitted, [{ kind: 'produce', name: example.available, quantity: 1 }])
+    } finally { await executor.dispose(); rmSync(folder, { recursive: true, force: true }) }
+  }
+})
+
+test('多辆基地车会选择一辆展开，同句无法绑定的操作不阻止它执行', async () => {
+  const executor = new StepExecutor()
+  const folder = mkdtempSync(join(tmpdir(), 'ra2c-transcript-'))
+  let calls = 0
+  const provider = { generate: async () => ({ text: ++calls === 1
+    ? JSON.stringify({ summary: '展开基地并移动编队', operations: [{ kind: 'move', formationId: '不存在的队', regionName: '东区' }, { kind: 'deploy' }] })
+    : 'function step(s,m){const g=s.control.goals[0];return {actions:[{goalId:g.spec.id,request:{kind:"deploy",unitIds:g.unitIds}}],memory:m}}', model: 'fixture', durationMs: 0 }) }
+  try {
+    const { runtime, submitted } = await harness(executor)
+    const snap = snapshot({ seq: 2, self: [
+      { ...snapshot().self[0]!, name: 'AMCV', canDeploy: true },
+      { ...snapshot().self[1]!, name: 'AMCV', canDeploy: true },
+    ] })
+    await runtime.onSnapshot(snap)
+    const controller = new ProgramController({ runtime, executor, provider: () => provider as never })
+    const rules = async (name: string, type: number) => name === 'AMCV' && type === 7 ? { deploysInto: 'GACNST' } : undefined
+    const output = await runTranscript('展开基地，东区那队移动过去', { runtime, controller, formations: runtime.formations, currentProvider: () => provider, bridge: { rules } } as never, folder)
+    assert.match(output, /已生效/)
+    assert.match(output, /未执行部分：.*编队不存在/)
+    await runtime.onSnapshot({ ...snap, seq: 3 })
+    const action = submitted[0]
+    assert.ok(action?.kind === 'deploy' && action.unitIds.length === 1 && snap.self.some(u => u.id === action.unitIds[0]))
   } finally { await executor.dispose(); rmSync(folder, { recursive: true, force: true }) }
 })
 

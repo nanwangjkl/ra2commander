@@ -5,6 +5,8 @@ date: 2026-10-06
 
 # 玩家只发语音命令，AI 编写全部微操
 
+2026-10-22 修订：本记录中“歧义通过语音澄清”的默认规则由 [ADR 007](007-action-first-command-interpretation.md) 替代。AI 优先按当前战况作合理选择并执行，玩家通过后续命令纠正。
+
 本项目基于 [ra2web](https://github.com/ra2web/ra2web.github.io) 设计独立的本机语音指挥伴随程序。
 
 ## 背景
