@@ -24,6 +24,8 @@ import { handleCommand, usage, type CommandContext } from './commands.ts'
 import { ProgramController } from './controller.ts'
 import { prepareGoals } from './prepare-goals.ts'
 import { buildWorkbench, openWorkbench, WORKBENCH_PATH } from './workbench.ts'
+import { CommandLog, newCommandId } from './command-log.ts'
+import { runTranscript } from './transcript.ts'
 
 // import.meta.dirname = apps/companion/src，仓库根需上溯三级。
 const ROOT = resolve(import.meta.dirname, '../../..')
@@ -106,6 +108,9 @@ async function main(): Promise<void> {
   }
 
   let bridge: WerhdBridge | undefined
+  // 阶段 2：命令记录与事件流；HTTP 端点在 ctx 建立前注册，处理函数延后绑定。
+  const commandLog = new CommandLog()
+  let submitSay: ((text: string, source: 'sidebar' | 'cli', commandId: string) => Promise<string>) | undefined
   const server = await startStaticServer({
     root: GAME_DIR,
     extraFiles: { '/pack.7z': PACK_PATH, ...buildWorkbench(ROOT) },
@@ -114,6 +119,43 @@ async function main(): Promise<void> {
     handleRequest: async (req, res) => {
       const pathname = new URL(req.url ?? '/', 'https://127.0.0.1').pathname
       if (pathname === WORKBENCH_PATH.slice(0, -1)) { res.writeHead(308, { location: WORKBENCH_PATH }); res.end(); return true }
+      if (pathname === `${WORKBENCH_PATH}say`) {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return true }
+        if (!submitSay) { res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: '伴随程序尚未就绪' })); return true }
+        let text = ''
+        for await (const chunk of req) text += chunk
+        let parsed: { text?: unknown }
+        try { parsed = JSON.parse(text || '{}') as { text?: unknown } } catch { parsed = {} }
+        if (typeof parsed.text !== 'string' || !parsed.text.trim()) {
+          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: '缺少命令文本' }))
+          return true
+        }
+        const commandId = newCommandId()
+        res.writeHead(202, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ commandId }))
+        // 后台推进；各阶段状态经事件流推送，不阻塞界面继续输入。
+        // runTranscript 内部已按阶段发事件（含失败/取消），此处只记录意外异常。
+        void submitSay(parsed.text, 'sidebar', commandId).catch(error => {
+          console.log(`[companion] 命令 ${commandId} 处理异常：${String(error).slice(0, 160)}`)
+        })
+        return true
+      }
+      if (pathname === `${WORKBENCH_PATH}events`) {
+        if (req.method !== 'GET') { res.writeHead(405); res.end(); return true }
+        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', connection: 'keep-alive' })
+        // 断线补齐：按 Last-Event-ID 续传，未带则从空开始（阶段 2 内存历史）。
+        const lastId = Number(req.headers['last-event-id'] ?? 0)
+        for (const event of commandLog.since(Number.isFinite(lastId) ? lastId : 0)) {
+          res.write(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`)
+        }
+        const unsubscribe = commandLog.subscribe((event) => {
+          res.write(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`)
+        })
+        const heartbeat = setInterval(() => res.write(': ping\n\n'), 25_000)
+        req.on('close', () => { clearInterval(heartbeat); unsubscribe() })
+        return true
+      }
       if (pathname !== `${WORKBENCH_PATH}status`) return false
       if (req.method !== 'GET') { res.writeHead(405); res.end(); return true }
       let game = 'loading'
@@ -220,7 +262,9 @@ async function main(): Promise<void> {
   const ctx: CommandContext = {
     browser, bridge: gameBridge, page, runtime, formations, providers, controller,
     currentProvider: currentModel,
+    commandLog,
   }
+  submitSay = (text, source, commandId) => runTranscript(text, ctx, ROOT, { commandId, source, log: commandLog })
   controller.setProvider(() => ctx.currentProvider())
   let running = true
   const runLine = async (line: string): Promise<string> => {

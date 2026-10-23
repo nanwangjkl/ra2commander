@@ -62,6 +62,8 @@ function parseIds(spec: string, snap: Snapshot | undefined): number[] | undefine
   return ids
 }
 
+import type { CommandLog } from './command-log.ts'
+
 export interface CommandContext {
   browser: Browser
   bridge: WerhdBridge
@@ -74,6 +76,8 @@ export interface CommandContext {
   mapRegions?: MapRegionIndex
   mapSessionKey?: string
   transcriptAbort?: AbortController
+  /** 命令记录（阶段 2）：界面/终端/TCP 的 say 统一入流。 */
+  commandLog?: CommandLog
 }
 
 const TYPE_LABEL: Record<number, string> = { 1: '空军', 2: '建筑', 3: '步兵', 7: '车辆' }

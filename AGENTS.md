@@ -73,7 +73,7 @@ python3 packages/maps/tools/import_regions.py --map .runtime/maps/ice/mp32s8.map
 pnpm companion
 ```
 
-`pnpm companion` 会：本地 https 静态伺服游戏目录（默认 `https://127.0.0.1:8787/`，自签证书）→ 启动持久化 Chromium（profile 在 `.runtime/profile`，已 gitignore）→ CDN 代理转发 → 注入页面桥 → 打开 `https://127.0.0.1:8787/commander/` 工作台并处理游戏启动对话框。左侧为游戏 iframe，右侧目前仅有侧栏骨架和连接状态；命令记录及录音将在后续阶段接入。玩家手动进入 单机模式 → 遭遇战，桥检测到游戏 frame 的 `window.werhd` 后即可调动部队。
+`pnpm companion` 会：本地 https 静态伺服游戏目录（默认 `https://127.0.0.1:8787/`，自签证书）→ 启动持久化 Chromium（profile 在 `.runtime/profile`，已 gitignore）→ CDN 代理转发 → 注入页面桥 → 打开 `https://127.0.0.1:8787/commander/` 工作台并处理游戏启动对话框。左侧为游戏 iframe，右侧为命令侧栏：卡片实时显示原话、理解摘要、实际选择与错误（阶段 2），底部输入框可提交文本模拟语音；录音将在后续阶段接入。玩家手动进入 单机模式 → 遭遇战，桥检测到游戏 frame 的 `window.werhd` 后即可调动部队。
 
 侧栏可拖动边界调宽、收起；顶部全屏按钮及 F11 对整个工作台生效，保留侧栏。界面静态资产启动时从 `apps/companion/ui/` 编译至 `.runtime/ui/`。Companion 重启复用已有工作台和游戏 frame，不自动刷新页面；仍在进行的旧版独立游戏页会保留，结束旧对局后再打开工作台。刷新整个工作台会重载游戏，重连不需要刷新。`eval` 在游戏 frame 求值，手动 `shot` 截取整个工作台；没有自动截图。
 

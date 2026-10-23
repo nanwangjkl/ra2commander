@@ -35,3 +35,29 @@ h2 { font-size: 14px; font-weight: 400; color: #b1bcc8; margin: 0; }
 html.sidebar-collapsed .workspace { grid-template-columns: minmax(0, 1fr) 0 0; }
 html.sidebar-collapsed #sidebar, html.sidebar-collapsed #resize-sidebar { visibility: hidden; }
 @media (max-width: 900px) { .toolbar { gap: 12px; padding: 0 10px; } .toolbar button { padding: 5px 8px; } #notice { display: none; } .sidebar-heading, .sidebar-footer { padding-inline: 16px; } }
+
+/* ---- 命令卡片与输入区（阶段 2）---- */
+.command-cards { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.command-card { border: 1px solid #2c3a48; border-radius: 8px; background: #1a2431; padding: 10px 12px; font-size: 12px; }
+.command-card.failed { border-color: #5c3a37; background: #241b1d; }
+.card-head { display: flex; align-items: center; gap: 8px; color: #8b9caf; font-size: 11px; }
+.card-head time { font-variant-numeric: tabular-nums; }
+.card-source { border: 1px solid #3a4a5c; border-radius: 3px; padding: 0 4px; font-size: 10px; }
+.card-stage { margin-left: auto; font-size: 11px; color: #d3b98a; }
+.stage-effective { color: #8fc9a8; }
+.stage-failed, .stage-cancelled { color: #d08077; }
+.stage-understanding, .stage-generating { color: #d3b98a; }
+.card-text { margin: 8px 0 0; font-size: 13px; color: #dbe3ec; }
+.card-summary { margin: 6px 0 0; color: #a9c4b4; }
+.card-goals { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.card-goals li { display: flex; justify-content: space-between; gap: 8px; color: #9fb2c4; }
+.goal-status { flex: none; color: #8fc9a8; }
+.card-skipped { list-style: none; margin: 6px 0 0; padding: 6px 8px; border-left: 2px solid #b28c4e; background: #211d16; color: #c9ad7d; }
+.card-error { margin: 8px 0 0; padding: 6px 8px; border-left: 2px solid #a35b56; background: #241a1b; color: #d99a94; white-space: pre-wrap; word-break: break-all; }
+.composer { border-top: 1px solid #293541; padding: 12px 16px 14px; background: #141b23; }
+.composer form { display: flex; gap: 8px; }
+.composer input { flex: 1; min-width: 0; background: #0f161e; border: 1px solid #33414f; border-radius: 6px; color: #dbe3ec; padding: 8px 10px; font-size: 13px; }
+.composer input:focus { outline: 1px solid #98714e; }
+.composer button { background: #6d4f33; color: #f2e3cd; border: 0; border-radius: 6px; padding: 8px 14px; font-size: 13px; cursor: pointer; }
+.composer button:hover { background: #7d5b3b; }
+.composer-hint { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; font-size: 11px; color: #75859a; }

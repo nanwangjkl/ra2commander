@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { GoalSpec, ProductionGoal } from '@ra2c/contracts'
 import type { CommandContext } from './commands.ts'
+import { newCommandId, type CommandEvent, type TraceOptions } from './command-log.ts'
 
 export const TRANSCRIPT_PROMPT = `把红警玩家的语音转写文本解析为明确目标，只输出 JSON {"summary":"简短中文理解","operations":[...]}。
 RTS 优先快速响应。目标能理解时，根据当前战况选一个合理解释并执行，允许玩家用下一条命令纠正；不要为了消除歧义停下来询问。summary 简短说明你的选择，不要求确认。
@@ -28,10 +29,16 @@ const PRODUCTION_FAMILIES = [
 type Operation = { kind: 'deploy' } | { kind: 'produce'; target: string; quantity: number; formationId?: string }
   | { kind: 'move'; formationId: string; regionName: string } | { kind: 'power'; reserve: number } | { kind: 'attackAll' }
 
-export async function runTranscript(text: string, ctx: CommandContext, root: string): Promise<string> {
+export async function runTranscript(text: string, ctx: CommandContext, root: string, trace?: TraceOptions): Promise<string> {
+  // 终端/TCP 与界面走同一条事件流；未显式提供记录时（CLI 入口）也纳入侧栏。
+  const active = trace ?? (ctx.commandLog ? { commandId: newCommandId(), source: 'cli' as const, log: ctx.commandLog } : undefined)
+  const emit = (stage: Partial<CommandEvent> & { stage: CommandEvent['stage'] }) => {
+    if (active) active.log.emit({ commandId: active.commandId, source: active.source, ...stage })
+  }
   if (!text.trim()) throw new Error('缺少模拟语音转写文本')
+  emit({ stage: 'received', text })
   const snap = ctx.runtime.snapshot
-  if (!snap) throw new Error('请先进入对局')
+  if (!snap) { emit({ stage: 'failed', error: '请先进入对局' }); throw new Error('请先进入对局') }
   ctx.transcriptAbort?.abort()
   const abort = new AbortController()
   ctx.transcriptAbort = abort
@@ -64,14 +71,22 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     const names = new Set(matches.flatMap(r => PRODUCTION_FAMILIES.find(f => f.includes(r.name)) ?? [r.name]))
     return catalog.find(r => names.has(r.name))
   }
+  emit({ stage: 'understanding' })
   const result = await ctx.currentProvider().generate({ messages: [
     { role: 'system', content: TRANSCRIPT_PROMPT },
     { role: 'user', content: JSON.stringify({ text, faction: prefix === 'GA' ? 'Allied 盟军' : prefix === 'NA' ? 'Soviet 苏军' : prefix === 'YA' ? 'Yuri 尤里' : null, self: snap.self.map(u => ({ id: u.id, name: u.name, canDeploy: u.canDeploy })), formations: ctx.formations.list(), catalog, map: ctx.mapRegions ? { name: ctx.mapRegions.scheme.map.name, regions: ctx.mapRegions.scheme.regions.map(r => r.name) } : null }) },
   ], maxTokens: 2048, thinking: 'disabled', signal })
   check()
   const raw = result.text.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '').trim()
-  const plan = JSON.parse(raw) as { summary: string; operations: Operation[] }
-  if (!plan || typeof plan.summary !== 'string' || !Array.isArray(plan.operations) || plan.operations.length > 8) throw new Error('转写解析格式非法')
+  let plan: { summary: string; operations: Operation[] }
+  try {
+    plan = JSON.parse(raw) as { summary: string; operations: Operation[] }
+    if (!plan || typeof plan.summary !== 'string' || !Array.isArray(plan.operations) || plan.operations.length > 8) throw new Error('转写解析格式非法')
+  } catch (error) {
+    emit({ stage: 'failed', error: `理解失败：${String(error).slice(0, 160)}` })
+    throw error instanceof Error ? error : new Error(String(error))
+  }
+  emit({ stage: 'understood', summary: plan.summary })
   const requestId = randomUUID()
   const goals: GoalSpec[] = []
   const folder = join(root, '.runtime/transcripts')
@@ -126,11 +141,15 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
         } else if (operation.kind === 'attackAll') {
           const formations = ctx.formations.list().filter(f => snap.self.some(u => f.memberIds.includes(u.id) && u.primaryWeapon))
           if (!formations.length) throw new Error('没有可用作战编队')
-          for (const formation of formations) goals.push({ id: makeId(), kind: 'combat', rawText: text, formationId: formation.id, region: fullMap, allowedActions: ['move', 'attackMove', 'attack', 'stop'] })
+          for (const formation of formations) {
+            goals.push({ id: makeId(), kind: 'combat', rawText: text, formationId: formation.id, region: fullMap, allowedActions: ['move', 'attackMove', 'attack', 'stop'] })
+            record.choices.push(`编队 ${formation.id} 全图进攻`)
+          }
         } else throw new Error('不支持的转写操作')
       } catch (error) {
         check()
         record.skipped.push(String(error))
+        emit({ stage: 'skipped', error: String(error).slice(0, 200) })
       }
     }
     check()
@@ -138,16 +157,29 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     const skipped = record.skipped.length ? `\n未执行部分：${record.skipped.join('；')}` : ''
     if (!goals.length) return `理解：${plan.summary}；未执行${skipped}\n记录：${requestId}`
     const owners = new Set<string>()
-    for (const goal of goals) owners.add(ctx.runtime.upsertGoal(goal))
+    for (const goal of goals) {
+      owners.add(ctx.runtime.upsertGoal(goal))
+      const choice = record.choices[goals.indexOf(goal)]
+      emit({ stage: 'bound', goalId: goal.id, ...(choice ? { choice } : {}) })
+    }
+    emit({ stage: 'generating' })
     for (const owner of owners) {
       check()
-      record.results.push(await ctx.controller.refresh(owner))
+      try {
+        record.results.push(await ctx.controller.refresh(owner))
+        emit({ stage: 'effective', owner })
+      } catch (error) {
+        record.results.push(String(error))
+        emit({ stage: 'failed', owner, error: `脚本生成失败：${String(error).slice(0, 200)}` })
+      }
       save()
     }
     return `理解：${plan.summary}${record.choices.length ? `\n执行选择：${record.choices.join('；')}` : ''}\n${record.results.join('\n')}${skipped}\n记录：${requestId}`
   } catch (error) {
     record.error = String(error)
     save()
+    const cancelled = signal.aborted || String(error).includes('对局已变化')
+    emit({ stage: cancelled ? 'cancelled' : 'failed', error: String(error).slice(0, 200) })
     throw new Error(`${String(error)}；记录：${requestId}`)
   }
 }

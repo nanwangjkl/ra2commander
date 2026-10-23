@@ -26,8 +26,15 @@
         <div id="resize-sidebar" role="separator" aria-label="调整侧栏宽度" aria-orientation="vertical" aria-controls="sidebar" tabindex="0"></div>
         <aside id="sidebar" aria-label="指挥记录">
           <header class="sidebar-heading"><div class="eyebrow">COMMAND LOG</div><h1>指挥记录</h1></header>
-          <div class="empty-state"><span class="empty-symbol" aria-hidden="true">≡</span><h2>暂无命令记录</h2><p>在这里查看指令、理解与执行反馈。</p></div>
-          <footer class="sidebar-footer"><span class="dot muted"></span>语音输入尚未启用</footer>
+          <div id="command-cards" class="command-cards" aria-live="polite" hidden></div>
+          <div class="empty-state" id="empty-state"><span class="empty-symbol" aria-hidden="true">≡</span><h2>暂无命令记录</h2><p>在这里查看指令、理解与执行反馈。</p></div>
+          <footer class="composer">
+            <form id="say-form">
+              <input id="say-input" type="text" autocomplete="off" placeholder="输入指挥命令，回车提交" aria-label="指挥命令" />
+              <button id="say-submit" type="submit">下令</button>
+            </form>
+            <p class="composer-hint"><span class="dot muted"></span>文本模拟语音 · 真实录音尚未启用</p>
+          </footer>
         </aside>
       </section>
     </main>
