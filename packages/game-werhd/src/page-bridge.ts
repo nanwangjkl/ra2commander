@@ -89,10 +89,25 @@ export class WerhdBridge {
   }
 
   async state(): Promise<BridgeState> {
-    return this.frame.evaluate(() => (window as unknown as {
-      __ra2cState: () => BridgeState
-    }).__ra2cState())
+    const frame = this.findFrame()
+    if (!frame) throw new Error('游戏 frame 尚未建立')
+    try {
+      return await frame.evaluate(`window.__ra2cState()`)
+    } catch {
+      // 工作台刷新会重建同源游戏 iframe，init script 不覆盖该场景——此处补装后重试。
+      await this.ensureBridge(frame)
+      return await frame.evaluate(`window.__ra2cState()`)
+    }
   }
+
+  /** 确保目标 frame 内桥已安装且为当前版本（可重入；刷新/重绑后自愈）。 */
+  private async ensureBridge(frame: Frame): Promise<void> {
+    const source = (this.bridgeSource ??= await readFile(new URL('./bridge.js', import.meta.url), 'utf8'))
+    const ver = (await frame.evaluate(`window.__ra2cVersion ?? 0`).catch(() => 0)) as number
+    if (ver < BRIDGE_VERSION) await frame.evaluate(source).catch(() => {})
+  }
+
+  private bridgeSource?: string
 
   /** 等待对局 API 出现（玩家手动开局期间轮询）。 */
   async waitForApi(timeoutMs = 600_000, pollMs = 1000): Promise<BridgeState> {

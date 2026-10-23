@@ -198,6 +198,7 @@ function renderCard(commandId: string) {
     ${data.skipped.length ? `<ul class="card-skipped">${data.skipped.map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ul>` : ''}
     ${data.error ? `<p class="card-error">${escapeHtml(data.error)}</p>` : ''}
   `
+  cards.hidden = cards.children.length === 0
   emptyState.hidden = cards.children.length > 0
 }
 
