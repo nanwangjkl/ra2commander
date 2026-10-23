@@ -28,7 +28,7 @@ export async function compileCommand(
   const log: CompileAttemptLog[] = []
   const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
     { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: JSON.stringify({ control: snap.control, constraints: input.constraints, production: snap.production, tick: snap.tick, credits: snap.credits, mapWidth: snap.mapWidth, mapHeight: snap.mapHeight, selfSample: snap.self.slice(0, 5), enemiesSample: snap.enemies.slice(0, 5) }) },
+    { role: 'user', content: JSON.stringify({ control: snap.control, constraints: input.constraints, production: snap.production, tick: snap.tick, credits: snap.credits, mapWidth: snap.mapWidth, mapHeight: snap.mapHeight, self: snap.self.slice(0, 5), enemies: snap.enemies.slice(0, 5) }) },
   ]
   if (input.diagnostic) {
     messages.push({ role: 'assistant', content: input.diagnostic.code })

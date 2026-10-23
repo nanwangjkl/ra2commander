@@ -1,4 +1,4 @@
-import type { Page } from 'playwright'
+import type { Frame, Page } from 'playwright'
 
 /** 启动阶段已知对话框：出现即点击对应按钮（音频授权、资源恢复、显卡提示等一次性确认）。 */
 const STARTUP_DIALOG_BUTTONS: Array<{ match: RegExp; button: string }> = [
@@ -16,7 +16,7 @@ const STARTUP_DIALOG_BUTTONS: Array<{ match: RegExp; button: string }> = [
  * 返回处理过的对话框列表。
  */
 export async function dismissStartupDialogs(
-  page: Page,
+  page: Page | Frame,
   { timeoutMs = 300_000, log = console.log }: { timeoutMs?: number; log?: (msg: string) => void } = {},
 ): Promise<string[]> {
   const handled: string[] = []
@@ -34,7 +34,7 @@ export async function dismissStartupDialogs(
         await btn.click()
         handled.push(`${rule.button}（${rule.match.source}）`)
         log(`[companion] 已处理启动对话框: ${rule.button}`)
-        await page.waitForTimeout(3000)
+        await new Promise(resolve => setTimeout(resolve, 3000))
         continue
       }
     }
@@ -42,7 +42,7 @@ export async function dismissStartupDialogs(
     if ((await canvas.isVisible().catch(() => false)) && !rule) {
       if (/主选单|单机模式|联机大厅/.test(text)) break
     }
-    await page.waitForTimeout(2000)
+    await new Promise(resolve => setTimeout(resolve, 2000))
   }
   return handled
 }

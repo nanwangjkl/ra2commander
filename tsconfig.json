@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["apps/*/src", "packages/*/src", "tests"]
+  "include": ["apps/*/src", "apps/companion/ui", "packages/*/src", "tests"]
 }

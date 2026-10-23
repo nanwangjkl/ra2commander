@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>RA2 Commander · 指挥工作台</title>
+    <link rel="stylesheet" href="/commander/workbench.css" />
+    <script type="module" src="/commander/workbench.js"></script>
+  </head>
+  <body>
+    <main id="workbench">
+      <header class="toolbar">
+        <div class="brand"><span class="brand-mark">RA2</span><span>指挥工作台</span></div>
+        <div class="connection" role="status"><span id="connection-dot" class="dot"></span><span id="connection-text">正在连接</span></div>
+        <p id="notice" role="status" hidden></p>
+        <div class="toolbar-actions">
+          <button id="toggle-sidebar" type="button" aria-controls="sidebar" aria-expanded="true">收起侧栏</button>
+          <button id="fullscreen" type="button">全屏</button>
+        </div>
+      </header>
+      <section class="workspace" aria-label="游戏与指挥记录">
+        <div class="game-surface">
+          <iframe id="ra2c-game" name="ra2c-game" src="/" title="红色警戒游戏" allow="autoplay; fullscreen" allowfullscreen></iframe>
+        </div>
+        <div id="resize-sidebar" role="separator" aria-label="调整侧栏宽度" aria-orientation="vertical" aria-controls="sidebar" tabindex="0"></div>
+        <aside id="sidebar" aria-label="指挥记录">
+          <header class="sidebar-heading"><div class="eyebrow">COMMAND LOG</div><h1>指挥记录</h1></header>
+          <div class="empty-state"><span class="empty-symbol" aria-hidden="true">≡</span><h2>暂无命令记录</h2><p>在这里查看指令、理解与执行反馈。</p></div>
+          <footer class="sidebar-footer"><span class="dot muted"></span>语音输入尚未启用</footer>
+        </aside>
+      </section>
+    </main>
+  </body>
+</html>

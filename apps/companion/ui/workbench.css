@@ -1,0 +1,37 @@
+:root { color-scheme: dark; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; color: #e5e8ec; background: #0c1015; --sidebar-width: 320px; }
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+button { font: inherit; color: #c9d0d9; background: #1b232d; border: 1px solid #36414f; border-radius: 5px; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
+button:hover { background: #273341; color: #fff; }
+button:focus-visible, #resize-sidebar:focus-visible { outline: 2px solid #e6a665; outline-offset: -2px; }
+[hidden] { display: none !important; }
+#workbench { height: 100%; display: grid; grid-template-rows: 52px minmax(0, 1fr); }
+.toolbar { display: flex; align-items: center; gap: 24px; padding: 0 16px; border-bottom: 1px solid #303945; background: #141b23; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; white-space: nowrap; }
+.brand-mark { color: #edb17b; font-size: 12px; letter-spacing: 1px; border: 1px solid #74563c; border-radius: 3px; padding: 2px 5px; }
+.connection { display: flex; align-items: center; gap: 7px; color: #a8b4c1; font-size: 12px; white-space: nowrap; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: #d3a352; display: inline-block; flex: none; }
+.dot.ready { background: #77b994; }
+.dot.offline { background: #d08077; }
+.dot.muted { background: #5c6977; }
+.toolbar-actions { display: flex; gap: 8px; margin-left: auto; }
+#notice { margin: 0; color: #e2ac75; font-size: 12px; }
+.workspace { display: grid; grid-template-columns: minmax(0, 1fr) 7px var(--sidebar-width); min-height: 0; }
+.game-surface { min-width: 0; min-height: 0; background: #000; }
+#ra2c-game { display: block; width: 100%; height: 100%; border: 0; background: #000; }
+#resize-sidebar { cursor: col-resize; background: #18212b; border-inline: 1px solid #303945; touch-action: none; }
+#resize-sidebar:hover, html.resizing #resize-sidebar { background: #98714e; }
+html.resizing { cursor: col-resize; user-select: none; }
+html.resizing #ra2c-game { pointer-events: none; }
+#sidebar { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: #151d26; }
+.sidebar-heading { padding: 23px 22px 18px; border-bottom: 1px solid #293541; }
+.eyebrow { font-size: 10px; color: #8b9caf; letter-spacing: 2px; }
+h1 { font-size: 18px; font-weight: 500; letter-spacing: 1px; margin: 5px 0 0; }
+.empty-state { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 24px; color: #8292a3; }
+.empty-symbol { width: 43px; height: 43px; border: 1px solid #394858; border-radius: 8px; color: #a3afbc; font-size: 29px; line-height: 38px; margin-bottom: 15px; }
+h2 { font-size: 14px; font-weight: 400; color: #b1bcc8; margin: 0; }
+.empty-state p { font-size: 12px; margin: 7px 0 0; }
+.sidebar-footer { display: flex; align-items: center; gap: 8px; padding: 16px 22px; border-top: 1px solid #293541; font-size: 12px; color: #8292a3; }
+html.sidebar-collapsed .workspace { grid-template-columns: minmax(0, 1fr) 0 0; }
+html.sidebar-collapsed #sidebar, html.sidebar-collapsed #resize-sidebar { visibility: hidden; }
+@media (max-width: 900px) { .toolbar { gap: 12px; padding: 0 10px; } .toolbar button { padding: 5px 8px; } #notice { display: none; } .sidebar-heading, .sidebar-footer { padding-inline: 16px; } }

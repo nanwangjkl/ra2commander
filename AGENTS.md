@@ -30,7 +30,7 @@
 
 RTS 优先快速反应。能理解行动目标时，Agent 应结合当前战况选一个合理解释并执行，接受误选和次优结果，由玩家后续命令纠正。阵营、同类生产项目或执行细节存在多个候选，不应成为拒绝执行或等待确认的理由。选择应简短反馈；一部分暂时做不了时，先推进其余可执行部分。详见[命令解释决策](doc/decisions/007-action-first-command-interpretation.md)。
 
-工作台、命令侧栏与语音输入按[分阶段计划](doc/roadmap/browser-workbench-and-voice.md)推进。当前计划待批准；用户批准后开始阶段 1，每阶段交付后等待用户明确验收通过，再进入下一阶段，不以自动检查或自行实机观察代替用户验收。
+工作台、命令侧栏与语音输入按[分阶段计划](doc/roadmap/browser-workbench-and-voice.md)推进。计划已于 2026-10-23 获用户批准，阶段 1 已由用户验收通过，阶段 2 已获准在提交第一阶段后开始；阶段 3–4 未开始。每阶段交付后等待用户明确验收通过，再进入下一阶段，不以自动检查或自行实机观察代替用户验收。
 
 ## 开发环境
 
@@ -73,7 +73,9 @@ python3 packages/maps/tools/import_regions.py --map .runtime/maps/ice/mp32s8.map
 pnpm companion
 ```
 
-`pnpm companion` 会：本地 https 静态伺服游戏目录（默认 `https://127.0.0.1:8787/`，自签证书）→ 启动持久化 Chromium（profile 在 `.runtime/profile`，已 gitignore）→ CDN 代理转发 → 注入页面桥 → 自动处理启动对话框（音频授权、资源恢复等）。之后由玩家手动进入 单机模式 → 遭遇战，桥检测到 `window.werhd` 后即可调动部队。
+`pnpm companion` 会：本地 https 静态伺服游戏目录（默认 `https://127.0.0.1:8787/`，自签证书）→ 启动持久化 Chromium（profile 在 `.runtime/profile`，已 gitignore）→ CDN 代理转发 → 注入页面桥 → 打开 `https://127.0.0.1:8787/commander/` 工作台并处理游戏启动对话框。左侧为游戏 iframe，右侧目前仅有侧栏骨架和连接状态；命令记录及录音将在后续阶段接入。玩家手动进入 单机模式 → 遭遇战，桥检测到游戏 frame 的 `window.werhd` 后即可调动部队。
+
+侧栏可拖动边界调宽、收起；顶部全屏按钮及 F11 对整个工作台生效，保留侧栏。界面静态资产启动时从 `apps/companion/ui/` 编译至 `.runtime/ui/`。Companion 重启复用已有工作台和游戏 frame，不自动刷新页面；仍在进行的旧版独立游戏页会保留，结束旧对局后再打开工作台。刷新整个工作台会重载游戏，重连不需要刷新。`eval` 在游戏 frame 求值，手动 `shot` 截取整个工作台；没有自动截图。
 
 模拟语音入口使用 `say <文字>`，将文字作为语音转写结果：先由当前云模型解析目标，再走同一脚本生成与替换流程；真实录音与识别尚未接入。支持展开基地、生产并编队、前往已绑定地名、明确要求的持续补电，以及已有作战编队全图进攻。解析提示在 `apps/companion/src/transcript.ts`，脚本生成提示在 `packages/command/src/script-contract.ts`，原话、模型解析及目标保存在 `.runtime/transcripts/`。
 

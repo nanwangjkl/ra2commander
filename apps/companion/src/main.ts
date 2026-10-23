@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path'
 import { createServer } from 'node:net'
 import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
+import { chromium, type Browser, type BrowserContext } from 'playwright'
 import { StepExecutor } from '@ra2c/js-worker'
 import { configuredProviderNames, providerFromEnv, type OpenAICompatibleProvider } from '@ra2c/model-providers'
 import {
@@ -23,6 +23,7 @@ import { startStaticServer } from './static-server.ts'
 import { handleCommand, usage, type CommandContext } from './commands.ts'
 import { ProgramController } from './controller.ts'
 import { prepareGoals } from './prepare-goals.ts'
+import { buildWorkbench, openWorkbench, WORKBENCH_PATH } from './workbench.ts'
 
 // import.meta.dirname = apps/companion/src，仓库根需上溯三级。
 const ROOT = resolve(import.meta.dirname, '../../..')
@@ -66,6 +67,7 @@ async function ensureBrowserContext(): Promise<{ browser: Browser; context: Brow
         '--disable-web-security',
         '--test-type', // 抑制 Chrome for Testing 的"仅用于自动测试"信息条
         '--disable-infobars',
+        '--window-size=1480,960',
         'about:blank',
       ],
       { detached: true, stdio: 'ignore' },
@@ -74,6 +76,12 @@ async function ensureBrowserContext(): Promise<{ browser: Browser; context: Brow
       await new Promise((r) => setTimeout(r, 1000))
     }
     if (!(await alive())) throw new Error('常驻 Chromium 启动超时（CDP 未就绪）')
+  }
+  // macOS 上浏览器可能常驻但已没有窗口；先建立 target，避免 CDP context 初始化失败。
+  const targets = await fetch(`${cdpUrl}/json/list`).then(r => r.json()) as Array<{ type: string }>
+  if (!targets.some(t => t.type === 'page')) {
+    const created = await fetch(`${cdpUrl}/json/new?about:blank`, { method: 'PUT' })
+    if (!created.ok) throw new Error('无法创建浏览器窗口')
   }
   const browser = await chromium.connectOverCDP(cdpUrl)
   const context = browser.contexts()[0]
@@ -97,11 +105,23 @@ async function main(): Promise<void> {
     }
   }
 
+  let bridge: WerhdBridge | undefined
   const server = await startStaticServer({
     root: GAME_DIR,
-    extraFiles: { '/pack.7z': PACK_PATH },
+    extraFiles: { '/pack.7z': PACK_PATH, ...buildWorkbench(ROOT) },
     port: PORT,
     tlsDir: join(ROOT, '.runtime/certs'),
+    handleRequest: async (req, res) => {
+      const pathname = new URL(req.url ?? '/', 'https://127.0.0.1').pathname
+      if (pathname === WORKBENCH_PATH.slice(0, -1)) { res.writeHead(308, { location: WORKBENCH_PATH }); res.end(); return true }
+      if (pathname !== `${WORKBENCH_PATH}status`) return false
+      if (req.method !== 'GET') { res.writeHead(405); res.end(); return true }
+      let game = 'loading'
+      try { game = (await bridge?.state())?.apiAlive ? 'ready' : bridge ? 'waiting' : 'loading' } catch { /* 游戏尚未加载。 */ }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(JSON.stringify({ game }))
+      return true
+    },
   })
   console.log(`[companion] 游戏站点: ${server.url}  (目录 ${GAME_DIR})`)
 
@@ -110,8 +130,9 @@ async function main(): Promise<void> {
   console.log('[companion] 浏览器常驻模式（CDP）：companion 重启不再关闭对局')
   // 游戏 CDN 对本地 origin 无 CORS 头，经 Node 侧转发并补头；资源随后缓存进 profile。
   await setupCdnProxy(context)
-  const bridge = new WerhdBridge(context, server.url)
-  await bridge.install()
+  const gameBridge = new WerhdBridge(context, server.url)
+  bridge = gameBridge
+  await gameBridge.install()
 
   const executor = new StepExecutor()
   const formations = new FormationRegistry()
@@ -129,7 +150,7 @@ async function main(): Promise<void> {
       const results = []
       for (const action of actions) {
         if (!guard()) break
-        results.push(await bridge.submit(action, context, guard))
+        results.push(await gameBridge.submit(action, context, guard))
       }
       return results
     },
@@ -141,7 +162,7 @@ async function main(): Promise<void> {
     prepare: (goals, signal) => {
       const snap = runtime.snapshot
       if (!snap) throw new Error('当前没有有效快照')
-      return prepareGoals(goals, snap, (name, type) => bridge.rules(name, type), signal)
+      return prepareGoals(goals, snap, (name, type) => gameBridge.rules(name, type), signal)
     },
     log: message => console.log(message),
   })
@@ -160,7 +181,7 @@ async function main(): Promise<void> {
   }
   setInterval(() => { if (stateDirty) saveState() }, 3000).unref()
 
-  bridge.onSnapshot(snap => {
+  gameBridge.onSnapshot(snap => {
     if (snap.sessionKey !== lastSessionKey) {
       lastSessionKey = snap.sessionKey
       console.log(`[companion] 当前对局 ${snap.sessionKey}，tick=${snap.tick}，己方=${snap.self.length}`)
@@ -187,26 +208,17 @@ async function main(): Promise<void> {
     }).catch(err => console.error(`[runtime] 快照处理错误：${String(err)}`))
   })
 
-  // 找到游戏页（companion 重启后页面还在，桥也还在）。
-  const gameUrl = `127.0.0.1:${PORT}`
-  const page =
-    context.pages().find((p) => p.url().includes(gameUrl)) ??
-    context.pages()[0] ??
-    (await context.newPage())
-  await page.setViewportSize({ width: 1152, height: 864 }).catch(() => {})
-  if (!page.url().includes(gameUrl)) {
-    // load 事件在大资源页可能很久；domcontentloaded 足够启动对话框陪跑，超时容忍（页面继续加载）。
-    await page.goto(server.url, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch((err) => {
-      console.log(`[companion] 页面加载等待超时（继续，页面自行完成加载）: ${String(err).slice(0, 100)}`)
-    })
-    await dismissStartupDialogs(page)
-  }
+  const { page, frame, reused, legacy } = await openWorkbench(context, server.url)
+  gameBridge.bindGameFrame(frame)
+  if (legacy) console.log('[companion] 保留正在进行的旧版对局；结束后打开工作台，不自动迁移或刷新')
+  else console.log(`[companion] 工作台: ${new URL(WORKBENCH_PATH, server.url).href}`)
+  if (!reused) await dismissStartupDialogs(frame)
 
   if (!providers.size) {
     console.log('[companion] 未配置任何云模型 key（.env），task new 不可用；桥命令不受影响。')
   }
   const ctx: CommandContext = {
-    browser, bridge, page, runtime, formations, providers, controller,
+    browser, bridge: gameBridge, page, runtime, formations, providers, controller,
     currentProvider: currentModel,
   }
   controller.setProvider(() => ctx.currentProvider())

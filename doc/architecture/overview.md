@@ -4,7 +4,7 @@
 
 本项目基于 [ra2web](https://github.com/ra2web/ra2web.github.io) 设计独立的本机语音指挥伴随程序。
 
-状态：M1/M2 文本链路与 M3 脚本归属改造已实现并实测；已加入模拟语音转写与显式地图分区绑定入口，录音识别、正式界面和 Skill 仍为规划。更新日期：2026-10-21。产品行为以[产品需求](../spec/requirements.md)为准，公共接口事实见[API 调查](game-api.md)。
+状态：M1/M2 文本链路与 M3 脚本归属改造已实现并实测；已加入模拟语音转写与显式地图分区绑定入口。2026-10-23 工作台第一阶段已由用户验收通过，命令记录侧栏、录音识别和 Skill 仍为后续工作。产品行为以[产品需求](../spec/requirements.md)为准，公共接口事实见[API 调查](game-api.md)。
 
 ## 系统定位与可行性
 
@@ -54,6 +54,8 @@ LangGraph 支持组合固定步骤与模型步骤，可作为命令编译工作�
 | 玩家界面 | 轻量本机界面 | 录音、任务反馈和巡视；诊断信息单独展示 |
 
 浏览器桥使用 `addInitScript` 注入、`exposeBinding` 回传快照、`evaluate` 提交有限动作批次。使用独立用户档案，实际游戏加载与开销纳入原型验证。参见 [Playwright 页面求值](https://playwright.dev/docs/evaluating)、[页面 API](https://playwright.dev/docs/api/class-page)与[独立用户档案](https://playwright.dev/docs/api/class-browsertype#browser-type-launch-persistent-context)。
+
+工作台位于 `/commander/`，由现有 HTTPS 服务托管，游戏继续在同源根路径加载到 `ra2c-game` iframe。轻量 TypeScript/CSS 界面启动时构建，侧栏布局更新不重建 iframe；游戏的全屏请求转交整个工作台。`WerhdBridge` 明确绑定游戏 frame，规则查询和动作提交都在该 frame 求值，回传快照同时核对来源 frame。重启复用已有工作台；活动旧版独立游戏页保留原样，不自动迁移。第一阶段仅通过小型只读接口更新连接状态，命令事件及录音按[分阶段计划](../roadmap/browser-workbench-and-voice.md)后续接入。
 
 QuickJS 的内存、栈和执行期限限制用于控制脚本资源，它们不等同于完整操作系统沙箱；默认 `qjs` CLI 不直接作为隔离执行器。当前子进程清空继承环境变量，每步新建 QuickJS runtime/context，仅传输 JSON；脚本不能接触 Node 子进程本身。参见 [QuickJS 文档](https://bellard.org/quickjs/quickjs.html)。
 

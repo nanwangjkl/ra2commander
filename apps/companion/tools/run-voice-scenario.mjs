@@ -44,10 +44,11 @@ function command(text) {
 }
 const browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
 const page = browser.contexts()[0].pages().find(p => p.url().includes('127.0.0.1:8787'));
+const game = page.frame({ name: 'ra2c-game' }) ?? page.mainFrame();
 const regions = await loadRegionScheme(path.join(root, 'maps/ice/schemes/nanwang-0.1.0.json'));
 let currentStep = completedSteps;
 async function observe() {
-  return page.evaluate(() => {
+  return game.evaluate(() => {
     const w = window.werhd;
     if (!w) return null;
     return { sessionKey: window.__ra2cState().sessionKey, me: w.me(), players: w.players(),

@@ -12,7 +12,13 @@ const source = `function step(snapshot, memory) {
 
 test('正常命令经过编译、真实隔离执行和运行时，提交动作并保留进度', async () => {
   const executor = new StepExecutor()
-  const provider = { generate: async () => ({ model: 'fixture', durationMs: 0, text: source }) }
+  const provider = { generate: async (input: { messages: Array<{ content: string }> }) => {
+    // 实机曾因生成请求与运行时字段不同，让脚本读取不存在的 selfSample 后一直空转。
+    const context = JSON.parse(input.messages[1]!.content)
+    assert.ok(Array.isArray(context.self) && context.self.length > 0)
+    assert.ok(Array.isArray(context.enemies))
+    return { model: 'fixture', durationMs: 0, text: source }
+  } }
   try {
     const { runtime, submitted } = await harness(executor)
     const controller = new ProgramController({ runtime, executor, provider: () => provider as never })

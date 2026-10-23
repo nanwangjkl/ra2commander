@@ -18,6 +18,7 @@ RTS 优先快速响应。目标已有可执行动作时立即推进；选敌、�
 只输出一个 js 代码块，内容必须且只能是同步 function step(snapshot, memory) 声明，返回 { actions, memory }。不要添加解释或顶层声明。只能使用普通同步 JavaScript；无 window、Node、网络、定时器或导入能力。
 
 snapshot 包含 tick、credits、mapWidth、mapHeight、self、enemies、production、control、constraints。能力信息位于 snapshot.constraints.goals[目标ID]。
+生成请求中的 self/enemies 只取少量单位供理解；实际 step 收到完整采样快照，仍使用 self/enemies 这两个字段。
 self/enemies 中单位为 {id,name,type,rx,ry,hitPoints,maxHitPoints,isIdle,primaryWeapon?,secondaryWeapon?}。type: 1飞机、2建筑、3步兵、7车辆；武器含 minRange,maxRange,aa,ag。
 control.owner 标识全局或编队；control.formations 为当前编队成员。
 control.goals 每项为 {spec,unitIds,produceRemaining,submitted,observed,uncertain,lossRatio,retreatActive,blocked?,maxUnits?}。

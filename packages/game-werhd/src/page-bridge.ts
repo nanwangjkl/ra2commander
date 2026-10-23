@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import type { BrowserContext, Page } from 'playwright'
+import type { BrowserContext, Frame } from 'playwright'
 import { BINDING, type ActionRequest, type ActionResult, type Snapshot, type ActionContext } from '@ra2c/contracts'
 
 /** 页面内桥状态（window.__ra2cState() 的返回）。 */
@@ -23,28 +23,46 @@ export interface BridgeState {
 /** 桥版本（与 bridge.js 的 BRIDGE_VERSION 保持一致；升级后对已开页面重装）。 */
 const BRIDGE_VERSION = 4
 
+export function isGameDocument(url: string, gameUrl: string): boolean {
+  try {
+    const current = new URL(url), expected = new URL(gameUrl)
+    return current.origin === expected.origin && [expected.pathname, `${expected.pathname}index.html`].includes(current.pathname)
+  } catch { return false }
+}
+
 export class WerhdBridge {
-  private latestSnapshot?: Snapshot
+  private latestSnapshot: Snapshot | undefined
   private readonly listeners = new Set<(s: Snapshot) => void>()
+  private targetFrame: Frame | undefined
 
   constructor(private readonly context: BrowserContext, private readonly gameUrl?: string) {}
 
   async install(): Promise<void> {
     const source = await readFile(new URL('./bridge.js', import.meta.url), 'utf8')
     await this.context.exposeBinding(BINDING.snapshot, (source, snapshot: Snapshot) => {
-      if (this.gameUrl && !source.page.url().startsWith(this.gameUrl)) return
+      if (this.gameUrl && !isGameDocument(source.frame.url(), this.gameUrl)) return
+      if (source.frame !== this.findFrame()) return
       this.latestSnapshot = snapshot
       for (const cb of this.listeners) cb(snapshot)
     })
-    await this.context.addInitScript(source)
+    // 工作台与游戏同源，但只有游戏文档安装采样桥。
+    const game = this.gameUrl && new URL(this.gameUrl)
+    const bootstrap = game ? `if (location.origin === ${JSON.stringify(game.origin)} && ${JSON.stringify([game.pathname, `${game.pathname}index.html`])}.includes(location.pathname)) {\n${source}\n}` : source
+    await this.context.addInitScript(bootstrap)
     // 已打开的页面：桥缺失（断连期间刷新过）或版本旧（companion 升级）都重装；
     // bridge.js 自带版本比较与旧轮询清理。
-    for (const page of this.context.pages()) {
-      const ver = (await page.evaluate(`window.__ra2cVersion ?? 0`).catch(() => 0)) as number
+    for (const frame of this.context.pages().flatMap(page => page.frames())) {
+      if (this.gameUrl && !isGameDocument(frame.url(), this.gameUrl)) continue
+      const ver = (await frame.evaluate(`window.__ra2cVersion ?? 0`).catch(() => 0)) as number
       if (ver < BRIDGE_VERSION) {
-        await page.evaluate(source).catch(() => {})
+        await frame.evaluate(source).catch(() => {})
       }
     }
+  }
+
+  bindGameFrame(frame: Frame): void {
+    if (this.targetFrame !== frame) this.latestSnapshot = undefined
+    this.targetFrame = frame
   }
 
   onSnapshot(cb: (s: Snapshot) => void): () => void {
@@ -56,15 +74,22 @@ export class WerhdBridge {
     return this.latestSnapshot
   }
 
-  private page(): Page {
+  private findFrame(): Frame | undefined {
+    if (this.targetFrame && !this.targetFrame.isDetached()) return this.targetFrame
     const pages = this.context.pages()
-    const page = this.gameUrl ? pages.find(p => p.url().startsWith(this.gameUrl!)) : pages[pages.length - 1]
-    if (!page) throw new Error('游戏页面尚未打开')
-    return page
+    if (!this.gameUrl) return pages[pages.length - 1]?.mainFrame()
+    const frames = pages.flatMap(page => page.frames()).filter(frame => isGameDocument(frame.url(), this.gameUrl!))
+    return frames.find(frame => frame.name() === 'ra2c-game') ?? frames[0]
+  }
+
+  get frame(): Frame {
+    const frame = this.findFrame()
+    if (!frame) throw new Error('游戏页面尚未打开')
+    return frame
   }
 
   async state(): Promise<BridgeState> {
-    return this.page().evaluate(() => (window as unknown as {
+    return this.frame.evaluate(() => (window as unknown as {
       __ra2cState: () => BridgeState
     }).__ra2cState())
   }
@@ -82,7 +107,7 @@ export class WerhdBridge {
 
   /** 查询当前有效规则（含地图/MOD 覆盖）；无效名称返回 undefined。 */
   async rules(name: string, type: number): Promise<unknown> {
-    return this.page().evaluate(
+    return this.frame.evaluate(
       `(() => { const w = window.werhd; if (!w) return undefined; return w.rules(${JSON.stringify(name)}, ${type}) })()`,
     )
   }
@@ -91,7 +116,7 @@ export class WerhdBridge {
   async submit(action: ActionRequest, context: ActionContext | undefined = this.latestSnapshot, guard: () => boolean = () => true): Promise<ActionResult> {
     if (!context || !guard()) return { ok: false, reason: 'revoked-or-no-snapshot', submitted: 0, session: context?.session ?? -1 }
     // guard 与 evaluate 之间不 await；撤权后不再向浏览器排入旧动作。
-    return this.page().evaluate(
+    return this.frame.evaluate(
       ([ctx, act]) => (window as unknown as {
         __ra2cSubmit: (s: number, a: ActionRequest, seq: number, key: string) => ActionResult
       }).__ra2cSubmit(ctx.session, act, ctx.seq, ctx.sessionKey),

@@ -68,11 +68,37 @@ test('换局后重新采样，兼容游戏 API 对象被复用', () => {
 test('宿主桥保留动作来源对局，不查询当前会话替换它；撤权后不排入 evaluate', async () => {
   const calls: unknown[] = []
   const page = { evaluate: async (_fn: unknown, args: unknown) => { calls.push(args); return { ok: true } } }
-  const bridge = new WerhdBridge({ pages: () => [page] } as never)
+  const bridge = new WerhdBridge({ pages: () => [{ mainFrame: () => page }] } as never)
   const context = snapshot()
   await bridge.submit({ kind: 'stop', unitIds: [1] }, context)
   assert.equal(calls.length, 1)
   assert.deepEqual(calls[0], [context, { kind: 'stop', unitIds: [1] }])
   await bridge.submit({ kind: 'stop', unitIds: [1] }, context, () => false)
   assert.equal(calls.length, 1)
+})
+
+test('工作台中的查询和动作指向已绑定游戏 frame，忽略外层与其他游戏的快照', async () => {
+  const url = 'https://127.0.0.1:8787/'
+  const calls: Array<{ frame: string; args: unknown }> = []
+  const frame = (name: string, address: string) => ({ name: () => name, url: () => address, isDetached: () => false,
+    evaluate: async (fn: unknown, args: unknown) => { if (args !== undefined || String(fn).includes('w.rules')) calls.push({ frame: name, args }); return 4 } })
+  const outer = frame('workbench', url + 'commander/')
+  const game = frame('ra2c-game', url)
+  const other = frame('other-game', url)
+  let receive!: (source: unknown, value: ReturnType<typeof snapshot>) => void
+  const context = { pages: () => [{ frames: () => [outer, game] }, { frames: () => [other] }],
+    exposeBinding: async (_name: string, callback: typeof receive) => { receive = callback }, addInitScript: async () => {} }
+  const bridge = new WerhdBridge(context as never, url)
+  bridge.bindGameFrame(game as never)
+  await bridge.install()
+  receive({ frame: outer }, snapshot({ sessionKey: 'outer' }))
+  receive({ frame: other }, snapshot({ sessionKey: 'other' }))
+  assert.equal(bridge.latest, undefined)
+  const current = snapshot()
+  receive({ frame: game }, current)
+  assert.equal(bridge.latest, current)
+  await bridge.rules('GAWEAP', 2)
+  await bridge.submit({ kind: 'stop', unitIds: [1] }, current)
+  assert.equal(calls.length, 2)
+  assert.ok(calls.every(call => call.frame === 'ra2c-game'))
 })

@@ -33,6 +33,8 @@ export interface StaticServerOptions {
   root: string
   /** 额外的 URL 路径 → 本机文件映射（如 /pack.7z → 资源包）。 */
   extraFiles?: Record<string, string>
+  /** 返回 true 表示请求已处理；用于工作台的小型只读接口。 */
+  handleRequest?: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => boolean | Promise<boolean>
   port?: number
   host?: string
   /**
@@ -66,8 +68,9 @@ export function startStaticServer(opts: StaticServerOptions): Promise<Server & {
   const port = opts.port ?? 8787
   const host = opts.host ?? '127.0.0.1'
 
-  const handler = (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => {
+  const handler = async (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => {
     try {
+      if (await opts.handleRequest?.(req, res)) return
       const urlPath = decodeURIComponent(new URL(req.url ?? '/', `http://${host}`).pathname)
       const extra = opts.extraFiles?.[urlPath]
       const relPath = normalize(urlPath).replace(/^([/\\.])+/, '')
