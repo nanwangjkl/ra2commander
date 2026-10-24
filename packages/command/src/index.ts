@@ -1,10 +1,10 @@
 export {
-  SYSTEM_PROMPT,
   extractCode,
   staticScan,
   compileChecks,
   FORBIDDEN_IDENTS,
 } from './script-contract.ts'
+export { loadPrompts, readPrompts, PromptLoader, PromptLibrary } from './prompt-loader.ts'
 export { compileCommand, CompileError } from './compile.ts'
 export type {
   CompileInput,

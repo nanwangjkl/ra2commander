@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --import tsx --test tests/*.test.ts",
     "maps:check": "node --import tsx packages/maps/src/check.ts",
+    "prompts:check": "node --import tsx packages/command/src/check-prompts.ts",
     "scenario:voice": "node --import tsx apps/companion/tools/run-voice-scenario.mjs",
     "playwright-install": "pnpm --filter @ra2c/companion exec playwright install chromium"
   },

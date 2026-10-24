@@ -1,12 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { StepExecutor } from '../packages/js-worker/src/index.ts'
 import { ProgramController } from '../apps/companion/src/controller.ts'
 import { runTranscript } from '../apps/companion/src/transcript.ts'
 import { prepareGoals } from '../apps/companion/src/prepare-goals.ts'
+import { loadPrompts } from '../packages/command/src/index.ts'
 import { activate, harness, production, snapshot } from './helpers.ts'
 
 test('模拟转写保留原话，将显示名绑定为内部名并合并卫星与补电目标', async () => {
@@ -25,6 +26,13 @@ test('模拟转写保留原话，将显示名绑定为内部名并合并卫星�
     const text = '制造间谍卫星，保持电量健康'
     const output = await runTranscript(text, { runtime, controller, formations: runtime.formations, currentProvider: () => provider, bridge: { rules: async (name: string, type: number) => type === 2 ? rules[name] : undefined } } as never, folder)
     assert.match(output, /已生效/)
+    const prompts = loadPrompts()
+    assert.equal(inputs[0]!.messages[0]!.content, prompts.render('interpret'))
+    assert.equal(inputs[1]!.messages[0]!.content, prompts.render('compile'))
+    const requestId = /记录：(\S+)/.exec(output)![1]!
+    const saved = JSON.parse(readFileSync(join(folder, '.runtime/transcripts', `${requestId}.json`), 'utf8'))
+    assert.equal(saved.promptVersions.interpret, prompts.version)
+    assert.equal(saved.promptVersions.compile.global, prompts.version)
     const goals = [...runtime.goals.values()]
     assert.equal(goals.length, 2)
     assert.ok(goals.every(g => g.spec.rawText === text && g.status === 'active'))

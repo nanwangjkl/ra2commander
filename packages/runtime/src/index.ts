@@ -180,7 +180,7 @@ export class TaskRuntime {
     return this.frame(this.programs.get(lease.ownerId)!, lease.goals, this.latest)
   }
 
-  commitCompile(lease: CompileLease, code: string): boolean {
+  commitCompile(lease: CompileLease, code: string, promptVersion?: string): boolean {
     if (!this.currentLease(lease)) return false
     const program = this.programs.get(lease.ownerId)!
     if (lease.repair && program.status !== 'paused') return false
@@ -204,7 +204,7 @@ export class TaskRuntime {
       goal.facts.initialized = true
       program.activeGoalIds.push(spec.id)
     }
-    program.script = { code, version: (program.script?.version ?? 0) + 1, hash: codeHash(code) }
+    program.script = { code, version: (program.script?.version ?? 0) + 1, hash: codeHash(code), ...(promptVersion ? { promptVersion } : {}) }
     program.generation++
     program.memory = {}
     program.status = program.activeGoalIds.length ? 'active' : 'idle'

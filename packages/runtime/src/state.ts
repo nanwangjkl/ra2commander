@@ -23,7 +23,7 @@ export interface ProgramState {
   revision: number
   generation: number
   status: 'idle' | 'active' | 'paused' | 'stopped'
-  script?: { code: string; version: number; hash: string }
+  script?: { code: string; version: number; hash: string; promptVersion?: string }
   memory: unknown
   compileError?: string
   stats: { steps: number; actions: number; rejected: number; errors: number; lastError?: string }

@@ -1,4 +1,4 @@
-import { compileCommand, CompileError } from '@ra2c/command'
+import { compileCommand, CompileError, loadPrompts, type PromptLibrary, type PromptLoader } from '@ra2c/command'
 import type { GoalSpec } from '@ra2c/contracts'
 import type { OpenAICompatibleProvider } from '@ra2c/model-providers'
 import type { StepExecutor } from '@ra2c/js-worker'
@@ -19,6 +19,12 @@ interface ControllerDeps {
   provider: () => OpenAICompatibleProvider
   prepare?: (goals: GoalSpec[], signal: AbortSignal) => Promise<GoalSpec[]>
   log?: (message: string) => void
+  prompts?: Pick<PromptLoader, 'load'>
+}
+
+interface PromptRequestOptions {
+  prompts?: PromptLibrary
+  onPromptVersion?: (version: string) => void
 }
 
 /** 所有控制对象共用生成与修复流程，目标合并由运行时维护。 */
@@ -63,20 +69,33 @@ export class ProgramController {
     return `目标 ${goal.id}：${await this.refresh(id)}`
   }
 
-  async refresh(id: string, repair = false): Promise<string> {
+  async refresh(id: string, repair = false, promptOptions: PromptRequestOptions = {}): Promise<string> {
     const { runtime } = this.deps
+    const loader = this.deps.prompts ?? { load: loadPrompts }
+    let prompts = promptOptions.prompts
     for (;;) {
       const lease = runtime.beginCompile(id, repair)
       try {
+        // 在首次异步准备前固定版本；成员变化导致的重新绑定仍属于同一次命令。
+        if (lease.goals.length) prompts ??= loader.load({
+          onFallback: error => (this.deps.log ?? console.error)(`[companion] ${error.message}；沿用上一份可用提示词`),
+        })
         const goals = this.deps.prepare ? await this.deps.prepare(lease.goals, lease.signal) : lease.goals
         if (lease.signal.aborted) return this.interrupted(lease)
         if (!runtime.prepareCompile(lease, goals)) continue
         const frame = runtime.compileFrame(lease)
         const program = runtime.programs.get(id)!
         const diagnostic = repair && program.script ? { code: program.script.code, error: program.stats.lastError ?? '脚本故障' } : undefined
-        const output = goals.length ? await compileCommand(this.deps.provider(), { ...frame, ...(diagnostic ? { diagnostic } : {}) }, this.deps.executor, { signal: lease.signal }) : { code: 'function step(snapshot,memory){return {actions:[],memory:{}}}' }
+        const output = goals.length ? await compileCommand(this.deps.provider(), { ...frame, ...(diagnostic ? { diagnostic } : {}) }, this.deps.executor, {
+          signal: lease.signal,
+          prompts: prompts!,
+          onPromptVersion: version => {
+            this.deps.log?.(`[companion] ${id} 脚本生成提示 ${version}`)
+            promptOptions.onPromptVersion?.(version)
+          },
+        }) : { code: 'function step(snapshot,memory){return {actions:[],memory:{}}}', promptVersion: undefined }
         if (lease.signal.aborted) return this.interrupted(lease)
-        if (runtime.commitCompile(lease, output.code)) {
+        if (runtime.commitCompile(lease, output.code, output.promptVersion)) {
           const program = runtime.programs.get(id)!
           const version = program.script!.version
           this.publish({ stage: 'effective', owner: id, sessionKey: lease.sessionKey, goalIds: [...program.activeGoalIds], version })
