@@ -4,19 +4,25 @@ import { join } from 'node:path'
 import type { GoalSpec, ProductionGoal } from '@ra2c/contracts'
 import type { CommandContext } from './commands.ts'
 import { newCommandId, type CommandEvent, type TraceOptions } from './command-log.ts'
+import { bindDefaultMap } from './map-binding.ts'
+import { normalizeOperations, type Operation } from './transcript-plan.ts'
 
 export const TRANSCRIPT_PROMPT = `把红警玩家的语音转写文本解析为明确目标，只输出 JSON {"summary":"简短中文理解","operations":[...]}。
 RTS 优先快速响应。目标能理解时，根据当前战况选一个合理解释并执行，允许玩家用下一条命令纠正；不要为了消除歧义停下来询问。summary 简短说明你的选择，不要求确认。
 可用操作：
 {"kind":"deploy"} 展开已有基地车；
 {"kind":"produce","target":"原生名称","quantity":正整数,"formationId":"可选编队名"} 新造指定数量并可将新造单位编入队；
+{"kind":"assign","target":"tanks或原生名称","quantity":正整数或"all","formationId":"编队名"} 将现有单位编队，不生产；
 {"kind":"move","formationId":"编队名","regionName":"区域名称"} 让该队前往已绑定地名；
+{"kind":"assaultRegion","formationId":"编队名","regionName":"区域名称"} 指定编队前往并清理指定分区的敌人，单个完整目标；
 {"kind":"power","reserve":100} 仅在明确要求保持电量健康时持续补电，未指定余量时以100为测试默认值；
-{"kind":"attackAll"} 使用已有作战编队主动摧毁全部敌人。
+{"kind":"attackAll","formationId":"可选编队名"} 指定编队全图进攻，未指定才使用全部作战编队。
 生产目标只能使用 catalog 提供的原生名称；根据当前阵营选取。战车工厂是 War Factory，盟军普通坦克是 Grizzly Battle Tank，间谍卫星是 SpySat Uplink。
 catalog 提供当前阵营及实际可生产项目，available 表示现在可造。普通“工厂”“重工”“坦克”优先选择现在可造的同类项目，再按本局阵营及已有设施选择；仍有多个候选时直接选一个，不询问盟军还是苏军。数量未说时默认1。
 编队名称按 formations 中已有名称绑定；新建数字编队统一使用“1队”“2队”这种格式。只创建本句话要求的目标，必要生产前置由宿主计算。
 不添加额外造兵或扩张。保持电量健康与制造卫星应返回两个操作；制造5辆坦克并编入1队应返回一个带 formationId 的生产操作。
+“5个坦克编入1队”是 assign quantity=5，“所有坦克编入1队”是 assign quantity="all"，优先现有未编队单位。只有明确要求新造/补足才生产，现有数量不足也不能自行追加生产。self.formationId 为当前实际归属。
+“1队摧毁3楼右下所有敌人”必须是单个 assaultRegion，不拆为 move+attackAll，不调用其他编队，也不扩大到全图。summary 必须与操作字段一致；宿主展示以实际绑定结果为准。
 同一句话的可执行部分先执行，不因另一部分缺少对象而整句放弃。仅当命令完全不属于支持范围、或确实没有相关对象和生产项目时才返回空 operations，并说明具体原因；不能仅因为存在多个合理选择而返回空操作。`
 
 // 当前支持目录中的同类项目；用于将模型选错的阵营名称落到本局可用项目。
@@ -26,86 +32,98 @@ const PRODUCTION_FAMILIES = [
   ['GAAIRC', 'NARADR', 'YAPSY'], ['GATECH', 'NATECH', 'YATECH'], ['GASPYSAT'], ['MTNK', 'HTNK', 'LTNK'],
 ]
 
-type Operation = { kind: 'deploy' } | { kind: 'produce'; target: string; quantity: number; formationId?: string }
-  | { kind: 'move'; formationId: string; regionName: string } | { kind: 'power'; reserve: number } | { kind: 'attackAll' }
-
 export async function runTranscript(text: string, ctx: CommandContext, root: string, trace?: TraceOptions): Promise<string> {
   // 终端/TCP 与界面走同一条事件流；未显式提供记录时（CLI 入口）也纳入侧栏。
   const active = trace ?? (ctx.commandLog ? { commandId: newCommandId(), source: 'cli' as const, log: ctx.commandLog } : undefined)
-  const emit = (stage: Partial<CommandEvent> & { stage: CommandEvent['stage'] }) => {
-    if (active) active.log.emit({ commandId: active.commandId, source: active.source, ...stage })
-  }
-  if (!text.trim()) throw new Error('缺少模拟语音转写文本')
-  emit({ stage: 'received', text })
-  const snap = ctx.runtime.snapshot
-  if (!snap) { emit({ stage: 'failed', error: '请先进入对局' }); throw new Error('请先进入对局') }
-  ctx.transcriptAbort?.abort()
-  const abort = new AbortController()
-  ctx.transcriptAbort = abort
-  const signal = abort.signal
   const key = ctx.runtime.battleKey
-  const check = () => { signal.throwIfAborted(); if (key !== ctx.runtime.battleKey) throw new Error('对局已变化，转写结果作废') }
-  const ids = PRODUCTION_FAMILIES.flat()
-  const prefix = snap.self.find(u => /^(GA|NA|YA)CNST$/.test(u.name))?.name.slice(0, 2)
-    ?? (snap.self.some(u => u.name === 'AMCV') ? 'GA' : snap.self.some(u => u.name === 'SMCV') ? 'NA' : snap.self.some(u => u.name === 'PCV') ? 'YA' : undefined)
-  const available = new Set(snap.production?.available ?? [])
-  const owned = new Set(snap.self.map(u => u.name))
-  const factionOf = (name: string) => /^(GA|NA|YA)/.exec(name)?.[1]
-    ?? (['AMCV', 'MTNK'].includes(name) ? 'GA' : ['SMCV', 'HTNK'].includes(name) ? 'NA' : 'YA')
-  const allCatalog = (await Promise.all(ids.map(async name => {
-    for (const type of [2, 7]) {
-      const r = await ctx.bridge.rules(name, type) as { label?: string; power?: number; deploysInto?: string } | undefined
-      check()
-      if (r) return { name, type, label: r.label, power: r.power ?? 0, deploysInto: r.deploysInto,
-        available: available.has(name), faction: factionOf(name) }
-    }
-    return undefined
-  }))).filter(r => !!r)
-  const rank = (r: typeof allCatalog[number]) => Number(r.available) * 4 + Number(r.faction === prefix) * 2 + Number(owned.has(r.name))
-  const catalog = allCatalog.filter(r => !prefix || r.faction === prefix || r.available).sort((a, b) => rank(b) - rank(a))
-  const resolveProduction = (target: string) => {
-    const normalized = target.trim().toLowerCase()
-    const exact = catalog.find(r => r.name.toLowerCase() === normalized)
-    if (exact) return exact
-    const matches = allCatalog.filter(r => r.name.toLowerCase() === normalized || r.label?.toLowerCase() === normalized)
-    const names = new Set(matches.flatMap(r => PRODUCTION_FAMILIES.find(f => f.includes(r.name)) ?? [r.name]))
-    return catalog.find(r => names.has(r.name))
+  const emit = (stage: Partial<CommandEvent> & { stage: CommandEvent['stage'] }) => {
+    if (active) active.log.emit({ commandId: active.commandId, source: active.source, sessionKey: key, ...stage })
   }
-  emit({ stage: 'understanding' })
-  const result = await ctx.currentProvider().generate({ messages: [
-    { role: 'system', content: TRANSCRIPT_PROMPT },
-    { role: 'user', content: JSON.stringify({ text, faction: prefix === 'GA' ? 'Allied 盟军' : prefix === 'NA' ? 'Soviet 苏军' : prefix === 'YA' ? 'Yuri 尤里' : null, self: snap.self.map(u => ({ id: u.id, name: u.name, canDeploy: u.canDeploy })), formations: ctx.formations.list(), catalog, map: ctx.mapRegions ? { name: ctx.mapRegions.scheme.map.name, regions: ctx.mapRegions.scheme.regions.map(r => r.name) } : null }) },
-  ], maxTokens: 2048, thinking: 'disabled', signal })
-  check()
-  const raw = result.text.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '').trim()
-  let plan: { summary: string; operations: Operation[] }
-  try {
-    plan = JSON.parse(raw) as { summary: string; operations: Operation[] }
-    if (!plan || typeof plan.summary !== 'string' || !Array.isArray(plan.operations) || plan.operations.length > 8) throw new Error('转写解析格式非法')
-  } catch (error) {
-    emit({ stage: 'failed', error: `理解失败：${String(error).slice(0, 160)}` })
-    throw error instanceof Error ? error : new Error(String(error))
-  }
-  emit({ stage: 'understood', summary: plan.summary })
-  const requestId = randomUUID()
+  const requestId = active?.commandId ?? randomUUID()
   const goals: GoalSpec[] = []
+  const choices = new Map<string, string>()
   const folder = join(root, '.runtime/transcripts')
-  mkdirSync(folder, { recursive: true })
-  const record = { requestId, text, model: result.model, durationMs: result.durationMs, sessionKey: key, plan, goals,
+  const record = { requestId, text, at: Date.now(), source: active?.source ?? 'cli', model: '', durationMs: 0, sessionKey: key,
+    plan: undefined as { summary: string; operations: Operation[] } | undefined, goals,
+    modelPlan: undefined as { summary: string; operations: Operation[] } | undefined,
     choices: [] as string[], skipped: [] as string[], results: [] as string[], error: '' }
-  const save = () => writeFileSync(join(folder, `${requestId}.json`), JSON.stringify(record, null, 2))
-  save()
-  const makeId = () => `voice-${randomUUID().slice(0, 8)}`
-  const fullMap = { name: '沿途与全图作战', x1: 0, y1: 0, x2: snap.mapWidth - 1, y2: snap.mapHeight - 1 }
+  const save = () => {
+    mkdirSync(folder, { recursive: true })
+    writeFileSync(join(folder, `${requestId}.json`), JSON.stringify(record, null, 2))
+  }
+  const addGoal = (goal: GoalSpec, choice: string) => { goals.push(goal); choices.set(goal.id, choice); record.choices.push(choice) }
+  let signal: AbortSignal | undefined
+  const check = () => { signal?.throwIfAborted(); if (key !== ctx.runtime.battleKey) throw new Error('对局已变化，转写结果作废') }
+  emit({ stage: 'received', text })
   try {
+    if (!text.trim()) throw new Error('缺少模拟语音转写文本')
+    const snap = ctx.runtime.snapshot
+    if (!snap) throw new Error('请先进入对局')
+    active?.log.follow(ctx.controller, ctx.runtime)
+    ctx.transcriptAbort?.abort(new Error('理解过程被后续命令取代'))
+    const abort = new AbortController()
+    ctx.transcriptAbort = abort
+    signal = abort.signal
+    emit({ stage: 'understanding' })
+    let mapError = ''
+    try { await bindDefaultMap(ctx) } catch (error) { check(); mapError = `分区读取失败：${String(error)}` }
+    check()
+    const ids = [...new Set([...PRODUCTION_FAMILIES.flat(), ...snap.self.map(unit => unit.name)])]
+    const prefix = snap.self.find(u => /^(GA|NA|YA)CNST$/.test(u.name))?.name.slice(0, 2)
+      ?? (snap.self.some(u => u.name === 'AMCV') ? 'GA' : snap.self.some(u => u.name === 'SMCV') ? 'NA' : snap.self.some(u => u.name === 'PCV') ? 'YA' : undefined)
+    const available = new Set(snap.production?.available ?? [])
+    const owned = new Set(snap.self.map(u => u.name))
+    const factionOf = (name: string) => /^(GA|NA|YA)/.exec(name)?.[1]
+      ?? (['AMCV', 'MTNK'].includes(name) ? 'GA' : ['SMCV', 'HTNK'].includes(name) ? 'NA' : 'YA')
+    const allCatalog = (await Promise.all(ids.map(async name => {
+      for (const type of [2, 7]) {
+        const r = await ctx.bridge.rules(name, type) as { label?: string; power?: number; deploysInto?: string } | undefined
+        check()
+        if (r) return { name, type, label: r.label, power: r.power ?? 0, deploysInto: r.deploysInto,
+          available: available.has(name), faction: factionOf(name) }
+      }
+      return undefined
+    }))).filter(r => !!r)
+    const rank = (r: typeof allCatalog[number]) => Number(r.available) * 4 + Number(r.faction === prefix) * 2 + Number(owned.has(r.name))
+    const catalog = allCatalog.filter(r => !prefix || r.faction === prefix || r.available).sort((a, b) => rank(b) - rank(a))
+    const resolveProduction = (target: string) => {
+      const normalized = target.trim().toLowerCase()
+      const exact = catalog.find(r => r.name.toLowerCase() === normalized)
+      if (exact) return exact
+      const matches = allCatalog.filter(r => r.name.toLowerCase() === normalized || r.label?.toLowerCase() === normalized)
+      const names = new Set(matches.flatMap(r => PRODUCTION_FAMILIES.find(f => f.includes(r.name)) ?? [r.name]))
+      return catalog.find(r => names.has(r.name))
+    }
+    const result = await ctx.currentProvider().generate({ messages: [
+      { role: 'system', content: TRANSCRIPT_PROMPT },
+      { role: 'user', content: JSON.stringify({ text, faction: prefix === 'GA' ? 'Allied 盟军' : prefix === 'NA' ? 'Soviet 苏军' : prefix === 'YA' ? 'Yuri 尤里' : null, self: snap.self.map(u => ({ id: u.id, name: u.name, type: u.type, formationId: ctx.formations.ownerOf(u.id) ?? null, canDeploy: u.canDeploy })), formations: ctx.formations.list(), catalog, map: ctx.mapRegions && ctx.mapSessionKey === key ? { name: ctx.mapRegions.scheme.map.name, regions: ctx.mapRegions.scheme.regions.map(r => r.name) } : null }) },
+    ], maxTokens: 2048, thinking: 'disabled', signal })
+    check()
+    record.model = result.model
+    record.durationMs = result.durationMs
+    const raw = result.text.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '').trim()
+    let plan: { summary: string; operations: Operation[] }
+    try {
+      plan = JSON.parse(raw) as { summary: string; operations: Operation[] }
+      if (!plan || typeof plan.summary !== 'string' || !Array.isArray(plan.operations) || plan.operations.length > 8) throw new Error('转写解析格式非法')
+    } catch (error) {
+      throw new Error(`理解失败：${String(error)}`)
+    }
+    record.modelPlan = structuredClone(plan)
+    plan = { ...plan, operations: normalizeOperations(text, plan.operations, ctx.mapSessionKey === key ? ctx.mapRegions : undefined) }
+    record.plan = plan
+    save()
+    const makeId = () => `voice-${randomUUID().slice(0, 8)}`
+    const fullMap = { name: '沿途与全图作战', x1: 0, y1: 0, x2: snap.mapWidth - 1, y2: snap.mapHeight - 1 }
+    const noOps: string[] = []
+    emit({ stage: 'binding' })
     for (const operation of plan.operations) {
       try {
         if (operation.kind === 'deploy') {
           const vehicle = snap.self.filter(u => u.canDeploy && allCatalog.some(r => r.name === u.name && r.deploysInto?.endsWith('CNST')))
             .sort((a, b) => Number(b.isIdle) - Number(a.isIdle) || a.id - b.id)[0]
           if (!vehicle) throw new Error('没有可展开的基地车')
-          goals.push({ id: makeId(), kind: 'deploy', rawText: text, unitIds: [vehicle.id], target: allCatalog.find(r => r.name === vehicle.name)!.deploysInto! })
-          record.choices.push(`展开基地车 #${vehicle.id}`)
+          addGoal({ id: makeId(), kind: 'deploy', rawText: text, unitIds: [vehicle.id], target: allCatalog.find(r => r.name === vehicle.name)!.deploysInto! }, `展开基地车 #${vehicle.id}`)
         } else if (operation.kind === 'produce' || operation.kind === 'power') {
           const target = operation.kind === 'power' ? 'Power Plant' : operation.target
           const rule = operation.kind === 'power' ? catalog.find(r => PRODUCTION_FAMILIES[2]!.includes(r.name) && r.power > 0) : resolveProduction(target)
@@ -120,13 +138,33 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
             if (typeof operation.formationId !== 'string' || rule.type === 2) throw new Error('编队生产目标非法')
             goal.formationId = operation.formationId
           }
-          goals.push(goal)
-          record.choices.push(`${operation.kind === 'power' ? '持续补电' : `生产${quantity}个`} ${rule.label ?? rule.name}（${rule.name}）`)
-        } else if (operation.kind === 'move') {
+          addGoal(goal, `${operation.kind === 'power' ? '持续补电' : `生产${quantity}个`} ${rule.label ?? rule.name}（${rule.name}）${goal.formationId ? `，编入${goal.formationId}` : ''}`)
+        } else if (operation.kind === 'assign') {
+          const quantity = operation.quantity
+          if (quantity !== 'all' && (!Number.isSafeInteger(quantity) || quantity < 1)) throw new Error('编队数量非法')
+          const generic = /^(tanks|坦克|所有坦克)$/i.test(operation.target)
+          const rule = generic ? undefined : resolveProduction(operation.target)
+          const matched = snap.self.filter(unit => unit.type === 7 && (generic
+            ? /^(MTNK|HTNK|LTNK|GTNK|TTNK|APOC|MGTK|TNKD|DMTK|YTNK)$/.test(unit.name) || /tank|坦克/i.test(allCatalog.find(rule => rule.name === unit.name)?.label ?? '')
+            : unit.name === rule?.name))
+          const available = matched.filter(unit => ctx.formations.ownerOf(unit.id) !== operation.formationId && (quantity === 'all' || !ctx.formations.ownerOf(unit.id)))
+            .sort((a, b) => Number(!!ctx.formations.ownerOf(a.id)) - Number(!!ctx.formations.ownerOf(b.id)) || a.id - b.id)
+          const selected = quantity === 'all' ? available : available.slice(0, quantity)
+          if (!selected.length) {
+            if (matched.length && matched.every(unit => ctx.formations.ownerOf(unit.id) === operation.formationId)) { noOps.push(`现有${matched.length}辆坦克已在${operation.formationId}`); continue }
+            throw new Error('没有可编入的现有坦克，未追加生产')
+          }
+          if (quantity !== 'all' && selected.length < quantity) record.skipped.push(`现有未编队坦克仅${selected.length}辆，仍缺${quantity - selected.length}辆；未追加生产`)
+          const exists = ctx.formations.list().some(formation => formation.id === operation.formationId)
+          const force = selected.some(unit => !!ctx.formations.ownerOf(unit.id))
+          addGoal({ id: makeId(), kind: 'formation', rawText: text, request: exists
+            ? { kind: 'transferUnits', formationId: operation.formationId, unitIds: selected.map(unit => unit.id) }
+            : { kind: 'createFormation', formationId: operation.formationId, unitIds: selected.map(unit => unit.id), force } }, `将现有${selected.length}辆坦克编入${operation.formationId}（不新增生产）`)
+        } else if (operation.kind === 'move' || operation.kind === 'assaultRegion') {
           if (!ctx.formations.list().some(f => f.id === operation.formationId)) throw new Error(`编队不存在：${operation.formationId}`)
           const index = ctx.mapSessionKey === key ? ctx.mapRegions : undefined
           const region = index?.resolve(operation.regionName)
-          if (!index || !region) throw new Error(`地名尚未绑定：${operation.regionName}；请先 map use ice`)
+          if (!index || !region) throw new Error(mapError || `冰天雪地分区中未找到地名：${operation.regionName}`)
           const [lx, ly] = region.labelPosition
           let destination: { x: number; y: number; name: string } | undefined
           // 选区域内部且相邻格也属于本区的整数格；是否可达由实机后续位置确认。
@@ -137,13 +175,14 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
             }
           }
           if (!destination) throw new Error('未找到分区内部的候选目的地')
-          goals.push({ id: makeId(), kind: 'combat', rawText: text, formationId: operation.formationId, region: fullMap, destination, allowedActions: ['move', 'stop'] })
+          if (operation.kind === 'assaultRegion') addGoal({ id: makeId(), kind: 'combat', rawText: text, formationId: operation.formationId, region: fullMap, destination,
+            attackRegion: { id: region.id, name: region.name, polygons: region.polygons }, allowedActions: ['move', 'attackMove', 'attack', 'stop'] }, `${operation.formationId} 前往并清理${region.name}区域内的敌人`)
+          else addGoal({ id: makeId(), kind: 'combat', rawText: text, formationId: operation.formationId, region: fullMap, destination, allowedActions: ['move', 'stop'] }, `${operation.formationId} 前往${region.name}（${destination.x}, ${destination.y}）`)
         } else if (operation.kind === 'attackAll') {
-          const formations = ctx.formations.list().filter(f => snap.self.some(u => f.memberIds.includes(u.id) && u.primaryWeapon))
+          const formations = ctx.formations.list().filter(f => (!operation.formationId || f.id === operation.formationId) && snap.self.some(u => f.memberIds.includes(u.id) && u.primaryWeapon))
           if (!formations.length) throw new Error('没有可用作战编队')
           for (const formation of formations) {
-            goals.push({ id: makeId(), kind: 'combat', rawText: text, formationId: formation.id, region: fullMap, allowedActions: ['move', 'attackMove', 'attack', 'stop'] })
-            record.choices.push(`编队 ${formation.id} 全图进攻`)
+            addGoal({ id: makeId(), kind: 'combat', rawText: text, formationId: formation.id, region: fullMap, allowedActions: ['move', 'attackMove', 'attack', 'stop'] }, `编队 ${formation.id} 全图进攻`)
           }
         } else throw new Error('不支持的转写操作')
       } catch (error) {
@@ -154,32 +193,63 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     }
     check()
     save()
-    const skipped = record.skipped.length ? `\n未执行部分：${record.skipped.join('；')}` : ''
-    if (!goals.length) return `理解：${plan.summary}；未执行${skipped}\n记录：${requestId}`
-    const owners = new Set<string>()
-    for (const goal of goals) {
-      owners.add(ctx.runtime.upsertGoal(goal))
-      const choice = record.choices[goals.indexOf(goal)]
-      emit({ stage: 'bound', goalId: goal.id, ...(choice ? { choice } : {}) })
+    const skipped = () => record.skipped.length ? `\n未执行部分：${record.skipped.join('；')}` : ''
+    if (!goals.length && noOps.length) {
+      plan.summary = noOps.join('；')
+      emit({ stage: 'understood', summary: plan.summary })
+      emit({ stage: 'completed' })
+      save()
+      return `理解：${plan.summary}\n记录：${requestId}`
     }
-    emit({ stage: 'generating' })
+    if (!goals.length) {
+      record.error = record.skipped.join('；') || plan.summary || '没有可执行目标'
+      emit({ stage: 'failed', error: `未执行：${record.error}` })
+      save()
+      return `理解：${plan.summary}；未执行${skipped()}\n记录：${requestId}`
+    }
+    const owners = new Set<string>()
+    const goalOwners = new Map<string, string>()
+    const accepted: string[] = [...noOps]
+    for (const goal of goals) {
+      const choice = choices.get(goal.id)!
+      try {
+        const owner = ctx.runtime.upsertGoal(goal)
+        owners.add(owner)
+        goalOwners.set(goal.id, owner)
+        accepted.push(choice)
+        emit({ stage: 'bound', goalId: goal.id, owner, choice })
+      } catch (error) {
+        record.skipped.push(String(error))
+        emit({ stage: 'failed', goalId: goal.id, choice, error: `目标绑定失败：${String(error)}` })
+      }
+    }
+    plan.summary = accepted.length ? accepted.join('；') : '没有可执行目标'
+    if (record.skipped.length) plan.summary += `；另有${record.skipped.length}项未执行`
+    emit({ stage: 'understood', summary: plan.summary })
+    for (const error of record.skipped) emit({ stage: 'skipped', error })
     for (const owner of owners) {
       check()
+      emit({ stage: 'generating', owner })
       try {
         record.results.push(await ctx.controller.refresh(owner))
-        emit({ stage: 'effective', owner })
       } catch (error) {
         record.results.push(String(error))
-        emit({ stage: 'failed', owner, error: `脚本生成失败：${String(error).slice(0, 200)}` })
+        for (const [goalId, goalOwner] of goalOwners) {
+          const reported = active?.log.since(0).reverse().find(event => event.goalId === goalId)?.stage === 'failed'
+          if (!reported && goalOwner === owner && ctx.runtime.goals.get(goalId)?.status !== 'active') emit({ stage: 'failed', owner, goalId, error: `脚本生成失败：${String(error)}` })
+        }
       }
       save()
     }
-    return `理解：${plan.summary}${record.choices.length ? `\n执行选择：${record.choices.join('；')}` : ''}\n${record.results.join('\n')}${skipped}\n记录：${requestId}`
+    return `理解：${plan.summary}${record.choices.length ? `\n执行选择：${record.choices.join('；')}` : ''}\n${record.results.join('\n')}${skipped()}\n记录：${requestId}`
   } catch (error) {
     record.error = String(error)
-    save()
-    const cancelled = signal.aborted || String(error).includes('对局已变化')
-    emit({ stage: cancelled ? 'cancelled' : 'failed', error: String(error).slice(0, 200) })
+    const cancelled = signal?.aborted || key !== ctx.runtime.battleKey
+    emit({ stage: cancelled ? 'cancelled' : 'failed', error: String(error) })
+    try { save() } catch (saveError) { console.error(`[companion] 转写记录保存失败：${String(saveError).slice(0, 160)}`) }
     throw new Error(`${String(error)}；记录：${requestId}`)
+  } finally {
+    active?.log.syncRuntime(ctx.runtime)
+    if (ctx.transcriptAbort?.signal === signal) delete ctx.transcriptAbort
   }
 }

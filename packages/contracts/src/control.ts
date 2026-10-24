@@ -12,6 +12,8 @@ export interface CombatGoal extends GoalBase {
   retreat?: { lossAbove: number; x: number; y: number }
   transforms?: Record<string, string>
   destination?: { x: number; y: number; name?: string }
+  /** 区域清敌的选敌范围，独立于行军地域；到达 destination 不表示清敌完成。 */
+  attackRegion?: import('./spatial.ts').TargetRegion
 }
 export interface DeployGoal extends GoalBase { kind: 'deploy'; unitIds: number[]; target: string }
 export interface ProductionGoal extends GoalBase {

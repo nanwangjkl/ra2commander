@@ -1,5 +1,29 @@
 import type { ActionRequest, Region, Snapshot, StepConstraints } from './index.ts'
 import type { ScriptAction } from './control.ts'
+import { inTargetRegion } from './spatial.ts'
+
+/** 运行期间正常消失/离队的对象只丢弃当次动作；结构、额度与边界仍严格校验。 */
+export function liveScriptActions(value: ScriptAction[], c: StepConstraints, snapshot?: Snapshot): ScriptAction[] {
+  if (!c.ignoreInactiveGoals || !Array.isArray(value) || value.length > (c.maxActions ?? 20)) return value
+  return value.flatMap(item => {
+    if (!item || typeof item.goalId !== 'string' || !item.request || typeof item.request !== 'object') return [item]
+    const goal = c.goals?.[item.goalId]
+    if (!goal) return []
+    const action = item.request
+    if (action.kind === 'attack' && Number.isSafeInteger(action.targetId) && !goal.enemyIds.includes(action.targetId)) return []
+    if ('unitIds' in action && Array.isArray(action.unitIds) && action.unitIds.length && action.unitIds.every(id => Number.isSafeInteger(id))) {
+      if (['createFormation', 'transferUnits'].includes(action.kind)) return action.unitIds.every(id => goal.management?.allowedUnitIds.includes(id)) ? [item] : []
+      const unitIds = action.unitIds.filter(id => goal.allowedUnitIds.includes(id))
+      if (!unitIds.length) return []
+      if (action.kind === 'attackMove' && goal.targetRegion && snapshot && inTargetRegion(action.x, action.y, goal.targetRegion)
+        && unitIds.some(id => { const unit = snapshot.self.find(unit => unit.id === id); return unit && !inTargetRegion(unit.rx, unit.ry, goal.targetRegion!) })) {
+        return [{ ...item, request: { kind: 'move' as const, unitIds, x: action.x, y: action.y } }]
+      }
+      return [{ ...item, request: { ...action, unitIds } } as ScriptAction]
+    }
+    return [item]
+  })
+}
 
 /** 脚本统一使用目标包装；页面桥仍接收原有游戏动作。 */
 export function validateScriptActions(value: unknown, c: StepConstraints, snapshot?: Snapshot): string | undefined {
@@ -89,15 +113,14 @@ export function validateActions(value: unknown, c: StepConstraints, snapshot?: S
       if (!tile(a.x, a.y, c)) return '动作坐标非法'
       if (c.retreat && a.x === c.retreat.x && a.y === c.retreat.y) return '回撤条件尚未满足'
       if (!c.region || !inRegion(a.x, a.y, c.region)) return '移动超出授权地域'
+      if (a.kind === 'attackMove' && c.targetRegion && !inTargetRegion(a.x, a.y, c.targetRegion)) return '攻击移动超出目标分区'
     } else if (a.kind === 'attack') {
       if (!enemies.has(a.targetId)) return '攻击目标已不可见'
-      // 显式 Attack 会触发引擎追击；只授权当前射程内的目标，再由后续快照监控偏移。
       const target = snapshot?.enemies.find(u => u.id === a.targetId)
+      if (c.targetRegion && target && !inTargetRegion(target.rx, target.ry, c.targetRegion)) return '攻击目标不在指定分区'
       for (const id of a.unitIds) {
         const unit = snapshot?.self.find(u => u.id === id)
         if (!unit || !target || !c.region || !inRegion(unit.rx, unit.ry, c.region)) return '攻击者不在授权守区'
-        const distance = Math.hypot(unit.rx - target.rx, unit.ry - target.ry)
-        if (![unit.primaryWeapon, unit.secondaryWeapon].some(w => w && (target.type === 1 ? w.aa : w.ag) && distance <= w.maxRange && distance >= w.minRange)) return '目标不在已知合法射程内'
       }
     } else if (a.kind !== 'stop') {
       // scatter/guard 的原生自主移动无法按地域约束，暂不授权。

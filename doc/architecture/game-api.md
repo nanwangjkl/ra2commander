@@ -77,7 +77,7 @@
 
 普通 `Attack` 在目标离开射程或视线后可能自动追逐，`Guard/GuardArea` 也可能有限追逐。公共 API 没有 `holdGround` 或禁止追击开关。坐标 `AttackMove` 的途中机会攻击逻辑不同，不能视为普通攻击的等价替代。
 
-只攻击当前射程内目标仍不能保证后续不追击，需要持续观察、停止或纠正。该限制对应的取舍见 [ADR 005](../decisions/005-correct-engine-pursuit-through-public-api.md)。
+当前实现不以射程预判拒绝普通攻击，接近与开火由游戏处理。玩家明确守区时仍可监控、纠正越界位移；区域清敌的选敌范围与行军范围分开。早期取舍见 [ADR 005](../decisions/005-correct-engine-pursuit-through-public-api.md)，本轮修订见 [ADR 008](../decisions/008-command-actions-and-engine-attack.md)。
 
 车辆维修可通过 `Dock` 请求停靠兼容维修厂；建筑 `repair()` 是建筑修理，不能代替车辆停靠。泊位状态和失败原因不公开，只能结合血量和位置观察。固定 MOD 的规则目录或语音指定设施帮助绑定，不能承诺自动识别任意 MOD 的维修能力。
 

@@ -28,7 +28,8 @@ export async function compileCommand(
   const log: CompileAttemptLog[] = []
   const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
     { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: JSON.stringify({ control: snap.control, constraints: input.constraints, production: snap.production, tick: snap.tick, credits: snap.credits, mapWidth: snap.mapWidth, mapHeight: snap.mapHeight, self: snap.self.slice(0, 5), enemies: snap.enemies.slice(0, 5) }) },
+    // 分区几何留在宿主校验；模型只需分区名称、目的地和已筛选的目标，避免重复传输轮廓。
+    { role: 'user', content: JSON.stringify({ control: snap.control, constraints: input.constraints, production: snap.production, tick: snap.tick, credits: snap.credits, mapWidth: snap.mapWidth, mapHeight: snap.mapHeight, self: snap.self.slice(0, 5), enemies: snap.enemies.slice(0, 5) }, (key, value) => key === 'polygons' ? undefined : value) },
   ]
   if (input.diagnostic) {
     messages.push({ role: 'assistant', content: input.diagnostic.code })

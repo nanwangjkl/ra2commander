@@ -1,8 +1,17 @@
-import { compileCommand } from '@ra2c/command'
+import { compileCommand, CompileError } from '@ra2c/command'
 import type { GoalSpec } from '@ra2c/contracts'
 import type { OpenAICompatibleProvider } from '@ra2c/model-providers'
 import type { StepExecutor } from '@ra2c/js-worker'
-import type { TaskRuntime } from '@ra2c/runtime'
+import type { CompileLease, TaskRuntime } from '@ra2c/runtime'
+
+export interface CompilationEvent {
+  stage: 'effective' | 'merged' | 'cancelled' | 'failed'
+  owner: string
+  sessionKey: string
+  goalIds: string[]
+  version?: number
+  error?: string
+}
 
 interface ControllerDeps {
   runtime: TaskRuntime
@@ -15,7 +24,36 @@ interface ControllerDeps {
 /** 所有控制对象共用生成与修复流程，目标合并由运行时维护。 */
 export class ProgramController {
   private repairs = new Map<string, number>()
+  private listeners = new Set<(event: CompilationEvent) => void>()
   constructor(private readonly deps: ControllerDeps) {}
+
+  subscribe(listener: (event: CompilationEvent) => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  private publish(event: CompilationEvent): void {
+    for (const listener of this.listeners) {
+      try { listener(event) } catch (error) { this.deps.log?.(`编译反馈失败：${String(error)}`) }
+    }
+  }
+
+  private interrupted(lease: CompileLease): string {
+    const { runtime } = this.deps
+    const program = runtime.programs.get(lease.ownerId)
+    for (const spec of lease.goals) {
+      const goal = runtime.battleKey === lease.sessionKey ? runtime.goals.get(spec.id) : undefined
+      const retained = goal && goal.status !== 'cancelled' && program?.goalIds.includes(spec.id)
+      const active = retained && goal.status === 'active' && JSON.stringify(goal.activeSpec) === JSON.stringify(goal.spec)
+      const merged = retained && (runtime.hasPendingCommand(lease.ownerId) || (program?.revision ?? -1) > lease.revision)
+      this.publish({ owner: lease.ownerId, sessionKey: lease.sessionKey, goalIds: [spec.id],
+        stage: active ? 'effective' : merged ? 'merged' : 'cancelled',
+        ...(active && program?.script ? { version: program.script.version } : {}),
+        ...(!active ? { error: merged ? '已合并到后续脚本生成，目标仍保留' : retained ? '本次生成已停止，目标仍保留待生效' : '已停止、被新目标替换或对局已变化' } : {}),
+      })
+    }
+    return '本次生成已停止或并入后续变更；目标状态以实际生效结果为准'
+  }
 
   setProvider(provider: () => OpenAICompatibleProvider): void { this.deps.provider = provider }
 
@@ -31,18 +69,30 @@ export class ProgramController {
       const lease = runtime.beginCompile(id, repair)
       try {
         const goals = this.deps.prepare ? await this.deps.prepare(lease.goals, lease.signal) : lease.goals
-        if (lease.signal.aborted) return '已合并到后续变更，目标仍保留'
+        if (lease.signal.aborted) return this.interrupted(lease)
         if (!runtime.prepareCompile(lease, goals)) continue
         const frame = runtime.compileFrame(lease)
         const program = runtime.programs.get(id)!
         const diagnostic = repair && program.script ? { code: program.script.code, error: program.stats.lastError ?? '脚本故障' } : undefined
         const output = goals.length ? await compileCommand(this.deps.provider(), { ...frame, ...(diagnostic ? { diagnostic } : {}) }, this.deps.executor, { signal: lease.signal }) : { code: 'function step(snapshot,memory){return {actions:[],memory:{}}}' }
-        if (lease.signal.aborted) return '已被后续变更取代，目标仍保留'
-        if (runtime.commitCompile(lease, output.code)) return `${id} v${runtime.programs.get(id)!.script!.version} 已生效`
+        if (lease.signal.aborted) return this.interrupted(lease)
+        if (runtime.commitCompile(lease, output.code)) {
+          const program = runtime.programs.get(id)!
+          const version = program.script!.version
+          this.publish({ stage: 'effective', owner: id, sessionKey: lease.sessionKey, goalIds: [...program.activeGoalIds], version })
+          return `${id} v${version} 已生效`
+        }
       } catch (err) {
-        if (lease.signal.aborted) return '已被停止或后续变更取代'
+        if (lease.signal.aborted) return this.interrupted(lease)
         if (!runtime.isCompileCurrent(lease)) continue
+        // 普通改令失败时旧脚本继续；不能把其中已有的有效目标也标成失败。
+        const goalIds = lease.goals.filter(spec => {
+          const goal = runtime.goals.get(spec.id)
+          return goal && JSON.stringify(goal.spec) !== JSON.stringify(goal.activeSpec)
+        }).map(spec => spec.id)
         runtime.failCompile(lease, String(err))
+        const detail = err instanceof CompileError ? err.log.at(-1)?.errors.join('；') : undefined
+        this.publish({ stage: 'failed', owner: id, sessionKey: lease.sessionKey, goalIds, error: `脚本生成失败：${String(err)}${detail ? `\n${detail}` : ''}` })
         throw err
       } finally { runtime.releaseCommand(lease) }
       // 成员在编译期间发生变化：重新绑定同一完整目标集合，不丢弃命令。

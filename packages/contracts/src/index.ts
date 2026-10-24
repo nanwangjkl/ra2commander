@@ -117,6 +117,7 @@ export interface StepConstraints {
   resumableQueueTypes?: number[];
   allowedActions?: ActionRequest['kind'][];
   region?: Region;
+  targetRegion?: import('./spatial.ts').TargetRegion;
   retreat?: { x: number; y: number; active: boolean };
   goals?: Record<string, import('./control.ts').GoalConstraints>;
   ignoreInactiveGoals?: boolean;
@@ -137,8 +138,10 @@ export interface ActionContext {
   seq: number;
 }
 
-export { validateActions, validateScriptActions, inRegion } from './validate-actions.ts';
+export { validateActions, validateScriptActions, liveScriptActions, inRegion } from './validate-actions.ts';
+export { inTargetRegion, type TargetRegion } from './spatial.ts';
 export * from './control.ts';
+export type { CommandEvent, CommandSource, CommandStage, GoalExecution } from './command-log.ts';
 
 /** 任务脚本单次 step 的执行结果。 */
 export interface StepOutcome {

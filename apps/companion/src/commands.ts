@@ -10,13 +10,14 @@ import { ProgramController } from './controller.ts'
 import { combatOptions, productionOptions } from './command-options.ts'
 import { loadRegionScheme, type MapRegionIndex } from '../../../packages/maps/src/index.ts'
 import { runTranscript } from './transcript.ts'
+import type { CommandLog } from './command-log.ts'
 const ROOT = resolve(import.meta.dirname, '../../..')
 
 export function usage(): string {
   return [
     '命令：',
     '  say <文字>             把文字作为模拟语音转写，解析目标并生成脚本',
-    '  map use ice            显式绑定冰天雪地默认分区（不自动识别地图）',
+    '  map use ice            手动重新绑定冰天雪地分区（当前默认自动绑定）',
     '  status                 桥状态、会话代次、采样统计',
     '  units [n]              列出最近快照中的己方单位（默认前 20）',
     '  move <ids|all> <x> <y> 移动',
@@ -61,8 +62,6 @@ function parseIds(spec: string, snap: Snapshot | undefined): number[] | undefine
   }
   return ids
 }
-
-import type { CommandLog } from './command-log.ts'
 
 export interface CommandContext {
   browser: Browser

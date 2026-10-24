@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { fork, type ChildProcess } from 'node:child_process'
-import { validateScriptActions, type StepConstraints, type StepOutcome, type Snapshot } from '@ra2c/contracts'
+import { validateScriptActions, liveScriptActions, type StepConstraints, type StepOutcome, type Snapshot } from '@ra2c/contracts'
 import { compileChecks } from '@ra2c/command'
 
 export type { StepConstraints, StepOutcome }
@@ -96,6 +96,7 @@ export class StepExecutor {
         })
       })
       if (!outcome.ok) return outcome
+      outcome.actions = liveScriptActions(outcome.actions, constraints, snapshot as Snapshot)
       const error = validateScriptActions(outcome.actions, constraints, snapshot as Snapshot)
       return error ? fail(error) : outcome
     })

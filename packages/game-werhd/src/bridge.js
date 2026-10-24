@@ -9,8 +9,25 @@
 // 且带性能护栏（超预算自动降频）。
 (() => {
   'use strict';
-  var BRIDGE_VERSION = 4;
+  var BRIDGE_VERSION = 5;
   if (window.__ra2cInstalled && window.__ra2cVersion === BRIDGE_VERSION) return;
+  // v4 只调整攻击策略，保留其采样闭包、对局 UUID 与序号，避免升级打断现有任务。
+  // 旧提交器已经检查了对局、快照、己方成员及敌方可见性；仅接管其射程拒绝。
+  if (window.__ra2cInstalled && window.__ra2cVersion === 4 && typeof window.__ra2cSubmit === 'function') {
+    var previousSubmit = window.__ra2cSubmit;
+    window.__ra2cSubmit = function (session, action, expectedSeq, sessionKey) {
+      var result = previousSubmit(session, action, expectedSeq, sessionKey);
+      if (action.kind !== 'attack' || result.ok || result.reason !== 'out-of-range' || result.submitted !== 0) return result;
+      var api = window.werhd;
+      var own = api.units('self') || [];
+      var ids = action.unitIds.filter(function (id) { return own.some(function (unit) { return unit.id === id }); });
+      if (!ids.length) return { ok: false, reason: 'invalid-units', submitted: 0, session: session };
+      try { api.attack(ids, action.targetId); return { ok: true, submitted: ids.length, session: session }; }
+      catch (error) { return { ok: false, reason: 'api-error: ' + error.message, submitted: 0, session: session }; }
+    };
+    window.__ra2cVersion = BRIDGE_VERSION;
+    return;
+  }
   if (window.__ra2cInterval) { try { clearInterval(window.__ra2cInterval) } catch (e) {} }
   window.__ra2cInstalled = true;
   window.__ra2cVersion = BRIDGE_VERSION;
@@ -223,7 +240,6 @@
         case 'attack': {
           var visible = w.units('hostile') || [];
           if (!visible.some(function (u) { return u.id === action.targetId })) return { ok: false, reason: 'invisible-target', submitted: 0, session: session };
-          if (typeof w.inRange !== 'function' || ids.some(function (id) { return !w.inRange(id, action.targetId, 'current') })) return { ok: false, reason: 'out-of-range', submitted: 0, session: session };
           w.attack(ids, action.targetId); break;
         }
         case 'stop': w.stop(ids); break;

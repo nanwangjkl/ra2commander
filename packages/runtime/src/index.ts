@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import {
-  validateScriptActions, inRegion, goalOwner, ownerId,
+  validateScriptActions, liveScriptActions, inRegion, inTargetRegion, goalOwner, ownerId,
   type ActionRequest, type ActionResult, type ActionContext, type Snapshot, type StepConstraints,
-  type GoalConstraints, type GoalSpec, type GoalView, type ScriptOwner, type FormationRequest,
+  type GoalConstraints, type GoalSpec, type GoalView, type ScriptOwner, type FormationRequest, type GoalExecution,
 } from '@ra2c/contracts'
 import { codeHash, type StepExecutor } from '@ra2c/js-worker'
 import { FormationRegistry } from './formation.ts'
@@ -56,6 +56,27 @@ export class TaskRuntime {
   get snapshot(): Snapshot | undefined { return this.latest }
   hasPendingCommand(id: string): boolean { return this.pending.has(id) }
   pendingCommandIds(): string[] { return [...this.pending.keys()] }
+
+  /** 提供已有执行事实的精简视图；不改变目标，也不把动作提交当作完成。 */
+  goalExecution(id: string): GoalExecution | undefined {
+    const goal = this.goals.get(id)
+    if (!goal) return undefined
+    if (goal.status === 'completed') return { state: 'completed' }
+    if (goal.status === 'cancelled') return { state: 'cancelled', detail: '目标已取消或被替换' }
+    const program = this.programs.get(goal.ownerId)
+    const spec = goal.activeSpec
+    if (!spec || !program?.activeGoalIds.includes(id) || !this.latest) return undefined
+    if (program.status === 'paused') return program.stats.errors >= 3 && program.stats.lastError
+      ? { state: 'faulted', detail: `脚本运行出错，已暂停：${program.stats.lastError}` } : { state: 'paused', detail: '脚本已暂停' }
+    if (program.status === 'stopped') return { state: 'cancelled', detail: '脚本已停止' }
+    const view = this.frame(program, [spec], this.latest).snapshot.control!.goals[0]!
+    const progress = spec.kind === 'production' && !spec.maintainPower
+      ? { completed: Math.min(spec.quantity, view.observed[spec.target]?.length ?? 0), total: spec.quantity } : undefined
+    const detail = view.blocked ?? (view.uncertain.length ? `提交结果待确认：${view.uncertain.join('、')}` : undefined)
+    if (detail) return { state: 'blocked', detail, ...(progress ? { progress } : {}) }
+    const continuous = (spec.kind === 'production' && !!spec.maintainPower) || spec.kind === 'reinforce' || (spec.kind === 'combat' && !spec.destination && !spec.attackRegion)
+    return { state: continuous ? 'continuous' : 'running', ...(progress ? { progress } : {}) }
+  }
 
   private program(owner: ScriptOwner): ProgramState {
     const id = ownerId(owner)
@@ -211,6 +232,7 @@ export class TaskRuntime {
     const program = this.programs.get(goal.ownerId)!
     program.goalIds = program.goalIds.filter(g => g !== id)
     program.activeGoalIds = program.activeGoalIds.filter(g => g !== id)
+    if (program.status === 'active' && !this.activeSpecs(program).length) program.status = 'idle'
     program.revision++
     this.cancelCommand(program.id)
     const snap = this.latest
@@ -279,6 +301,7 @@ export class TaskRuntime {
     if (spec.kind === 'combat') {
       const facts = this.goals.get(spec.id)!.facts
       return { ...base, allowedUnitIds: alive(this.formations.membersOf(spec.formationId)), allowedActions: spec.allowedActions, region: spec.region,
+        ...(spec.attackRegion ? { targetRegion: spec.attackRegion, enemyIds: snap.enemies.filter(enemy => inTargetRegion(enemy.rx, enemy.ry, spec.attackRegion!)).map(enemy => enemy.id) } : {}),
         ...(spec.retreat ? { retreat: { x: spec.retreat.x, y: spec.retreat.y, active: facts.retreatTriggered } } : {}) }
     }
     if (spec.kind === 'deploy') return { ...base, allowedUnitIds: alive(spec.unitIds).filter(id => snap.self.some(u => u.id === id && u.canDeploy)), allowedActions: ['deploy'] }
@@ -328,7 +351,9 @@ export class TaskRuntime {
       views.push(view)
     }
     const constraints: StepConstraints = { allowedUnitIds: [], enemyIds: snap.enemies.map(u => u.id), mapWidth: snap.mapWidth, mapHeight: snap.mapHeight, goals, ignoreInactiveGoals: running }
-    return { snapshot: { ...snap, constraints, control: { owner: program.owner, goals: views, formations: this.formations.list().map(f => ({ id: f.id, memberIds: [...f.memberIds] })) } }, constraints }
+    const regional = specs.length > 0 && specs.every(spec => spec.kind === 'combat' && spec.attackRegion)
+    const targetIds = new Set(Object.values(goals).flatMap(goal => goal.enemyIds))
+    return { snapshot: { ...snap, enemies: regional ? snap.enemies.filter(enemy => targetIds.has(enemy.id)) : snap.enemies, constraints, control: { owner: program.owner, goals: views, formations: this.formations.list().map(f => ({ id: f.id, memberIds: [...f.memberIds] })) } }, constraints }
   }
 
   private observe(snap: Snapshot): void {
@@ -363,10 +388,23 @@ export class TaskRuntime {
       } else if (spec.kind === 'rally') {
         const units = snap.self.filter(u => spec.unitIds.includes(u.id))
         if (units.length && units.every(u => Math.hypot(u.rx - spec.x, u.ry - spec.y) <= 1)) this.complete(goal)
+      } else if (spec.kind === 'combat' && spec.destination && !spec.attackRegion) {
+        const members = this.formations.membersOf(spec.formationId)
+        const units = snap.self.filter(unit => members.includes(unit.id))
+        // 同一格不能容纳整个编队；以所有存活成员进入目的地附近相邻格确认到达。
+        const radius = Math.max(2, Math.ceil(Math.sqrt(units.length)))
+        if (units.length && units.every(unit => !this.locked(unit.id) && Math.hypot(unit.rx - spec.destination!.x, unit.ry - spec.destination!.y) <= radius)) this.complete(goal)
       }
     }
+    // 旧状态恢复时，所有目标可能早已完成；不要保留无活动目标的 active 状态。
+    for (const program of this.programs.values()) if (program.status === 'active' && !this.activeSpecs(program).length) program.status = 'idle'
   }
-  private complete(goal: GoalState): void { goal.facts.done = true; goal.status = 'completed' }
+  private complete(goal: GoalState): void {
+    goal.facts.done = true
+    goal.status = 'completed'
+    const program = this.programs.get(goal.ownerId)
+    if (program?.status === 'active' && !this.activeSpecs(program).length) program.status = 'idle'
+  }
 
   async onSnapshot(snap: Snapshot): Promise<void> {
     if (this.retiredSessions.has(snap.sessionKey)) return
@@ -483,6 +521,7 @@ export class TaskRuntime {
     if (!valid()) return
     program.stats.steps++
     if (!outcome.ok) { await this.fault(program, outcome.error ?? '执行失败', snap); return }
+    outcome.actions = liveScriptActions(outcome.actions, frame.constraints, frame.snapshot)
     const outputError = validateScriptActions(outcome.actions, frame.constraints, frame.snapshot)
     if (outputError) { await this.fault(program, outputError, snap); return }
     for (const item of outcome.actions) {
@@ -490,7 +529,10 @@ export class TaskRuntime {
       const goal = this.goals.get(item?.goalId)
       // 单目标取消/完成不使其他目标失效，也不把陈旧引用当作脚本异常。
       if (!goal || goal.ownerId !== program.id || goal.status !== 'active' || !goal.activeSpec || !program.activeGoalIds.includes(item.goalId)) continue
-      const fresh = this.frame(program, [goal.activeSpec], snap)
+      const fresh = this.frame(program, [goal.activeSpec], snap, true)
+      const live = liveScriptActions([item], fresh.constraints, fresh.snapshot)[0]
+      if (!live) continue
+      item.request = live.request
       const error = validateScriptActions([item], fresh.constraints, fresh.snapshot)
       if (error) { await this.fault(program, error, snap); return }
       const request = item.request
@@ -512,6 +554,7 @@ export class TaskRuntime {
       const guard = () => valid() && goal.status === 'active' && goal.activeSpec === this.goals.get(item.goalId)?.activeSpec
       try {
         const results = await this.deps.submit([request], snap, guard)
+        if (request.kind !== 'produce' && results.some(result => !result.ok && ['invisible-target', 'invalid-units', 'stale-snapshot', 'stale-session'].includes(result.reason ?? ''))) continue
         if (!results.length || results.some(r => !r.ok)) {
           const notSent = !results.length || results.every(r => !r.ok && r.submitted === 0 && ['stale-session', 'stale-snapshot', 'revoked-or-no-snapshot', 'no-api'].includes(r.reason ?? ''))
           if (record) record.state = notSent ? 'rejected' : 'unknown'

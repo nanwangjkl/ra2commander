@@ -1,21 +1,50 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { ModuleKind, ScriptTarget, transpileModule } from 'typescript'
 import type { BrowserContext, Frame, Page } from 'playwright'
 import { isGameDocument } from '@ra2c/game-werhd'
 
 export const WORKBENCH_PATH = '/commander/'
+let uiVersion = ''
 
 /** 启动时做最小静态构建；产物放在已忽略的运行目录，不需要开发服务器或整页热更新。 */
 export function buildWorkbench(root: string): Record<string, string> {
   const ui = join(root, 'apps/companion/ui')
   const out = join(root, '.runtime/ui')
   mkdirSync(out, { recursive: true })
-  writeFileSync(join(out, 'workbench.js'), transpileModule(readFileSync(join(ui, 'workbench.ts'), 'utf8'), {
-    compilerOptions: { target: ScriptTarget.ES2022, module: ModuleKind.ES2022 },
-  }).outputText)
-  return { [WORKBENCH_PATH]: join(ui, 'index.html'), [`${WORKBENCH_PATH}index.html`]: join(ui, 'index.html'),
-    [`${WORKBENCH_PATH}workbench.css`]: join(ui, 'workbench.css'), [`${WORKBENCH_PATH}workbench.js`]: join(out, 'workbench.js') }
+  const sources = ['workbench', 'command-panel', 'command-card']
+  uiVersion = createHash('sha256').update(['index.html', 'workbench.css', ...sources.map(name => `${name}.ts`)].map(name => readFileSync(join(ui, name), 'utf8')).join('\n')).digest('hex').slice(0, 12)
+  const files: Record<string, string> = { [WORKBENCH_PATH]: join(ui, 'index.html'), [`${WORKBENCH_PATH}index.html`]: join(ui, 'index.html'), [`${WORKBENCH_PATH}workbench.css`]: join(ui, 'workbench.css') }
+  for (const name of sources) {
+    const compiled = transpileModule(readFileSync(join(ui, `${name}.ts`), 'utf8'), {
+      compilerOptions: { target: ScriptTarget.ES2022, module: ModuleKind.ES2022 },
+    }).outputText.replace(/(['"])(\.\/[^'"]+\.js)\1/g, (_match, quote: string, path: string) => `${quote}${path}?v=${uiVersion}${quote}`)
+    writeFileSync(join(out, `${name}.js`), compiled)
+    files[`${WORKBENCH_PATH}${name}.js`] = join(out, `${name}.js`)
+  }
+  return files
+}
+
+/** 更新侧栏模块与样式，保留已有游戏文档、全屏桥和窗口焦点。 */
+export async function refreshCommandPanel(page: Page): Promise<void> {
+  await page.evaluate(async version => {
+    const previous = window as Window & { __ra2cUnmountCommands?: () => void }
+    // 只替换侧栏子节点以移除旧输入监听，保留布局代码持有的 sidebar 节点。
+    previous.__ra2cUnmountCommands?.()
+    const response = await fetch(`/commander/?v=${version}`, { cache: 'no-store' })
+    if (!response.ok) throw new Error('侧栏资源读取失败')
+    const template = new DOMParser().parseFromString(await response.text(), 'text/html')
+    const sidebar = document.querySelector('#sidebar')!
+    const replacement = sidebar.cloneNode(false) as HTMLElement
+    replacement.innerHTML = template.querySelector('#sidebar')!.innerHTML
+    sidebar.replaceChildren(...Array.from(replacement.childNodes))
+    const css = document.querySelector<HTMLLinkElement>('link[rel="stylesheet"]')!
+    css.href = `/commander/workbench.css?v=${version}`
+    const url = `/commander/command-panel.js?v=${version}`
+    const panel = await import(url) as { mountCommandPanel: () => void }
+    panel.mountCommandPanel()
+  }, uiVersion)
 }
 
 export async function openWorkbench(context: BrowserContext, gameUrl: string): Promise<{ page: Page; frame: Frame; reused: boolean; legacy: boolean }> {

@@ -37,6 +37,8 @@ test('页面桥可以提交正常动作，并丢弃过期、跨局或目标已�
   const first = page.sample()
   const action = { kind: 'move', unitIds: [1], x: 6, y: 6 }
   assert.equal(page.window.__ra2cSubmit(first.session, action, first.seq, first.sessionKey).ok, true)
+  page.api.inRange = () => { throw new Error('宿主不应预判射程') }
+  assert.equal(page.window.__ra2cSubmit(first.session, { kind: 'attack', unitIds: [1], targetId: 99 }, first.seq, first.sessionKey).ok, true)
   const second = page.next()
   assert.equal(page.window.__ra2cSubmit(first.session, action, first.seq, first.sessionKey).ok, false)
   assert.equal(page.window.__ra2cSubmit(first.session, { kind: 'stop', unitIds: [1] }, first.seq, first.sessionKey).ok, true)
@@ -46,7 +48,7 @@ test('页面桥可以提交正常动作，并丢弃过期、跨局或目标已�
   assert.equal(page.window.__ra2cSubmit(second.session, action, second.seq, second.sessionKey).ok, false)
   page.poll()
   assert.equal(page.window.__ra2cSubmit(second.session, action, second.seq, second.sessionKey).ok, false)
-  assert.equal(page.submitted.length, 2)
+  assert.equal(page.submitted.length, 3)
 })
 
 test('换局后重新采样，兼容游戏 API 对象被复用', () => {
@@ -64,6 +66,23 @@ test('换局后重新采样，兼容游戏 API 对象被复用', () => {
     assert.notEqual(current.sessionKey, old.sessionKey)
     assert.equal(current.tick, 1)
   }
+})
+
+test('v4 攻击策略升级保留对局身份，只接管射程拒绝，不跳过旧桥的会话检查', () => {
+  const page = pageBridge()
+  const current = page.sample()
+  const submit = page.window.__ra2cSubmit
+  page.window.__ra2cSubmit = (session: number, action: { kind: string }, seq: number, key: string) => {
+    if (action.kind === 'attack' && session === current.session && seq === current.seq && key === current.sessionKey) return { ok: false, reason: 'out-of-range', submitted: 0, session }
+    return submit(session, action, seq, key)
+  }
+  page.window.__ra2cVersion = 4
+  runInNewContext(readFileSync(new URL('../packages/game-werhd/src/bridge.js', import.meta.url), 'utf8'), { window: page.window })
+  assert.equal(page.window.__ra2cState().sessionKey, current.sessionKey)
+  const attack = { kind: 'attack', unitIds: [1], targetId: 99 }
+  assert.equal(page.window.__ra2cSubmit(current.session, attack, current.seq, current.sessionKey).ok, true)
+  assert.equal(page.window.__ra2cSubmit(current.session, attack, current.seq, 'old-battle').ok, false)
+  assert.equal(page.submitted.length, 1)
 })
 test('宿主桥保留动作来源对局，不查询当前会话替换它；撤权后不排入 evaluate', async () => {
   const calls: unknown[] = []

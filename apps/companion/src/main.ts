@@ -23,9 +23,11 @@ import { startStaticServer } from './static-server.ts'
 import { handleCommand, usage, type CommandContext } from './commands.ts'
 import { ProgramController } from './controller.ts'
 import { prepareGoals } from './prepare-goals.ts'
-import { buildWorkbench, openWorkbench, WORKBENCH_PATH } from './workbench.ts'
-import { CommandLog, newCommandId } from './command-log.ts'
+import { buildWorkbench, openWorkbench, refreshCommandPanel, WORKBENCH_PATH } from './workbench.ts'
+import { CommandLog } from './command-log.ts'
 import { runTranscript } from './transcript.ts'
+import { WorkbenchApi } from './workbench-api.ts'
+import { bindDefaultMap } from './map-binding.ts'
 
 // import.meta.dirname = apps/companion/src，仓库根需上溯三级。
 const ROOT = resolve(import.meta.dirname, '../../..')
@@ -111,6 +113,12 @@ async function main(): Promise<void> {
   // 阶段 2：命令记录与事件流；HTTP 端点在 ctx 建立前注册，处理函数延后绑定。
   const commandLog = new CommandLog()
   let submitSay: ((text: string, source: 'sidebar' | 'cli', commandId: string) => Promise<string>) | undefined
+  const api = new WorkbenchApi({ log: commandLog, ready: () => !!submitSay,
+    submit: (text, commandId) => submitSay!(text, 'sidebar', commandId),
+    status: async () => {
+      try { return (await bridge?.state())?.apiAlive ? 'ready' : bridge ? 'waiting' : 'loading' } catch { return 'loading' }
+    },
+  })
   const server = await startStaticServer({
     root: GAME_DIR,
     extraFiles: { '/pack.7z': PACK_PATH, ...buildWorkbench(ROOT) },
@@ -119,50 +127,7 @@ async function main(): Promise<void> {
     handleRequest: async (req, res) => {
       const pathname = new URL(req.url ?? '/', 'https://127.0.0.1').pathname
       if (pathname === WORKBENCH_PATH.slice(0, -1)) { res.writeHead(308, { location: WORKBENCH_PATH }); res.end(); return true }
-      if (pathname === `${WORKBENCH_PATH}say`) {
-        if (req.method !== 'POST') { res.writeHead(405); res.end(); return true }
-        if (!submitSay) { res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ error: '伴随程序尚未就绪' })); return true }
-        let text = ''
-        for await (const chunk of req) text += chunk
-        let parsed: { text?: unknown }
-        try { parsed = JSON.parse(text || '{}') as { text?: unknown } } catch { parsed = {} }
-        if (typeof parsed.text !== 'string' || !parsed.text.trim()) {
-          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: '缺少命令文本' }))
-          return true
-        }
-        const commandId = newCommandId()
-        res.writeHead(202, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-        res.end(JSON.stringify({ commandId }))
-        // 后台推进；各阶段状态经事件流推送，不阻塞界面继续输入。
-        // runTranscript 内部已按阶段发事件（含失败/取消），此处只记录意外异常。
-        void submitSay(parsed.text, 'sidebar', commandId).catch(error => {
-          console.log(`[companion] 命令 ${commandId} 处理异常：${String(error).slice(0, 160)}`)
-        })
-        return true
-      }
-      if (pathname === `${WORKBENCH_PATH}events`) {
-        if (req.method !== 'GET') { res.writeHead(405); res.end(); return true }
-        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', connection: 'keep-alive' })
-        // 断线补齐：按 Last-Event-ID 续传，未带则从空开始（阶段 2 内存历史）。
-        const lastId = Number(req.headers['last-event-id'] ?? 0)
-        for (const event of commandLog.since(Number.isFinite(lastId) ? lastId : 0)) {
-          res.write(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`)
-        }
-        const unsubscribe = commandLog.subscribe((event) => {
-          res.write(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`)
-        })
-        const heartbeat = setInterval(() => res.write(': ping\n\n'), 25_000)
-        req.on('close', () => { clearInterval(heartbeat); unsubscribe() })
-        return true
-      }
-      if (pathname !== `${WORKBENCH_PATH}status`) return false
-      if (req.method !== 'GET') { res.writeHead(405); res.end(); return true }
-      let game = 'loading'
-      try { game = (await bridge?.state())?.apiAlive ? 'ready' : bridge ? 'waiting' : 'loading' } catch { /* 游戏尚未加载。 */ }
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-      res.end(JSON.stringify({ game }))
-      return true
+      return api.handle(req, res)
     },
   })
   console.log(`[companion] 游戏站点: ${server.url}  (目录 ${GAME_DIR})`)
@@ -213,6 +178,8 @@ async function main(): Promise<void> {
   try { pendingRestore = readStateFile(STATE_FILE) }
   catch (err) { if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.log(`[companion] 未恢复旧状态：${String(err).slice(0, 180)}`) }
   let lastSessionKey = ''
+  let commandContext: CommandContext | undefined
+  let mapAttemptSession = ''
   let stateDirty = false
   const markDirty = () => { stateDirty = true }
   const saveState = () => {
@@ -229,6 +196,10 @@ async function main(): Promise<void> {
       console.log(`[companion] 当前对局 ${snap.sessionKey}，tick=${snap.tick}，己方=${snap.self.length}`)
     }
     const advance = runtime.onSnapshot(snap)
+    if (commandContext && mapAttemptSession !== runtime.battleKey) {
+      mapAttemptSession = runtime.battleKey
+      void bindDefaultMap(commandContext).catch(error => console.log(`[companion] 默认分区绑定失败：${String(error)}`))
+    }
     let restored = false
     if (pendingRestore) {
       const state = pendingRestore
@@ -241,6 +212,8 @@ async function main(): Promise<void> {
     }
     void advance.then(() => {
       markDirty()
+      if (restored) commandLog.restoreCurrent(ROOT, runtime)
+      commandLog.syncRuntime(runtime)
       if (restored) {
         for (const program of runtime.programs.values()) {
           const waiting = program.goalIds.some(id => { const goal = runtime.goals.get(id); return goal && goal.status !== 'cancelled' && goal.status !== 'completed' && JSON.stringify(goal.spec) !== JSON.stringify(goal.activeSpec) })
@@ -255,6 +228,7 @@ async function main(): Promise<void> {
   if (legacy) console.log('[companion] 保留正在进行的旧版对局；结束后打开工作台，不自动迁移或刷新')
   else console.log(`[companion] 工作台: ${new URL(WORKBENCH_PATH, server.url).href}`)
   if (!reused) await dismissStartupDialogs(frame)
+  if (reused && !legacy) await refreshCommandPanel(page)
 
   if (!providers.size) {
     console.log('[companion] 未配置任何云模型 key（.env），task new 不可用；桥命令不受影响。')
@@ -264,17 +238,25 @@ async function main(): Promise<void> {
     currentProvider: currentModel,
     commandLog,
   }
-  submitSay = (text, source, commandId) => runTranscript(text, ctx, ROOT, { commandId, source, log: commandLog })
+  commandContext = ctx
+  commandLog.follow(controller, runtime)
+  if (runtime.snapshot) commandLog.restoreCurrent(ROOT, runtime)
+  await bindDefaultMap(ctx).catch(error => console.log(`[companion] 默认分区绑定失败：${String(error)}`))
+  submitSay = async (text, source, commandId) => {
+    try { return await runTranscript(text, ctx, ROOT, { commandId, source, log: commandLog }) }
+    finally { markDirty(); saveState(); commandLog.syncRuntime(runtime) }
+  }
   controller.setProvider(() => ctx.currentProvider())
   let running = true
   const runLine = async (line: string): Promise<string> => {
     if (!running) return '程序正在退出'
     let out: string
     try { out = await handleCommand(line, ctx) }
-    finally { markDirty(); saveState() } // 成功和失败的目标变更都在回显前保存
+    finally { markDirty(); saveState(); commandLog.syncRuntime(runtime) } // 成功和失败的目标变更都在回显前保存
     if (out === '__QUIT__' || out === '__QUIT_HARD__') {
       hardQuit = out === '__QUIT_HARD__'
       running = false
+      api.close()
       runtime.cancelAllCommands()
       saveState()
       return 'bye'
@@ -340,6 +322,8 @@ async function main(): Promise<void> {
   }
 
   runtime.cancelAllCommands()
+  ctx.transcriptAbort?.abort(new Error('伴随程序正在退出'))
+  api.close()
   if (hardQuit) {
     const session = await browser.newBrowserCDPSession()
     await session.send('Browser.close').catch(() => {})
