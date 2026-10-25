@@ -3,6 +3,7 @@ import type { GoalSpec } from '@ra2c/contracts'
 import type { OpenAICompatibleProvider } from '@ra2c/model-providers'
 import type { StepExecutor } from '@ra2c/js-worker'
 import type { CompileLease, TaskRuntime } from '@ra2c/runtime'
+import { randomUUID } from 'node:crypto'
 
 export interface CompilationEvent {
   stage: 'effective' | 'merged' | 'cancelled' | 'failed'
@@ -20,11 +21,13 @@ interface ControllerDeps {
   prepare?: (goals: GoalSpec[], signal: AbortSignal, prompts: PromptLibrary) => Promise<GoalSpec[]>
   log?: (message: string) => void
   prompts?: Pick<PromptLoader, 'load'>
+  recordCompilation?: (event: Record<string, unknown> & { id: string; sessionKey: string; owner: string; goalIds: string[]; commandId?: string }) => void
 }
 
 interface PromptRequestOptions {
   prompts?: PromptLibrary
   onPromptVersion?: (version: string) => void
+  commandId?: string
 }
 
 /** 所有控制对象共用生成与修复流程，目标合并由运行时维护。 */
@@ -75,33 +78,43 @@ export class ProgramController {
     let prompts = promptOptions.prompts
     for (;;) {
       const lease = runtime.beginCompile(id, repair)
+      const compilationId = randomUUID()
+      const record = (event: Record<string, unknown>) => {
+        try { this.deps.recordCompilation?.({ id: compilationId, sessionKey: lease.sessionKey, owner: id, goalIds: lease.goals.map(goal => goal.id), ...(promptOptions.commandId ? { commandId: promptOptions.commandId } : {}), repair, ...event }) }
+        catch (error) { this.deps.log?.(`脚本归档失败：${String(error)}`) }
+      }
+      record({ stage: 'started' })
       try {
         // 在首次异步准备前固定版本；成员变化导致的重新绑定仍属于同一次命令。
         if (lease.goals.length) prompts ??= loader.load({
           onFallback: error => (this.deps.log ?? console.error)(`[companion] ${error.message}；沿用上一份可用提示词`),
         })
         const goals = this.deps.prepare && lease.goals.length ? await this.deps.prepare(lease.goals, lease.signal, prompts!) : lease.goals
-        if (lease.signal.aborted) return this.interrupted(lease)
-        if (!runtime.prepareCompile(lease, goals)) continue
+        if (lease.signal.aborted) { record({ stage: 'discarded', reason: '准备被中止' }); return this.interrupted(lease) }
+        if (!runtime.prepareCompile(lease, goals)) { record({ stage: 'discarded', reason: '成员变化，重新绑定' }); continue }
         const frame = runtime.compileFrame(lease)
         const program = runtime.programs.get(id)!
         const diagnostic = repair && program.script ? { code: program.script.code, error: program.stats.lastError ?? '脚本故障' } : undefined
         const output = goals.length ? await compileCommand(this.deps.provider(), { ...frame, ...(diagnostic ? { diagnostic } : {}) }, this.deps.executor, {
           signal: lease.signal,
           prompts: prompts!,
+          onTrace: trace => record({ ...trace }),
           onPromptVersion: version => {
             this.deps.log?.(`[companion] ${id} 脚本生成提示 ${version}`)
             promptOptions.onPromptVersion?.(version)
           },
         }) : { code: 'function step(snapshot,memory){return {actions:[],memory:{}}}', promptVersion: undefined }
-        if (lease.signal.aborted) return this.interrupted(lease)
+        if (lease.signal.aborted) { record({ stage: 'discarded', reason: '生成被中止' }); return this.interrupted(lease) }
         if (runtime.commitCompile(lease, output.code, output.promptVersion)) {
           const program = runtime.programs.get(id)!
           const version = program.script!.version
+          record({ stage: 'effective', version, code: output.code, promptVersion: output.promptVersion })
           this.publish({ stage: 'effective', owner: id, sessionKey: lease.sessionKey, goalIds: [...program.activeGoalIds], version })
           return `${id} v${version} 已生效`
         }
+        record({ stage: 'discarded', reason: '目标或成员变化，候选未生效' })
       } catch (err) {
+        record({ stage: lease.signal.aborted ? 'discarded' : 'failed', error: String(err) })
         if (lease.signal.aborted) return this.interrupted(lease)
         if (!runtime.isCompileCurrent(lease)) continue
         // 普通改令失败时旧脚本继续；不能把其中已有的有效目标也标成失败。

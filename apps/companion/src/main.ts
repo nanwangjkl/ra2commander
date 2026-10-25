@@ -28,6 +28,7 @@ import { CommandLog } from './command-log.ts'
 import { runTranscript } from './transcript.ts'
 import { WorkbenchApi } from './workbench-api.ts'
 import { bindDefaultMap } from './map-binding.ts'
+import { BattleRecords } from './battle-records.ts'
 
 // import.meta.dirname = apps/companion/src，仓库根需上溯三级。
 const ROOT = resolve(import.meta.dirname, '../../..')
@@ -111,9 +112,11 @@ async function main(): Promise<void> {
 
   let bridge: WerhdBridge | undefined
   // 阶段 2：命令记录与事件流；HTTP 端点在 ctx 建立前注册，处理函数延后绑定。
-  const commandLog = new CommandLog()
+  const records = new BattleRecords(ROOT)
+  records.importTranscripts(ROOT)
+  const commandLog = new CommandLog(records)
   let submitSay: ((text: string, source: 'sidebar' | 'cli', commandId: string) => Promise<string>) | undefined
-  const api = new WorkbenchApi({ log: commandLog, ready: () => !!submitSay,
+  const api = new WorkbenchApi({ log: commandLog, records, ready: () => !!submitSay,
     submit: (text, commandId) => submitSay!(text, 'sidebar', commandId),
     status: async () => {
       try { return (await bridge?.state())?.apiAlive ? 'ready' : bridge ? 'waiting' : 'loading' } catch { return 'loading' }
@@ -166,6 +169,7 @@ async function main(): Promise<void> {
   })
   controller = new ProgramController({
     runtime, executor, provider: currentModel,
+    recordCompilation: records.compilation,
     prepare: (goals, signal, prompts) => {
       const snap = runtime.snapshot
       if (!snap) throw new Error('当前没有有效快照')
@@ -187,10 +191,13 @@ async function main(): Promise<void> {
     if (!runtime.snapshot) return
     try { saveStateFile(STATE_FILE, persistState(runtime)); stateDirty = false }
     catch (err) { console.log(`[companion] 状态保存失败：${String(err).slice(0, 120)}`) }
+    records.observe(runtime)
   }
   setInterval(() => { if (stateDirty) saveState() }, 3000).unref()
 
   gameBridge.onSnapshot(snap => {
+    if (runtime.battleKey && runtime.battleKey !== snap.sessionKey) records.observe(runtime)
+    records.setSession(snap.sessionKey)
     if (snap.sessionKey !== lastSessionKey) {
       lastSessionKey = snap.sessionKey
       console.log(`[companion] 当前对局 ${snap.sessionKey}，tick=${snap.tick}，己方=${snap.self.length}`)
@@ -214,6 +221,7 @@ async function main(): Promise<void> {
       markDirty()
       if (restored) commandLog.restoreCurrent(ROOT, runtime)
       commandLog.syncRuntime(runtime)
+      records.observe(runtime)
       if (restored) {
         for (const program of runtime.programs.values()) {
           const waiting = program.goalIds.some(id => { const goal = runtime.goals.get(id); return goal && goal.status !== 'cancelled' && goal.status !== 'completed' && JSON.stringify(goal.spec) !== JSON.stringify(goal.activeSpec) })
@@ -324,6 +332,8 @@ async function main(): Promise<void> {
   runtime.cancelAllCommands()
   ctx.transcriptAbort?.abort(new Error('伴随程序正在退出'))
   api.close()
+  records.observe(runtime)
+  records.close()
   if (hardQuit) {
     const session = await browser.newBrowserCDPSession()
     await session.send('Browser.close').catch(() => {})

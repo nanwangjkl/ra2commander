@@ -1,11 +1,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { CommandLog, newCommandId } from './command-log.ts'
+import type { BattleRecords } from './battle-records.ts'
+import type { FeedbackRating } from '@ra2c/contracts'
 
 interface ApiOptions {
   log: CommandLog
   ready: () => boolean
   submit: (text: string, commandId: string) => Promise<unknown>
   status: () => Promise<string>
+  records?: BattleRecords
 }
 
 /** 工作台接口及其长连接的生命周期；退出时不能让 SSE 心跳残留进程。 */
@@ -16,9 +19,49 @@ export class WorkbenchApi {
 
   async handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     const path = new URL(req.url ?? '/', 'https://127.0.0.1').pathname
-    if (!['/commander/say', '/commander/events', '/commander/status'].includes(path)) return false
+    if (!['/commander/say', '/commander/events', '/commander/status', '/commander/commands', '/commander/feedback', '/commander/records'].includes(path) && !path.startsWith('/commander/records/')) return false
     const json = (status: number, data: unknown) => { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(data)) }
     if (this.closing) { json(503, { error: '伴随程序正在退出' }); return true }
+    if (req.method === 'POST' && req.headers.origin) {
+      try { if (req.headers.origin === 'null' || new URL(req.headers.origin).host !== req.headers.host) throw new Error('origin') }
+      catch { json(403, { error: '请从当前工作台提交' }); return true }
+    }
+    if (path === '/commander/feedback') {
+      if (req.method !== 'POST') { json(405, { error: '请使用 POST' }); return true }
+      const chunks: Buffer[] = []
+      let bytes = 0
+      for await (const chunk of req) {
+        bytes += Buffer.byteLength(chunk)
+        if (bytes > 32_768) { json(413, { error: '反馈过长' }); return true }
+        chunks.push(Buffer.from(chunk))
+      }
+      try {
+        const value = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { battleId: string; commandId: string; rating: FeedbackRating; note: string }
+        if (!value || typeof value.battleId !== 'string' || typeof value.commandId !== 'string' || typeof value.rating !== 'string' || typeof value.note !== 'string') throw new Error('反馈格式错误')
+        if (!this.options.records) throw new Error('对局记录尚未就绪')
+        json(200, { feedback: this.options.records.feedback(value.battleId, value.commandId, value.rating, value.note) })
+      } catch (error) { json(400, { error: String(error) }) }
+      return true
+    }
+    if (path === '/commander/records' || path.startsWith('/commander/records/')) {
+      if (req.method !== 'GET') { json(405, { error: '请使用 GET' }); return true }
+      const records = this.options.records
+      if (!records) { json(503, { error: '对局记录尚未就绪' }); return true }
+      try {
+        if (path === '/commander/records') { json(200, { currentId: records.currentId, records: records.list(), warning: records.warning }); return true }
+        const match = /^\/commander\/records\/(battle-[a-f0-9]{24})(?:\/(summary\.md|record\.json))?$/.exec(path)
+        const record = match && records.read(match[1]!)
+        if (!record) { json(404, { error: '找不到对局记录' }); return true }
+        if (match![2] === 'summary.md') {
+          res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'no-store', 'content-disposition': `attachment; filename="${record.id}.md"` })
+          res.end(records.markdown(record))
+        } else if (match![2] === 'record.json') {
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'content-disposition': `attachment; filename="${record.id}.json"` })
+          res.end(JSON.stringify(record, null, 2))
+        } else json(200, record)
+      } catch (error) { json(500, { error: `读取对局记录失败：${String(error)}` }) }
+      return true
+    }
     if (path === '/commander/say') {
       if (req.method !== 'POST') { json(405, { error: '请使用 POST' }); return true }
       if (!this.options.ready()) { json(503, { error: '伴随程序尚未就绪' }); return true }
@@ -47,6 +90,11 @@ export class WorkbenchApi {
     }
     if (req.method !== 'GET') { json(405, { error: '请使用 GET' }); return true }
     if (path === '/commander/status') { json(200, { game: await this.options.status() }); return true }
+    if (path === '/commander/commands') {
+      try { json(200, this.options.records?.currentCommands() ?? { battleId: null, sessionKey: null, events: this.options.log.since(0), feedback: [], warning: '' }) }
+      catch (error) { json(500, { error: `读取当前命令失败：${String(error)}` }) }
+      return true
+    }
 
     res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', connection: 'keep-alive' })
     res.flushHeaders()

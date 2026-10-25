@@ -24,6 +24,7 @@ interface ExecuteOptions {
   onPromptVersion?: (owner: string, version: string) => void
   hasFailure?: (goalId: string) => boolean
   emptyReason?: string
+  commandId?: string
 }
 
 /** 终端、侧栏与后续语音的共同入口：校验、绑定、直接控制或按控制对象合并编译。 */
@@ -83,7 +84,7 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
     check()
     emit({ stage: 'generating', owner })
     try {
-      state.results.push(await ctx.controller.refresh(owner, false, { prompts, onPromptVersion: version => options.onPromptVersion?.(owner, version) }))
+      state.results.push(await ctx.controller.refresh(owner, false, { prompts, ...(options.commandId ? { commandId: options.commandId } : {}), onPromptVersion: version => options.onPromptVersion?.(owner, version) }))
     } catch (error) {
       compileFailed = true
       state.results.push(String(error))

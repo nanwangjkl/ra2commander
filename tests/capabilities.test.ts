@@ -130,7 +130,7 @@ test('暂停恢复不重编；改总量保留已提交进度，取消及失败�
     const count = f.submitted.length
     const restored = new CommandLog()
     restored.restoreCurrent(f.root, f.runtime)
-    assert.equal(cards(restored).get(`restored-${lastId}`)!.stage, 'failed')
+    assert.equal(cards(restored).get(lastId)!.stage, 'failed')
     assert.ok([...cards(restored).values()].some(card => card.goals.size === 0 && card.stage === 'completed'))
     const last = restored.lastSeq(); restored.restoreCurrent(f.root, f.runtime)
     assert.equal(restored.lastSeq(), last)
@@ -204,6 +204,6 @@ test('已完成生产改总量只补增量，重新生成失败保留原完成�
     assert.equal(goal.activeSpec, undefined)
     const restored = new CommandLog()
     restored.restoreCurrent(f.root, f.runtime)
-    assert.equal(cards(restored).get(`restored-${originalId}`)!.stage, 'completed')
+    assert.equal(cards(restored).get(originalId)!.stage, 'completed')
   } finally { await f.dispose() }
 })

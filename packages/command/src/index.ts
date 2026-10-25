@@ -14,5 +14,6 @@ export type {
   CompileInput,
   CompileOutcome,
   CompileAttemptLog,
+  CompileTrace,
   DryRunExecutor,
 } from './compile.ts'

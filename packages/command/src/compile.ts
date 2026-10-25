@@ -10,6 +10,16 @@ export interface CompileInput {
 }
 export interface CompileAttemptLog { attempt: number; errors: string[]; model: string; durationMs: number; promptVersion: string; promptTopics: string[]; tokens?: number }
 export interface CompileOutcome { code: string; attempts: number; log: CompileAttemptLog[]; promptVersion: string }
+export interface CompileTrace {
+  stage: 'request' | 'response' | 'validation'
+  attempt: number
+  messages?: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
+  response?: { text: string; model: string; durationMs: number; usage?: unknown }
+  code?: string
+  errors?: string[]
+  promptVersion: string
+  promptTopics: string[]
+}
 export class CompileError extends Error {
   constructor(message: string, readonly log: CompileAttemptLog[], readonly promptVersion: string) { super(message) }
 }
@@ -22,7 +32,7 @@ export async function compileCommand(
   provider: OpenAICompatibleProvider,
   input: CompileInput,
   executor: DryRunExecutor,
-  { signal, maxAttempts = 3, prompts, onPromptFallback, onPromptVersion }: { signal?: AbortSignal; maxAttempts?: number; prompts?: PromptLibrary; onPromptFallback?: (error: Error) => void; onPromptVersion?: (version: string) => void } = {},
+  { signal, maxAttempts = 3, prompts, onPromptFallback, onPromptVersion, onTrace }: { signal?: AbortSignal; maxAttempts?: number; prompts?: PromptLibrary; onPromptFallback?: (error: Error) => void; onPromptVersion?: (version: string) => void; onTrace?: (trace: CompileTrace) => void } = {},
 ): Promise<CompileOutcome> {
   const snap = input.snapshot
   if (!snap.control) throw new Error('缺少控制对象与完整目标集合')
@@ -43,7 +53,10 @@ export async function compileCommand(
     const recovery = !!input.diagnostic || attempt > 1
     messages[0]!.content = promptLibrary.compileFor(goals, recovery)
     onPromptVersion?.(promptLibrary.version)
+    const trace = (value: Pick<CompileTrace, 'stage'> & Partial<CompileTrace>) => onTrace?.({ attempt, promptVersion: promptLibrary.version, promptTopics: promptLibrary.tactics.select('compile', goals, recovery).map(tactic => tactic.id), ...value })
+    trace({ stage: 'request', messages: structuredClone(messages) })
     const result = await provider.generate({ messages, signal, maxTokens: 32768, thinking: 'disabled' })
+    trace({ stage: 'response', response: result })
     signal?.throwIfAborted()
     const code = extractCode(result.text)
     let errors = code ? compileChecks(code) : ['没有可用的 function step 或 js 代码块']
@@ -53,6 +66,7 @@ export async function compileCommand(
       if (!dry.ok) errors = [dry.error ?? '干跑失败']
     }
     log.push({ attempt, errors, model: result.model, durationMs: result.durationMs, promptVersion: promptLibrary.version, promptTopics: promptLibrary.tactics.select('compile', goals, recovery).map(tactic => tactic.id), ...(result.usage?.completionTokens ? { tokens: result.usage.completionTokens } : {}) })
+    trace({ stage: 'validation', ...(code ? { code } : {}), errors })
     if (code && !errors.length) return { code, attempts: attempt, log, promptVersion: promptLibrary.version }
     messages.push({ role: 'assistant', content: result.text }, { role: 'user', content: promptLibrary.render('validationFeedback', { errors: errors.join('; ') }) })
   }

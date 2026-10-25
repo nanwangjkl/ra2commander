@@ -9,11 +9,17 @@ export type { CommandEvent, CommandStage, CommandSource } from '@ra2c/contracts'
 /**
  * 命令记录与结构化事件（阶段 2）：统一接入界面文本、终端 say 与 TCP say。
  * 事件在发生时立即推送（SSE），侧栏据此增量渲染卡片；不解析终端输出。
- * 历史仅保存在内存（带总量上限），记录恢复属于阶段 3。
+ * 有界内存用于实时推送；完整历史另由对局归档保存。
  */
 const MAX_EVENTS = 2000
 
 export class CommandLog {
+  constructor(private readonly archive?: {
+    event: (event: CommandEvent) => void
+    transcript: (record: Record<string, unknown>) => void
+  }) {}
+
+  recordTranscript(record: Record<string, unknown>): void { this.archive?.transcript(record) }
   readonly streamId = randomUUID()
   private events: CommandEvent[] = []
   private nextSeq = 1
@@ -65,7 +71,7 @@ export class CommandLog {
         const record = JSON.parse(readFileSync(join(folder, file), 'utf8')) as { requestId: string; text: string; at?: number; sessionKey: string; plan?: { summary?: string }; goals?: GoalSpec[]; choices?: string[]; skipped?: string[]; terminalStage?: 'completed' | 'failed' | 'cancelled'; terminalError?: string; source?: CommandSource }
         if (record.sessionKey !== runtime.battleKey || typeof record.text !== 'string' || !Array.isArray(record.goals)) continue
         const goals = record.goals.filter(goal => runtime.goals.has(goal.id) && !this.bindings.has(goal.id))
-        const base = { commandId: `restored-${record.requestId || file}`, source: record.source ?? 'restored' as CommandSource, sessionKey: record.sessionKey, at: record.at ?? at }
+        const base = { commandId: record.requestId || file, source: record.source ?? 'restored' as CommandSource, sessionKey: record.sessionKey, at: record.at ?? at }
         if (this.events.some(event => event.commandId === base.commandId)) continue
         if (!record.goals.length && ['completed', 'failed', 'cancelled'].includes(record.terminalStage ?? '')) {
           this.emit({ ...base, stage: 'received', text: record.text })
@@ -93,6 +99,7 @@ export class CommandLog {
 
   emit(event: Omit<CommandEvent, 'seq' | 'at'> & { at?: number }): CommandEvent {
     const full: CommandEvent = { ...event, seq: this.nextSeq++, at: event.at ?? Date.now() }
+    this.archive?.event(full)
     this.events.push(full)
     if (full.stage === 'bound' && full.goalId) this.bindings.set(full.goalId, { commandId: full.commandId, source: full.source, ...(full.sessionKey ? { sessionKey: full.sessionKey } : {}) })
     if (this.events.length > MAX_EVENTS) {

@@ -142,6 +142,7 @@ export { validateActions, validateScriptActions, liveScriptActions, inRegion } f
 export { inTargetRegion, type TargetRegion } from './spatial.ts';
 export * from './control.ts';
 export type { CommandEvent, CommandSource, CommandStage, GoalExecution } from './command-log.ts';
+export type { BattleRecord, BattleRecordInfo, CommandFeedback, FeedbackRating, CurrentCommands } from './battle-record.ts';
 
 /** 任务脚本单次 step 的执行结果。 */
 export interface StepOutcome {

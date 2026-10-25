@@ -23,19 +23,29 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
   const requestId = active?.commandId ?? randomUUID()
   const folder = join(root, '.runtime/transcripts')
   const record = { requestId, text, at: Date.now(), source: active?.source ?? 'cli', model: '', durationMs: 0, sessionKey: key,
+    messages: [] as Array<{ role: 'system' | 'user'; content: string }>, rawResponse: '', usage: undefined as unknown,
     promptVersions: { interpret: undefined as string | undefined, compile: {} as Record<string, string> },
     plan: undefined as { summary: string; operations: unknown[] } | undefined,
     modelPlan: undefined as { summary: string; operations: unknown[] } | undefined,
     goals: [] as GoalSpec[], choices: [] as string[], effects: [] as string[], skipped: [] as string[], results: [] as string[], error: '',
     terminalStage: undefined as 'completed' | 'failed' | 'cancelled' | undefined, terminalError: '' }
+  let storageWarning = ''
   const save = () => {
-    mkdirSync(folder, { recursive: true })
-    writeFileSync(join(folder, `${requestId}.json`), JSON.stringify(record, null, 2))
+    try {
+      mkdirSync(folder, { recursive: true })
+      writeFileSync(join(folder, `${requestId}.json`), JSON.stringify(record, null, 2))
+    } catch (error) {
+      const warning = String(error)
+      if (storageWarning !== warning) console.error(`[companion] 转写记录保存失败：${warning.slice(0, 160)}`)
+      storageWarning = warning
+    }
+    active?.log.recordTranscript(record)
   }
   let signal: AbortSignal | undefined
   const check = () => { signal?.throwIfAborted(); if (key !== ctx.runtime.battleKey) throw new Error('对局已变化，转写结果作废') }
   emit({ stage: 'received', text })
   try {
+    save()
     if (!text.trim()) throw new Error('缺少模拟语音转写文本')
     const prompts = loadCommandPrompts()
     const snap = ctx.runtime.snapshot
@@ -50,7 +60,7 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     const catalog = await loadGameCatalog(ctx, check, prompts.game)
     check()
     record.promptVersions.interpret = prompts.version
-    const result = await ctx.currentProvider().generate({ messages: [
+    record.messages = [
       { role: 'system', content: prompts.render('interpret') },
       { role: 'user', content: JSON.stringify({ text, faction: prompts.game.factions().find(faction => faction.id === catalog.faction)?.label ?? null,
         game: { id: prompts.game.id, version: prompts.game.version }, roles: prompts.game.roles().map(role => ({ id: role.id, aliases: role.aliases })),
@@ -58,10 +68,15 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
         formations: ctx.formations.list(), catalog: catalog.items,
         goals: [...ctx.runtime.goals.values()].filter(goal => goal.status !== 'cancelled').slice(-30).map(goal => ({ id: goal.spec.id, kind: goal.spec.kind, text: goal.spec.rawText, label: goal.spec.label, status: goal.status, owner: goal.ownerId, ...(goal.spec.kind === 'production' ? { target: goal.spec.target, quantity: goal.spec.quantity } : {}) })),
         map: ctx.mapRegions && ctx.mapSessionKey === key ? { name: ctx.mapRegions.scheme.map.name, regions: ctx.mapRegions.scheme.regions.map(region => region.name) } : null }) },
-    ], maxTokens: 2048, thinking: 'disabled', signal })
-    check()
+    ]
+    save()
+    const result = await ctx.currentProvider().generate({ messages: record.messages, maxTokens: 2048, thinking: 'disabled', signal })
+    record.rawResponse = result.text
     record.model = result.model
     record.durationMs = result.durationMs
+    record.usage = result.usage
+    save()
+    check()
     const raw = result.text.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '').trim()
     let plan: { summary: string; operations: unknown[] }
     try {
@@ -75,7 +90,7 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     record.plan = plan
     save()
     const update = (execution: CapabilityExecution) => { Object.assign(record, execution); plan.summary = execution.summary; save() }
-    const execution = await executeCapabilities(plan.operations, ctx, { text, prompts, catalog, signal, emit, onUpdate: update,
+    const execution = await executeCapabilities(plan.operations, ctx, { text, prompts, catalog, signal, emit, onUpdate: update, commandId: requestId,
       ...(!plan.operations.length ? { emptyReason: plan.summary } : {}),
       onPromptVersion: (owner, version) => { record.promptVersions.compile[owner] = version },
       hasFailure: goalId => active?.log.since(0).reverse().find(event => event.goalId === goalId)?.stage === 'failed',
