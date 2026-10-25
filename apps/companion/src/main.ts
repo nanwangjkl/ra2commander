@@ -1,3 +1,4 @@
+import { ExplorationObserver } from './exploration.ts'
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -182,6 +183,8 @@ async function main(): Promise<void> {
   try { pendingRestore = readStateFile(STATE_FILE) }
   catch (err) { if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.log(`[companion] 未恢复旧状态：${String(err).slice(0, 180)}`) }
   let lastSessionKey = ''
+  const explorationObserver = new ExplorationObserver()
+  let lastExplorationWarning = 0
   let commandContext: CommandContext | undefined
   let mapAttemptSession = ''
   let stateDirty = false
@@ -219,12 +222,15 @@ async function main(): Promise<void> {
     }
     void advance.then(() => {
       markDirty()
+      if (commandContext) void explorationObserver.poll(commandContext).catch(error => {
+        if (Date.now() - lastExplorationWarning > 10000) { lastExplorationWarning = Date.now(); console.log(`[companion] 地图观察暂不可用：${String(error).slice(0, 160)}`) }
+      })
       if (restored) commandLog.restoreCurrent(ROOT, runtime)
       commandLog.syncRuntime(runtime)
       records.observe(runtime)
       if (restored) {
         for (const program of runtime.programs.values()) {
-          const waiting = program.goalIds.some(id => { const goal = runtime.goals.get(id); return goal && goal.status !== 'cancelled' && goal.status !== 'completed' && JSON.stringify(goal.spec) !== JSON.stringify(goal.activeSpec) })
+          const waiting = program.goalIds.some(id => { const goal = runtime.goals.get(id); return goal && !['cancelled', 'completed', 'partial', 'failed'].includes(goal.status) && JSON.stringify(goal.spec) !== JSON.stringify(goal.activeSpec) })
           if (waiting && program.status !== 'paused' && program.status !== 'stopped') void controller.refresh(program.id).catch(err => console.log(`[companion] 恢复待生效目标失败：${String(err)}`))
         }
       }

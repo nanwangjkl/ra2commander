@@ -113,6 +113,54 @@ test('取消全局单个目标后，旧脚本里的其他目标仍能提交动�
   } finally { await executor.dispose() }
 })
 
+test('多个建设目标共用单格队列时先推进一个，共享前置不重复下单且其他目标继续', async () => {
+  const executor = new StepExecutor()
+  const shared = `function step(s,m){const actions=[];for(const g of s.control.goals){for(const name of g.spec.prerequisites.concat([g.spec.target])){if(g.produceRemaining[name]>0&&s.production.available.includes(name)){actions.push({goalId:g.spec.id,request:{kind:'produce',name,quantity:g.produceRemaining[name]}});break}}}return {actions,memory:m}}`
+  try {
+    const { runtime, submitted } = await harness(executor)
+    const snap = snapshot({ seq: 2, production: { power: { total: 0, drain: 0, isLowPower: false }, available: ['GAPOWR'], queues: [{ type: 0, size: 0, maxSize: 1, status: 0, items: [] }, { type: 2, size: 0, maxSize: 99, status: 0, items: [] }] } })
+    await runtime.onSnapshot(snap)
+    activate(runtime, production({ id: 'barracks', target: 'GAPILE', targetType: 2, prerequisites: ['GAPOWR'], queueTypes: { GAPOWR: 0, GAPILE: 0 } }), shared)
+    activate(runtime, production({ id: 'dogs', target: 'ADOG', targetType: 3, quantity: 3, prerequisites: ['GAPOWR', 'GAPILE'], queueTypes: { GAPOWR: 0, GAPILE: 0, ADOG: 2 } }), shared)
+    await runtime.onSnapshot({ ...snap, seq: 3 })
+    await runtime.onSnapshot({ ...snap, seq: 4 })
+    assert.deepEqual(submitted, [{ kind: 'produce', name: 'GAPOWR', quantity: 1 }])
+    const power = { ...snap.self[0]!, id: 100, name: 'GAPOWR', type: 2 }
+    await runtime.onSnapshot({ ...snap, seq: 5, self: [...snap.self, power], production: { ...snap.production!, available: ['GAPOWR', 'GAPILE'] } })
+    assert.deepEqual(submitted.at(-1), { kind: 'produce', name: 'GAPILE', quantity: 1 })
+    const barracks = { ...power, id: 101, name: 'GAPILE' }
+    await runtime.onSnapshot({ ...snap, seq: 6, self: [...snap.self, power, barracks], production: { ...snap.production!, available: ['GAPOWR', 'GAPILE', 'ADOG'] } })
+    assert.deepEqual(submitted.filter(action => action.kind === 'produce').map(action => [action.name, action.quantity]), [['GAPOWR', 1], ['GAPILE', 1], ['ADOG', 3]])
+    assert.equal(runtime.programs.get('global')!.stats.errors, 0)
+    assert.equal(runtime.programs.get('global')!.status, 'active')
+  } finally { await executor.dispose() }
+})
+
+test('同队列独立目标顺延而不丢失，排队不掩盖超出目标额度的错误', async () => {
+  const executor = new StepExecutor()
+  try {
+    const { runtime, submitted } = await harness(executor)
+    const snap = snapshot({ seq: 2, production: { power: { total: 0, drain: 0, isLowPower: false }, available: ['GAPOWR', 'NAPOWR'], queues: [{ type: 0, size: 0, maxSize: 1, status: 0, items: [] }] } })
+    await runtime.onSnapshot(snap)
+    const source = `function step(s,m){const actions=[];for(const g of s.control.goals){if(g.produceRemaining[g.spec.target]>0)actions.push({goalId:g.spec.id,request:{kind:'produce',name:g.spec.target,quantity:g.produceRemaining[g.spec.target]}})}return {actions,memory:m}}`
+    activate(runtime, production({ id: 'first', target: 'GAPOWR', targetType: 2 }), source)
+    activate(runtime, production({ id: 'second', target: 'NAPOWR', targetType: 2 }), source)
+    await runtime.onSnapshot({ ...snap, seq: 3 })
+    await runtime.onSnapshot({ ...snap, seq: 4 })
+    assert.deepEqual(submitted, [{ kind: 'produce', name: 'GAPOWR', quantity: 1 }])
+    await runtime.onSnapshot({ ...snap, seq: 5, self: [...snap.self, { ...snap.self[0]!, id: 100, type: 2, name: 'GAPOWR' }] })
+    assert.deepEqual(submitted.at(-1), { kind: 'produce', name: 'NAPOWR', quantity: 1 })
+    const lease = runtime.beginCompile('global'), frame = runtime.compileFrame(lease)
+    frame.constraints.ignoreInactiveGoals = true
+    frame.constraints.goals!.second!.produceRemaining = { NAPOWR: 1 }
+    frame.constraints.goals!.second!.queueSpace = { 0: 1 }
+    const excessive = await executor.run("function step(s,m){return {actions:[{goalId:'second',request:{kind:'produce',name:'NAPOWR',quantity:2}}],memory:m}}", frame.snapshot, {}, frame.constraints)
+    assert.equal(excessive.ok, false)
+    assert.match(excessive.error!, /额度|空位/)
+    runtime.releaseCommand(lease)
+  } finally { await executor.dispose() }
+})
+
 test('转编停车失败时不开放新队指挥，确认后动态接入且不重置原任务', async () => {
   const executor = new StepExecutor()
   let parking = false
@@ -205,8 +253,8 @@ test('矿场前置先解析电厂，未落地解锁时不能提前提交矿场',
     activate(second.runtime, production({ id: 'power', target: 'GAPOWR', targetType: 2 }))
     activate(second.runtime, production({ id: 'refinery', target: 'GAREFN', targetType: 2 }), "function step(s,m){return {actions:[{goalId:'power',request:{kind:'produce',name:'GAPOWR',quantity:1}},{goalId:'refinery',request:{kind:'produce',name:'GAREFN',quantity:1}}],memory:{}}}")
     await second.runtime.onSnapshot({ ...stage, seq: 3 })
-    assert.deepEqual(second.submitted, [])
-    assert.equal(second.runtime.production.length, 0)
-    assert.match(second.runtime.programs.get('global')!.stats.lastError!, /队列空位/)
+    assert.deepEqual(second.submitted, [{ kind: 'produce', name: 'GAPOWR', quantity: 1 }])
+    assert.equal(second.runtime.production.length, 1)
+    assert.equal(second.runtime.programs.get('global')!.stats.errors, 0)
   } finally { await executor.dispose() }
 })

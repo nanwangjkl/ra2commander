@@ -3,6 +3,7 @@ import type { CommandEvent, GoalSpec } from '@ra2c/contracts'
 import type { CommandContext } from '../commands.ts'
 import { bindings, type BindingContext } from './bindings.ts'
 import { loadGameCatalog, type GameCatalog } from './selectors.ts'
+import { randomUUID } from 'node:crypto'
 
 export function validateBindings(prompts: PromptLibrary): void { prompts.capabilities.assertBindings(Object.keys(bindings)) }
 export function loadCommandPrompts(): PromptLibrary { return loadPrompts({ validate: validateBindings }) }
@@ -44,6 +45,8 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
     formationGoals: new Map(),
     movementGoals: new Map(),
     game: prompts.game,
+    prompts,
+    commandId: options.commandId ?? `cmd-${randomUUID()}`,
     knownCatalog: options.catalog,
     catalog: () => catalog ??= loadGameCatalog(ctx, check, prompts.game),
     cancelUnderstanding: () => { if (ctx.transcriptAbort?.signal !== options.signal) ctx.transcriptAbort?.abort(new Error('被控制命令中止')) },
@@ -80,7 +83,18 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
             goalOwners.set(item.goal.id, owner); emit({ stage: 'bound', goalId: item.goal.id, owner, choice: item.choice })
           }
           else { accepted.push(item.choice); state.effects.push(item.choice) } // 改已有目标不夺走原命令卡片的进度绑定。
-        } catch (error) { state.skipped.push(String(error)); emit({ stage: 'failed', goalId: item.goal.id, choice: item.choice, error: `目标绑定失败：${String(error)}` }) }
+        } catch (error) {
+          if (item.goal.kind === 'explore' && !ctx.runtime.goals.has(item.goal.id)) ctx.runtime.exploration.progress.delete(item.goal.explorationId)
+          state.skipped.push(String(error)); emit({ stage: 'failed', goalId: item.goal.id, choice: item.choice, error: `目标绑定失败：${String(error)}` })
+        }
+      }
+      if (result.skillRun) {
+        const run = result.skillRun
+        if (ctx.runtime.goals.has(run.preparationGoalId) && ctx.runtime.goals.has(run.exploreGoalId)) ctx.runtime.skillRuns.set(run.id, run)
+        else {
+          await Promise.all([run.preparationGoalId, run.exploreGoalId].map(id => ctx.runtime.cancelGoal(id, 'Skill 目标绑定不完整，已撤销')))
+          skip('Skill 目标绑定不完整，已撤销本次探路')
+        }
       }
       for (const owner of result.refreshOwners ?? []) { owners.add(owner); suppressed.delete(owner) }
       for (const owner of result.suppressOwners ?? []) { owners.delete(owner); suppressed.add(owner) }

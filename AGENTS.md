@@ -32,7 +32,7 @@ RTS 优先快速反应。能理解行动目标时，Agent 应结合当前战况�
 
 工作台、命令侧栏与语音输入按[分阶段计划](doc/roadmap/browser-workbench-and-voice.md)推进。计划已于 2026-10-23 获用户批准，阶段 1 已由用户验收通过，阶段 2 已获准在提交第一阶段后开始；用户于 2026-10-24 追加执行/完成状态和当前局记录衔接，2026-10-25 追加跨局归档与逐命令反馈（见[对局记录](doc/spec/battle-records.md)）。本机归档与逐命令反馈、侧栏精简已于 2026-10-25 由用户验收通过，不据此推定其他阶段整体验收；阶段 4 未开始。每阶段交付后等待用户明确验收通过，再进入下一阶段，不以自动检查或自行实机观察代替用户验收。
 
-[基础能力、提示词与 Skill 改造](doc/roadmap/capabilities-prompts-and-skills.md)的阶段 A～C 已经用户验收，用户在启动 Companion 体验后确认 C（规则与战术拆分）效果良好并要求提交推送，D 未获准开始。此批准不改变工作台与真实语音计划的阶段边界。
+[基础能力、提示词与 Skill 改造](doc/roadmap/capabilities-prompts-and-skills.md)的阶段 A～C 已经用户验收，用户在启动 Companion 体验后确认 C（规则与战术拆分）效果良好并要求提交推送，用户于 2026-10-25 验收前轮修正并批准开始 D（探路 Skill）；用户于 2026-10-26 认可探路流程，继续按逐区 60% 微调并复核对局记录，后续阶段未启动。此批准不改变工作台与真实语音计划的阶段边界。
 
 ## 开发环境
 
@@ -68,6 +68,7 @@ pnpm maps:check maps/ice/schemes/nanwang-0.1.0.json 39 82
 
 ```sh
 python3 packages/maps/tools/verify_native_alignment.py --pack ~/Downloads/full-pack --map .runtime/maps/ice/mp32s8.map --image mp32s83.png --out .runtime/maps/ice/native-texture-check.json
+python3 packages/maps/tools/export_playable_area.py --map .runtime/maps/ice/mp32s8.map --map-id ra2:mp32s8 --out maps/ice/playable-area.json
 python3 packages/maps/tools/import_regions.py --map .runtime/maps/ice/mp32s8.map --image mp32s83.png --annotations maps/ice/import/annotations.json --out maps/ice/schemes/nanwang-0.1.0.json --diagnostics .runtime/maps/ice/generated
 ```
 
@@ -89,13 +90,17 @@ pnpm companion
 
 提示词维护：`interpret.md` 控制文字理解，`compile.md` 控制全局与编队脚本生成，`repair.md` 和 `validation-feedback.md` 分别接受 `{{error}}`、`{{errors}}`。编辑后执行 `pnpm prompts:check`；模板在下一条新命令或新修复请求生效，同次请求的异步准备、重新绑定及校验重试固定使用原版本。模板出错时打印具体文件错误，当前进程沿用上一套完整可用模板；首次加载无可用版本则明确报错。校验命令始终严格读取磁盘，可附模板目录参数。终端及自动修复在请求时输出提示版本；生效脚本的 `script.promptVersion` 随 v3 状态保存，旧状态缺少该字段仍可恢复。修改提示文件不替换已经运行的脚本。
 
-18 项玩家能力统一在 `prompts/capabilities/*.md` 声明名称、参数、默认值与说明；`interpret.md` 的 `{{capabilities}}` 由加载器组合该目录。停止、暂停、恢复、转编、解散、守区、补员、集结、目标取消与改总量均可经 `say`/侧栏调用。绑定后的摘要来自共用执行计划；直接控制无需额外生成脚本。`cap list` 查看能力，`cap <能力ID> <JSON参数>` 直接调用，原有玩家 CLI 语法也是同一入口的适配器。开发定义与完整接线表见[玩家基础能力](doc/spec/player-capabilities.md)。
+21 项玩家能力统一在 `prompts/capabilities/*.md` 声明名称、参数、默认值与说明；`interpret.md` 的 `{{capabilities}}` 由加载器组合该目录。停止、暂停、恢复、转编、解散、守区、补员、集结、目标取消与改总量均可经 `say`/侧栏调用。绑定后的摘要来自共用执行计划；直接控制无需额外生成脚本。`cap list` 查看能力，`cap <能力ID> <JSON参数>` 直接调用，原有玩家 CLI 语法也是同一入口的适配器。开发定义与完整接线表见[玩家基础能力](doc/spec/player-capabilities.md)。
 
-修改能力正文或参数说明在下一条命令生效。修改参数结构、默认值、ID 或绑定器时，先运行 `pnpm capabilities:generate`，再运行 `pnpm capabilities:check`、`pnpm typecheck` 和相关测试，并重启 Companion；生成文件 `packages/command/src/capability-types.generated.ts` 不手工编辑。新增能力还须实现绑定器。模板、能力、游戏目录和战术共同参与提示版本，类型不一致或重载出错保留上一套完整定义。检查命令可从其他目录启动；指定自定义模板目录时，其同级须有 `capabilities/`。
+修改能力正文或参数说明在下一条命令生效。修改参数结构、默认值、ID 或绑定器时，先运行 `pnpm capabilities:generate`，再运行 `pnpm capabilities:check`、`pnpm typecheck` 和相关测试，并重启 Companion；生成文件 `packages/command/src/capability-types.generated.ts` 不手工编辑。新增能力还须实现绑定器。模板、能力、游戏目录、战术和 Skill 共同参与提示版本，类型不一致或重载出错保留上一套完整定义。检查命令可从其他目录启动；指定自定义模板目录时，其同级须有 `capabilities/`。
 
-游戏目录集中在 `prompts/games/current-mod.md`：当前配置为共和国之辉，包含盟军、苏军、中国的候选、角色别名及前置类别；候选已核对本地规则，但实际前置、可造性、队列、电力与角色标记以对局 API 为准。战术在 `prompts/tactics/` 按目标选择通用、生产、作战、管理主题，修复/校验重试再加入恢复主题。基础 `compile.md` 只保留脚本契约。目录、战术修改也在下一条命令生效并参与同一提示版本；自定义模板目录须同时携带同级 `capabilities/`、`games/`、`tactics/`。`pnpm prompts:check` 严格检查全部内容，详见[规则与战术规范](doc/spec/game-rules-and-tactics.md)。
+游戏目录集中在 `prompts/games/current-mod.md`：当前配置为共和国之辉，包含盟军、苏军、中国的候选、角色别名及前置类别；候选已核对本地规则，但实际前置、可造性、队列、电力与角色标记以对局 API 为准。战术在 `prompts/tactics/` 按目标选择通用、生产、作战、管理主题，修复/校验重试再加入恢复主题。基础 `compile.md` 只保留脚本契约。目录、战术修改也在下一条命令生效并参与同一提示版本；自定义模板目录使用 `<根>/prompts/templates/`，携带同级 `capabilities/`、`games/`、`tactics/` 以及 `<根>/skills/`。`pnpm prompts:check` 严格检查全部内容，详见[规则与战术规范](doc/spec/game-rules-and-tactics.md)。
 
-运行时提供生产目标的 `productionPlan`，包含缺失前置、已提交待完成前置、本步可造候选与就绪建筑；模型按这些动态事实执行。引擎确认目标可造时，不再等待历史缺项或额外补造旧前置。名称选择、坦克筛选与前置类别共用当前游戏目录；同次规则准备复用查询，使用命令捕获的目录版本。侦察犬可作为普通生产/编队角色使用，“探路”流程仍待 D。
+运行时提供生产目标的 `productionPlan`，包含缺失前置、已提交待完成前置、本步可造候选与就绪建筑；模型按这些动态事实执行。引擎确认目标可造时，不再等待历史缺项或额外补造旧前置。名称选择、坦克筛选与前置类别共用当前游戏目录；同次规则准备复用查询，使用命令捕获的目录版本。侦察犬也可通过首个 `scout` Skill 执行探路，见下文。
+
+`say 探路` 默认优先使用现有未编队侦察犬（最多三条），没有时才新造并建立独立侦察队；`say 用五条狗探路` 覆盖数量，`say 用已有狗探路` 使用现有成员、不追加生产。首名成员实际停车交接完成即可出发，其余后续加入。按分区内多个落点分散探索，宿主分批读取实际揭开格子，排除原生地形与引擎边界确定的图外格子，每个目标分区的有效范围分别达到至少 60% 才达标，全部目标分区达标后完成；达标区不再分配落点。侧栏显示达标分区数和未达标区的实际覆盖。优先区域中心及中心附近未知有效格子，成员独立并行，原地停滞才换点；覆盖继续增长时恢复尝试额度，收尾对暂缓区额外换点重试一轮。无法继续如实显示部分完成/失败，不无限补狗。`say 取消探路` 停止本次后续步骤；给侦察队改令后旧 Skill 不再接管。Skill 版本和探索进度随 v4 保存，同局重启不重复生产。定义、覆盖口径和开发入口见[探路 Skill](doc/spec/scouting-skills.md)。
+
+执行器与宿主共用生产队列调度：多个目标共享本步空位，按脚本动作顺序先推进能放下的数量，其余留到下一步，不因重复使用同一空位而整批暂停；项目、目标额度及实际前置校验继续保留。
 
 同名明确建设目标与共享前置的新提交统一归账：其他目标先建出的兵营、重工也计入当时尚未完成的明确建设目标，避免替换脚本后再造一份。建筑 `no-spot/cannot-place` 保留就绪项目并持续重试放置，不取消或重造。旧有建筑和新增目标之前的提交不抵消玩家后来明确追加的数量。
 
@@ -146,7 +151,7 @@ reinforce @一队 MTNK 6
 
 终端与 TCP 在编译期间仍接收停止命令；`task list` 同时列出全局与编队的脚本版本和编译状态。TCP 按换行分帧，多条并发命令按完成顺序回显。`stop <ids|all>` 会撤销相关编队任务、待编译版本和涉及这些单位的全局管理目标，然后停车。
 
-持久化状态已升级为 v3（目标与当前脚本分离，包含生产记录、战损基准、队列与交接归属）。v1/v2 状态不自动合并，首次写入新格式前保留旧文件备份；核对已有游戏队列后重新下令。v3 等到当前快照确认同局才恢复，预留未决记录不自动重放。升级页面桥也会使旧授权失效；游戏与资源 profile 保留。
+持久化状态写为 v4（保留目标、脚本、生产记录、战损、队列与交接，增加 Skill 和探索事实），兼容读入无 Skill 数据的 v3。v1/v2 不自动合并；首次写新格式前保留旧格式备份。恢复须当前快照确认同局，预留未决记录不自动重放。升级页面桥也会使旧授权失效；游戏与资源 profile 保留。
 
 环境变量覆盖：`RA2C_GAME_DIR`、`RA2C_PACK`、`RA2C_PORT`、`RA2C_PROFILE`。
 
@@ -157,7 +162,7 @@ apps/companion/            # 启动器：静态伺服、自动导入、文本 CL
 packages/contracts/        # 桥契约、宿主动作校验 + vendored werhd API 类型声明
 packages/game-werhd/       # 页面桥（bridge.js 注入 + 宿主侧 WerhdBridge）
 packages/command/          # Acorn 语法/契约检查、生成与有限修复
-packages/runtime/          # 控制对象、目标、脚本切换、生产记录、归属与 v3 持久化
+packages/runtime/          # 控制对象、目标、脚本切换、生产记录、归属、探索与 v4 持久化
 packages/js-worker/        # 独立子进程中的 QuickJS WASM 隔离执行器
 packages/model-providers/  # 可取消的云模型接入
 packages/maps/             # 分区方案读取、空间查询与离线提取工具
@@ -169,5 +174,5 @@ maps/ice/                  # 地图分区方案及提取参数
 tests/                     # 命令冒烟、关键故障与地图数据检查
 ```
 
-其余模块（speech、skills/）按架构设计在对应里程碑再建。运行时数据（profile、截图）在 `.runtime/`，已 gitignore。
+`skills/scout/SKILL.md` 保存首个游戏 Skill 定义，`speech` 按架构设计在后续里程碑再建。运行时数据（profile、截图）在 `.runtime/`，已 gitignore。
 

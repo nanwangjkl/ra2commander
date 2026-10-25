@@ -3,7 +3,14 @@ import type { ActionRequest, Region, StepConstraints } from './index.ts'
 export type ScriptOwner = { kind: 'global' } | { kind: 'formation'; formationId: string }
 export const ownerId = (owner: ScriptOwner): string => owner.kind === 'global' ? 'global' : `formation:${owner.formationId}`
 
-interface GoalBase { id: string; rawText: string; label?: string }
+interface GoalBase { id: string; rawText: string; label?: string; skill?: { runId: string; id: string; version: string; hash: string; instructions: string } }
+export interface ExploreGoal extends GoalBase {
+  kind: 'explore'
+  formationId: string
+  explorationId: string
+  preparationGoalId?: string
+  policy: { pointSpacing: number; stallTicks: number; maxStallsPerRegion: number; coverageRatio?: number; interiorMargin?: number; retryPasses?: number; centerFirst?: boolean }
+}
 export interface CombatGoal extends GoalBase {
   kind: 'combat'
   formationId: string
@@ -49,8 +56,8 @@ export interface ReinforceGoal extends GoalBase {
   source: string | null
 }
 export interface RallyGoal extends GoalBase { kind: 'rally'; unitIds: number[]; x: number; y: number }
-export type GoalSpec = CombatGoal | DeployGoal | ProductionGoal | FormationGoal | ReinforceGoal | RallyGoal
-export const goalOwner = (goal: GoalSpec): ScriptOwner => goal.kind === 'combat' ? { kind: 'formation', formationId: goal.formationId } : { kind: 'global' }
+export type GoalSpec = CombatGoal | ExploreGoal | DeployGoal | ProductionGoal | FormationGoal | ReinforceGoal | RallyGoal
+export const goalOwner = (goal: GoalSpec): ScriptOwner => goal.kind === 'combat' || goal.kind === 'explore' ? { kind: 'formation', formationId: goal.formationId } : { kind: 'global' }
 
 export interface ScriptAction { goalId: string; request: ActionRequest | FormationRequest }
 /** 本步部队主体是否抵达目的地；宿主与脚本共用，不要求全队挤到同一点。 */
@@ -74,6 +81,7 @@ export interface GoalView {
   blocked?: string
   maxUnits?: number
   arrival?: ArrivalState
+  exploration?: { seen: number; total: number; coverageRatio: number; regions: Array<{ id: string; name: string; seen: number; total: number; satisfied: boolean; deferred: boolean }>; targets: Array<{ unitId: number; x: number; y: number; regionId: string }> }
   productionPlan?: {
     missingPrerequisites: string[]
     pendingPrerequisites: string[]

@@ -66,6 +66,7 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
         game: { id: prompts.game.id, version: prompts.game.version }, roles: prompts.game.roles().map(role => ({ id: role.id, aliases: role.aliases })),
         self: snap.self.map(unit => ({ id: unit.id, name: unit.name, type: unit.type, formationId: ctx.formations.ownerOf(unit.id) ?? null, canDeploy: unit.canDeploy, isCombat: isCombatUnit(unit, catalog) })),
         formations: ctx.formations.list(), catalog: catalog.items,
+        skillRuns: [...ctx.runtime.skillRuns.values()].filter(run => ['preparing', 'exploring'].includes(run.status)).map(run => ({ id: run.id, skillId: run.skillId, version: run.version, formationId: run.formationId, status: run.status })),
         goals: [...ctx.runtime.goals.values()].filter(goal => goal.status !== 'cancelled').slice(-30).map(goal => ({ id: goal.spec.id, kind: goal.spec.kind, text: goal.spec.rawText, label: goal.spec.label, status: goal.status, owner: goal.ownerId, ...(goal.spec.kind === 'production' ? { target: goal.spec.target, quantity: goal.spec.quantity } : {}) })),
         map: ctx.mapRegions && ctx.mapSessionKey === key ? { name: ctx.mapRegions.scheme.map.name, regions: ctx.mapRegions.scheme.regions.map(region => region.name) } : null }) },
     ]

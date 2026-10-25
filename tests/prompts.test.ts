@@ -13,11 +13,12 @@ const markdown = (name: string) => readFileSync(new URL(`../prompts/templates/${
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'ra2c-prompts-'))
-  const directory = join(root, 'templates')
+  const directory = join(root, 'prompts/templates')
   cpSync(new URL('../prompts/templates/', import.meta.url), directory, { recursive: true })
-  cpSync(new URL('../prompts/capabilities/', import.meta.url), join(root, 'capabilities'), { recursive: true })
-  cpSync(new URL('../prompts/games/', import.meta.url), join(root, 'games'), { recursive: true })
-  cpSync(new URL('../prompts/tactics/', import.meta.url), join(root, 'tactics'), { recursive: true })
+  cpSync(new URL('../prompts/capabilities/', import.meta.url), join(root, 'prompts/capabilities'), { recursive: true })
+  cpSync(new URL('../prompts/games/', import.meta.url), join(root, 'prompts/games'), { recursive: true })
+  cpSync(new URL('../prompts/tactics/', import.meta.url), join(root, 'prompts/tactics'), { recursive: true })
+  cpSync(new URL('../skills/', import.meta.url), join(root, 'skills'), { recursive: true })
   const url = pathToFileURL(directory + sep)
   return { directory, url, loader: new PromptLoader(url), dispose: () => rmSync(root, { recursive: true, force: true }) }
 }
@@ -25,7 +26,7 @@ function fixture() {
 test('提示词来自 Markdown，限定变量渲染且相同内容复用版本缓存', () => {
   const prompts = loadPrompts()
   assert.match(prompts.version, /^sha256:[0-9a-f]{16}$/)
-  assert.equal(prompts.render('interpret'), [markdown('interpret.md').replace('{{capabilities}}', () => prompts.capabilities.render()), prompts.game.instructions, ...prompts.tactics.select('interpret').map(tactic => tactic.text)].join('\n\n'))
+  assert.equal(prompts.render('interpret'), [markdown('interpret.md').replace('{{capabilities}}', () => prompts.capabilities.render()).replace('{{skills}}', () => prompts.skills.renderIndex()), prompts.game.instructions, ...prompts.tactics.select('interpret').map(tactic => tactic.text)].join('\n\n'))
   assert.equal(prompts.render('compile'), markdown('compile.md'))
   assert.equal(prompts.render('repair', { error: '运行失败' }), markdown('repair.md').replace('{{error}}', '运行失败'))
   assert.equal(prompts.render('validationFeedback', { errors: '语法错误' }), markdown('validation-feedback.md').replace('{{errors}}', '语法错误'))
@@ -40,7 +41,7 @@ test('改动在下一次加载生效，错误文件保留整套旧提示，严�
   try {
     process.chdir(files.directory)
     const current = loadPrompts()
-    assert.equal(current.render('interpret'), [markdown('interpret.md').replace('{{capabilities}}', () => current.capabilities.render()), current.game.instructions, ...current.tactics.select('interpret').map(tactic => tactic.text)].join('\n\n'))
+    assert.equal(current.render('interpret'), [markdown('interpret.md').replace('{{capabilities}}', () => current.capabilities.render()).replace('{{skills}}', () => current.skills.renderIndex()), current.game.instructions, ...current.tactics.select('interpret').map(tactic => tactic.text)].join('\n\n'))
     const first = files.loader.load()
     writeFileSync(join(files.directory, 'compile.md'), '新版生成说明')
     writeFileSync(join(files.directory, 'repair.md'), '错误模板 {{typo}}')

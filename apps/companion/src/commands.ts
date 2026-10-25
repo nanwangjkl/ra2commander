@@ -7,7 +7,8 @@ import type { TaskRuntime, FormationRegistry } from '@ra2c/runtime'
 import type { WerhdBridge } from '@ra2c/game-werhd'
 import { ProgramController } from './controller.ts'
 import { combatOptions, productionOptions } from './command-options.ts'
-import { loadRegionScheme, type MapRegionIndex } from '../../../packages/maps/src/index.ts'
+import type { MapRegionIndex } from '../../../packages/maps/src/index.ts'
+import { loadIceMap } from './map-binding.ts'
 import { runTranscript } from './transcript.ts'
 import type { CommandLog } from './command-log.ts'
 import { executeCapabilities, executeCapability, executionText, loadCommandPrompts } from './capabilities/index.ts'
@@ -75,6 +76,7 @@ export interface CommandContext {
   currentProvider: () => OpenAICompatibleProvider
   mapRegions?: MapRegionIndex
   mapSessionKey?: string
+  mapPlayableArea?: import('../../../packages/maps/src/index.ts').PlayableAreaIndex
   transcriptAbort?: AbortController
   /** 命令记录（阶段 2）：界面/终端/TCP 的 say 统一入流。 */
   commandLog?: CommandLog
@@ -100,7 +102,9 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
     case 'say': return runTranscript(line.slice(3).trim(), ctx, ROOT)
     case 'map': {
       if (args[0] !== 'use' || args[1] !== 'ice') return '用法: map use ice（请确认当前对局使用冰天雪地）'
-      ctx.mapRegions = await loadRegionScheme(join(ROOT, 'maps/ice/schemes/nanwang-0.1.0.json'))
+      const { regions, area } = await loadIceMap()
+      ctx.mapRegions = regions
+      ctx.mapPlayableArea = area
       ctx.mapSessionKey = ctx.runtime.battleKey
       return `已显式绑定冰天雪地 ${ctx.mapRegions.scheme.scheme.version} 分区；目的地仍需实机到达确认`
     }

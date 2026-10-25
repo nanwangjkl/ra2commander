@@ -6,11 +6,12 @@ import { CapabilityCatalog } from './capability-catalog.ts'
 import { readGameProfile, type GameProfile } from './game-profile.ts'
 import { readTactics, type TacticLibrary } from './tactics.ts'
 import type { GoalSpec } from '@ra2c/contracts'
+import { readSkills, type SkillCatalog } from './skills.ts'
 
 const PLACEHOLDER = /{{\s*([A-Za-z][\w]*)\s*}}/g
 const TEMPLATE_DIRECTORY = new URL('../../../prompts/templates/', import.meta.url)
 const DEFINITIONS = {
-  interpret: { file: 'interpret.md', variables: ['capabilities'] },
+  interpret: { file: 'interpret.md', variables: ['capabilities', 'skills'] },
   compile: { file: 'compile.md', variables: [] },
   repair: { file: 'repair.md', variables: ['error'] },
   validationFeedback: { file: 'validation-feedback.md', variables: ['errors'] },
@@ -28,6 +29,7 @@ export class PromptLibrary {
     readonly capabilities: CapabilityCatalog,
     readonly game: GameProfile,
     readonly tactics: TacticLibrary,
+    readonly skills: SkillCatalog,
   ) {
     this.templates = Object.freeze({ ...templates })
     Object.freeze(this)
@@ -37,20 +39,21 @@ export class PromptLibrary {
   render(name: 'repair', variables: { error: string }): string
   render(name: 'validationFeedback', variables: { errors: string }): string
   render(name: PromptName, variables: Record<string, string> = {}): string {
-    const expected = (DEFINITIONS[name].variables as readonly string[]).filter(key => key !== 'capabilities')
+    const expected = (DEFINITIONS[name].variables as readonly string[]).filter(key => !['capabilities', 'skills'].includes(key))
     for (const key of Object.keys(variables)) {
       if (!expected.includes(key)) throw new Error(`提示词 ${name} 不接受变量 ${key}`)
     }
     for (const key of expected) {
       if (typeof variables[key] !== 'string') throw new Error(`提示词 ${name} 缺少变量 ${key}`)
     }
-    const values = name === 'interpret' ? { ...variables, capabilities: this.capabilities.render() } : variables
+    const values = name === 'interpret' ? { ...variables, capabilities: this.capabilities.render(), skills: this.skills.renderIndex() } : variables
     const rendered = this.templates[name].replace(PLACEHOLDER, (_match, key: string) => values[key] ?? '')
     return name === 'interpret' ? [rendered, this.game.instructions, ...this.tactics.select('interpret').map(tactic => tactic.text)].join('\n\n') : rendered
   }
 
   compileFor(goals: readonly GoalSpec[], recovery = false): string {
-    return [this.render('compile'), this.game.instructions, ...this.tactics.select('compile', goals, recovery).map(tactic => tactic.text)].join('\n\n')
+    const invoked = [...new Map(goals.filter(goal => goal.skill).map(goal => [goal.skill!.hash, goal.skill!])).values()]
+    return [this.render('compile'), this.game.instructions, ...this.tactics.select('compile', goals, recovery).map(tactic => tactic.text), ...invoked.map(skill => `Skill ${skill.id} v${skill.version}（${skill.hash}，本次运行固定定义）：\n${skill.instructions}`)].join('\n\n')
   }
 }
 
@@ -85,9 +88,13 @@ export function readPrompts(directory = TEMPLATE_DIRECTORY): PromptLibrary {
   for (const document of documents) hash.update(document.file).update('\0').update(document.source).update('\0')
   const game = readGameProfile(new URL('../games/current-mod.md', directory))
   const tactics = readTactics(new URL('../tactics/', directory))
+  const skills = readSkills(new URL('../../skills/', directory), capabilities.definitions().map(item => item.id), game.profile.id)
+  if (!skills.catalog.get('scout')) throw new Error('缺少首版 scout Skill')
+  for (const skill of skills.sources) if (!game.profile.roles().some(role => role.id === skill.definition.steps[0].role)) throw new Error(`Skill ${skill.definition.id} 引用了未知游戏角色`)
   hash.update('games/current-mod.md').update('\0').update(game.source).update('\0')
   for (const document of tactics.sources) hash.update(`tactics/${document.file}`).update('\0').update(document.source).update('\0')
-  return new PromptLibrary(templates, `sha256:${hash.digest('hex').slice(0, 16)}`, capabilities, game.profile, tactics.library)
+  for (const document of skills.sources) hash.update(`skills/${document.file}`).update('\0').update(document.source).update('\0')
+  return new PromptLibrary(templates, `sha256:${hash.digest('hex').slice(0, 16)}`, capabilities, game.profile, tactics.library, skills.catalog)
 }
 
 export interface PromptLoadOptions {

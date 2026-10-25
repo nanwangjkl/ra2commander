@@ -62,8 +62,8 @@ export function applyCommandEvent(event: CommandEvent, previous?: CardData): Car
     else if (stages.includes('faulted')) data.stage = 'faulted'
     else if (stages.includes('blocked')) data.stage = 'blocked'
     else if (stages.includes('paused')) data.stage = 'paused'
-    else if (stages.includes('failed') || stages.includes('cancelled')) data.stage = succeeded
-      ? stages.every(stage => ['completed', 'failed', 'cancelled'].includes(stage)) ? 'partial-completed' : 'partial'
+    else if (stages.includes('partial') || stages.includes('failed') || stages.includes('cancelled')) data.stage = succeeded || stages.includes('partial')
+      ? stages.every(stage => ['completed', 'partial', 'failed', 'cancelled'].includes(stage)) ? 'partial-completed' : 'partial'
       : stages.includes('failed') ? 'failed' : 'cancelled'
     else if (stages.includes('running')) data.stage = data.skipped.size ? 'partial' : 'running'
     else if (stages.includes('continuous')) data.stage = data.skipped.size ? 'partial' : 'continuous'

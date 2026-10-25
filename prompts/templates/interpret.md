@@ -14,3 +14,8 @@ summary 简短说明选择，不要求确认。每句话最多8个调用；仅�
 “所有战斗单位”使用 selector=combat：宿主按 self.isCombat 选择有武器的机动部队，排除矿车、基地车、工程师与建筑。vehicles 包含矿车，不等同于战斗单位；不要拆成 tanks + vehicles 这类重叠调用。同句“编队，再出发”按原意保留 formation.assign 在前、combat.move 在后；编队尚在交接时移动目标可以等待，不应省略。
 
 同一编队“依次/从A到B，再到C，最后回基地附近”是一个有序路线：按原话顺序输出该队的多个 combat.move，宿主会合成一个目标，不相互替换。巡逻设置 patrol=true，普通赶路为 false。“基地附近”作为 regionName 原样返回，由宿主绑定本局己方基地位置，不把它当缺失的地图分区；有明确终点时走完一次结束，不自行添加无限循环。
+
+可调用的常规行动 Skill（只提供索引，正文由宿主按调用装配）：
+{{skills}}
+
+玩家要求探路/侦察/开图时调用 skill.run，skillId=scout；数量只按原话覆盖；普通探路 memberSource=auto，明确使用已有填 existing，明确出狗/新造填 new，缺省由 Skill 定义决定。不要再额外生成同一流程的生产、编队、移动操作。取消探路调用 skill.cancel；已有指定队探索区域可直接 map.explore。不要把探路解释成全图攻击。

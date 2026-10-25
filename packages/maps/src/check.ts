@@ -1,4 +1,4 @@
-import { loadRegionScheme } from './index.ts'
+import { loadRegionScheme, loadPlayableArea } from './index.ts'
 
 const [file, rx, ry] = process.argv.slice(2)
 try {
@@ -8,6 +8,10 @@ try {
   console.log(`${map.name} / ${scheme.id}@${scheme.version}：${regions.length} 个区域`)
   console.log(regions.map(r => r.name).join('、'))
   console.log(`坐标核对：${projection.validation.status}；实机验证：${projection.validation.realGameVerified ? '已完成' : '待完成'}`)
+  if (!file) {
+    const area = await loadPlayableArea(new URL('../../../maps/ice/playable-area.json', import.meta.url), map)
+    console.log(`探索有效范围：${area.width}×${area.height}，来源哈希与原生地图一致`)
+  }
   if (rx !== undefined) console.log(`(${rx}, ${ry}) → ${index.regionsAt(Number(rx), Number(ry)).map(r => r.name).join(' / ') || '分区图外'}`)
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error))

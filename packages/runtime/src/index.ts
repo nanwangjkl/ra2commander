@@ -9,6 +9,9 @@ import { FormationRegistry } from './formation.ts'
 import { emptyFacts, type GoalState, type ProgramState, type ProductionRecord, type Handoff } from './state.ts'
 import { observeProduction, productionProgress } from './production-progress.ts'
 import { assessArrival } from './arrival.ts'
+import { ExplorationStore, type SkillRun } from './exploration.ts'
+export { ExplorationStore } from './exploration.ts'
+export type { ExplorationMap, ExplorationProgress, ExplorationObservation, SkillRun } from './exploration.ts'
 
 export { FormationRegistry } from './formation.ts'
 export type { Formation, CreateResult } from './formation.ts'
@@ -51,6 +54,8 @@ export class TaskRuntime {
   readonly seenUnitIds = new Set<number>()
   readonly pausedQueues = new Map<number, string>()
   readonly handoffs: Handoff[] = []
+  readonly exploration = new ExplorationStore()
+  readonly skillRuns = new Map<string, SkillRun>()
 
   constructor(private readonly deps: RuntimeDeps) { this.formations = deps.formations ?? new FormationRegistry() }
   get battleKey(): string { return this.sessionKey }
@@ -58,7 +63,7 @@ export class TaskRuntime {
   hasPendingCommand(id: string): boolean { return this.pending.has(id) }
   pendingCommandIds(): string[] { return [...this.pending.keys()] }
   hasPlannedFormation(id: string): boolean {
-    return [...this.goals.values()].some(goal => !['cancelled', 'completed'].includes(goal.status) && (
+    return [...this.goals.values()].some(goal => !['cancelled', 'completed', 'partial', 'failed'].includes(goal.status) && (
       goal.spec.kind === 'formation' && goal.spec.request.kind === 'createFormation' && goal.spec.request.formationId === id && goal.spec.request.unitIds.some(unit => this.latest?.self.some(item => item.id === unit))
       || goal.spec.kind === 'production' && goal.spec.formationId === id))
   }
@@ -67,7 +72,11 @@ export class TaskRuntime {
   goalExecution(id: string): GoalExecution | undefined {
     const goal = this.goals.get(id)
     if (!goal) return undefined
-    if (goal.status === 'completed') return { state: 'completed', ...(goal.spec.kind === 'combat' && goal.spec.route ? { progress: { completed: goal.spec.route.length, total: goal.spec.route.length, label: '已到达路点' } } : {}) }
+    if (goal.status === 'partial' || goal.status === 'failed') {
+      const exploration = this.explorationExecution(goal.spec)
+      return { ...exploration, state: goal.status, detail: [goal.facts.outcomeDetail ?? '探索未全部完成', exploration.detail].filter(Boolean).join('；') }
+    }
+    if (goal.status === 'completed') return { state: 'completed', ...this.explorationExecution(goal.spec), ...(goal.spec.kind === 'combat' && goal.spec.route ? { progress: { completed: goal.spec.route.length, total: goal.spec.route.length, label: '已到达路点' } } : {}) }
     if (goal.status === 'cancelled') return { state: 'cancelled', detail: goal.facts.cancelReason ?? '目标已取消或被替换' }
     const program = this.programs.get(goal.ownerId)
     const spec = goal.activeSpec
@@ -77,13 +86,74 @@ export class TaskRuntime {
       ? { state: 'faulted', detail: `脚本运行出错，已暂停：${program.stats.lastError}` } : { state: 'paused', detail: '脚本已暂停' }
     if (program.status === 'stopped') return { state: 'cancelled', detail: '脚本已停止' }
     const view = this.frame(program, [spec], this.latest).snapshot.control!.goals[0]!
-    const progress = spec.kind === 'production' && !spec.maintainPower
+    const progress = spec.kind === 'explore' ? this.explorationExecution(spec).progress : spec.kind === 'production' && !spec.maintainPower
       ? { completed: Math.min(spec.quantity, view.observed[spec.target]?.length ?? 0), total: spec.quantity }
       : spec.kind === 'combat' && spec.route ? { completed: goal.facts.routeIndex ?? 0, total: spec.route.length, label: '已到达路点' } : undefined
     const detail = view.blocked ?? (view.uncertain.length ? `提交结果待确认：${view.uncertain.join('、')}` : undefined)
     if (detail) return { state: 'blocked', detail, ...(progress ? { progress } : {}) }
     const continuous = (spec.kind === 'production' && !!spec.maintainPower) || spec.kind === 'reinforce' || (spec.kind === 'combat' && (spec.mode === 'hold' || spec.mode === 'assault' || (!spec.destination && !spec.attackRegion)))
-    return { state: continuous ? 'continuous' : 'running', ...(progress ? { progress } : {}), ...(spec.kind === 'combat' && spec.route && view.spec.kind === 'combat' ? { detail: `当前目的地：${view.spec.destination?.name ?? `${view.spec.destination?.x},${view.spec.destination?.y}`}` } : {}) }
+    return { ...this.explorationExecution(spec), state: continuous ? 'continuous' : 'running', ...(progress ? { progress } : {}), ...(spec.kind === 'combat' && spec.route && view.spec.kind === 'combat' ? { detail: `当前目的地：${view.spec.destination?.name ?? `${view.spec.destination?.x},${view.spec.destination?.y}`}` } : {}) }
+  }
+
+  private explorationExecution(spec: GoalSpec): Pick<GoalExecution, 'progress' | 'detail'> {
+    if (spec.kind !== 'explore' || !this.exploration.progress.has(spec.explorationId)) return {}
+    const view = this.exploration.view(spec)
+    const unfinished = view.regions.filter(region => !region.satisfied), threshold = Math.round(view.coverageRatio * 100)
+    return { progress: { completed: view.regions.length - unfinished.length, total: view.regions.length, label: `分区达标（每区≥${threshold}%）` },
+      detail: unfinished.length ? `未达标：${unfinished.map(region => `${region.name} ${region.total ? Math.floor(region.seen * 1000 / region.total) / 10 : 0}%`).join('、')}` : `全部目标分区覆盖均已达到${threshold}%` }
+  }
+
+  async cancelSkillRun(id: string, superseded = false): Promise<void> {
+    const run = this.skillRuns.get(id)
+    if (!run || !['preparing', 'exploring'].includes(run.status)) return
+    run.status = superseded ? 'superseded' : 'cancelled'
+    run.detail = superseded ? '侦察队已接受新命令，停止后续探路与补入' : '玩家取消探路；已进入游戏队列的生产不回退'
+    await Promise.all([run.preparationGoalId, run.exploreGoalId].map(goalId => {
+      const goal = this.goals.get(goalId)
+      return goal && !['completed', 'partial', 'failed', 'cancelled'].includes(goal.status) ? this.cancelGoal(goalId, run.detail) : Promise.resolve()
+    }))
+  }
+
+  private syncSkillRuns(): void {
+    for (const run of this.skillRuns.values()) {
+      if (!['preparing', 'exploring'].includes(run.status)) continue
+      const explore = this.goals.get(run.exploreGoalId), prepare = this.goals.get(run.preparationGoalId)
+      if (explore?.status === 'cancelled') { void this.cancelSkillRun(run.id, true).catch(error => this.deps.log?.(String(error))); continue }
+      if (explore && ['completed', 'partial', 'failed'].includes(explore.status)) {
+        if (explore.status === 'completed' && prepare && !['completed', 'cancelled'].includes(prepare.status)) {
+          run.detail = '探索已完成，等待本次固定数量生产及编队结束'
+          continue
+        }
+        run.status = explore.status as 'completed' | 'partial' | 'failed'
+        run.detail = explore.facts.outcomeDetail ?? '探索完成'
+        if (prepare && !['completed', 'cancelled'].includes(prepare.status)) void this.cancelGoal(prepare.spec.id, run.detail).catch(error => this.deps.log?.(String(error)))
+      } else if (prepare?.status === 'cancelled') {
+        void this.cancelSkillRun(run.id).catch(error => this.deps.log?.(String(error)))
+      } else {
+        const ready = this.latest?.self.some(unit => this.formations.ownerOf(unit.id) === run.formationId && !this.locked(unit.id))
+        run.status = ready ? 'exploring' : 'preparing'
+      }
+    }
+  }
+
+  private observeExploration(snap: Snapshot): void {
+    for (const goal of this.goals.values()) {
+      const spec = goal.activeSpec
+      if (goal.status !== 'active' || spec?.kind !== 'explore') continue
+      const status = this.programs.get(goal.ownerId)?.status
+      if (status === 'paused') { this.exploration.suspend(spec.explorationId, snap.tick); continue }
+      if (status !== 'active') continue
+      const preparation = spec.preparationGoalId && this.goals.get(spec.preparationGoalId)
+      const members = this.formations.membersOf(spec.formationId).filter(id => !this.locked(id))
+      const waiting = !!preparation && !['completed', 'partial', 'failed', 'cancelled'].includes(preparation.status) || this.handoffs.some(h => h.unitIds.some(id => this.formations.ownerOf(id) === spec.formationId))
+      const result = this.exploration.advance(spec, snap, members, waiting)
+      if (!result) continue
+      goal.status = result.state; goal.facts.done = true; goal.facts.outcomeDetail = result.detail
+      const program = this.programs.get(goal.ownerId)!
+      if (!this.activeSpecs(program).length) program.status = 'idle'
+      const ids = snap.self.filter(unit => members.includes(unit.id)).map(unit => unit.id)
+      if (ids.length) void this.deps.submit([{ kind: 'stop', unitIds: ids }], snap, () => this.sessionKey === snap.sessionKey && this.goals.get(spec.id) === goal && program.activeGoalIds.includes(spec.id) && !program.activeGoalIds.some(id => id !== spec.id && this.goals.get(id)?.status === 'active')).catch(error => this.deps.log?.(String(error)))
+    }
   }
 
   private program(owner: ScriptOwner): ProgramState {
@@ -100,7 +170,13 @@ export class TaskRuntime {
     if (!goal.id || !goal.rawText || !this.latest) throw new Error('目标缺少 ID、命令或当前对局')
     const snap = this.latest
     const point = (x: number, y: number) => Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < snap.mapWidth && y < snap.mapHeight
-    if (goal.kind === 'combat') {
+    if (goal.kind === 'explore') {
+      if (!this.formations.list().some(f => f.id === goal.formationId) && !this.hasPlannedFormation(goal.formationId)) throw new Error('探索编队不存在或尚无准备目标')
+      if (!this.exploration.progress.has(goal.explorationId)) throw new Error('探索范围不存在')
+      if (goal.explorationId !== goal.id || [goal.policy.pointSpacing, goal.policy.stallTicks, goal.policy.maxStallsPerRegion].some(value => !Number.isSafeInteger(value) || value < 1) || (goal.policy.coverageRatio !== undefined && (!Number.isFinite(goal.policy.coverageRatio) || goal.policy.coverageRatio <= 0 || goal.policy.coverageRatio > 1))) throw new Error('探索策略非法')
+      if ([goal.policy.interiorMargin, goal.policy.retryPasses].some(value => value !== undefined && (!Number.isSafeInteger(value) || value < 0))) throw new Error('探索内缩与重试参数非法')
+      if (goal.policy.centerFirst !== undefined && typeof goal.policy.centerFirst !== 'boolean') throw new Error('探索中心优先参数非法')
+    } else if (goal.kind === 'combat') {
       if (!this.formations.list().some(f => f.id === goal.formationId) && !this.hasPlannedFormation(goal.formationId)) throw new Error('编队不存在，请先建队')
       const r = goal.region
       if (!r || !point(r.x1, r.y1) || !point(r.x2, r.y2) || r.x1 > r.x2 || r.y1 > r.y2) throw new Error('授权地域非法')
@@ -136,7 +212,7 @@ export class TaskRuntime {
     const owner = goalOwner(spec)
     const program = this.program(owner)
     const old = this.goals.get(spec.id)
-    if (old && spec.kind === 'combat' && (old.status !== 'pending' || old.activeSpec || old.spec.rawText !== spec.rawText)) throw new Error('编队新命令应使用新的目标 ID')
+    if (old && (spec.kind === 'combat' || spec.kind === 'explore') && (old.status !== 'pending' || old.activeSpec || old.spec.rawText !== spec.rawText)) throw new Error('编队新命令应使用新的目标 ID')
     if (old && (old.ownerId !== program.id || old.spec.kind !== spec.kind || old.status === 'cancelled')) throw new Error('不能复用其他对象或已取消目标的 ID')
     if (old?.status === 'completed' && spec.kind !== 'production') throw new Error('该目标已完成，请建立新目标')
     if (old) {
@@ -170,7 +246,7 @@ export class TaskRuntime {
     if (repair && program.status !== 'paused') throw new Error('脚本不处于暂停态')
     this.cancelCommand(id)
     const abort = new AbortController()
-    const goals = program.goalIds.map(g => this.goals.get(g)!).filter(g => g && g.status !== 'cancelled' && g.status !== 'completed').map(g => structuredClone(g.spec))
+    const goals = program.goalIds.map(g => this.goals.get(g)!).filter(g => g && !['cancelled', 'completed', 'partial', 'failed'].includes(g.status)).map(g => structuredClone(g.spec))
     const lease: CompileLease = { ownerId: id, sessionKey: this.sessionKey, revision: program.revision, formationRevision: this.formations.revision, signal: abort.signal, repair, goals }
     this.pending.set(id, { lease, abort })
     return lease
@@ -215,7 +291,7 @@ export class TaskRuntime {
     program.activeGoalIds = []
     for (const spec of lease.goals) {
       const goal = this.goals.get(spec.id)!
-      if (goal.status === 'cancelled' || goal.status === 'completed') continue
+      if (['cancelled', 'completed', 'partial', 'failed'].includes(goal.status)) continue
       goal.activeSpec = structuredClone(spec)
       goal.status = 'active'
       if (!goal.facts.initialized && (spec.kind === 'combat' || spec.kind === 'deploy')) {
@@ -248,7 +324,7 @@ export class TaskRuntime {
 
   async cancelGoal(id: string, reason = '玩家已取消该目标'): Promise<void> {
     const goal = this.goals.get(id)
-    if (!goal || goal.status === 'cancelled') return
+    if (!goal || ['completed', 'partial', 'failed', 'cancelled'].includes(goal.status)) return
     goal.status = 'cancelled'
     goal.facts.cancelReason = reason
     const program = this.programs.get(goal.ownerId)!
@@ -259,9 +335,9 @@ export class TaskRuntime {
     this.cancelCommand(program.id)
     const snap = this.latest
     const spec = goal.activeSpec ?? goal.spec
-    if (snap && (spec.kind === 'combat' || spec.kind === 'rally')) {
+    if (snap && (spec.kind === 'combat' || spec.kind === 'explore' || spec.kind === 'rally')) {
       const ids = this.goalConstraints(spec, snap).allowedUnitIds
-      if (ids.length) await this.deps.submit([{ kind: 'stop', unitIds: ids }], snap, () => this.sessionKey === snap.sessionKey && goal.status === 'cancelled' && this.goals.get(id) === goal && ids.every(unit => spec.kind === 'combat' ? this.formations.ownerOf(unit) === spec.formationId : !this.formations.ownerOf(unit)))
+      if (ids.length) await this.deps.submit([{ kind: 'stop', unitIds: ids }], snap, () => this.sessionKey === snap.sessionKey && goal.status === 'cancelled' && this.goals.get(id) === goal && (program.owner.kind === 'global' || !program.activeGoalIds.some(other => other !== id && this.goals.get(other)?.status === 'active')) && ids.every(unit => spec.kind !== 'rally' ? this.formations.ownerOf(unit) === spec.formationId : !this.formations.ownerOf(unit)))
     }
     for (const [queue, owner] of this.pausedQueues) {
       if (owner !== id || !snap) continue
@@ -285,7 +361,10 @@ export class TaskRuntime {
   pause(id: string): void {
     this.cancelCommand(id)
     const program = this.programs.get(id)
-    if (program) { program.status = 'paused'; program.generation++ }
+    if (program) {
+      for (const spec of this.activeSpecs(program)) if (spec.kind === 'explore') this.exploration.suspend(spec.explorationId, this.latest?.tick ?? 0)
+      program.status = 'paused'; program.generation++
+    }
   }
   resume(id: string): void {
     this.cancelCommand(id)
@@ -297,7 +376,7 @@ export class TaskRuntime {
     const cancel: string[] = []
     for (const goal of this.goals.values()) {
       const spec = goal.activeSpec ?? goal.spec
-      if (goal.status === 'cancelled' || goal.status === 'completed') continue
+      if (['cancelled', 'completed', 'partial', 'failed'].includes(goal.status)) continue
       const members = spec.kind === 'rally' ? spec.unitIds : spec.kind === 'formation' ? spec.request.kind === 'dissolveFormation' ? this.formations.membersOf(spec.request.formationId) : spec.request.unitIds : spec.kind === 'reinforce' ? this.latest?.self.filter(u => u.name === spec.name && ((this.formations.ownerOf(u.id) ?? null) === spec.source || this.formations.ownerOf(u.id) === spec.formationId)).map(u => u.id) ?? [] : []
       if (members.some(id => ids.includes(id))) cancel.push(spec.id)
     }
@@ -320,6 +399,7 @@ export class TaskRuntime {
   private goalConstraints(spec: GoalSpec, snap: Snapshot): GoalConstraints {
     const base: GoalConstraints = { allowedUnitIds: [], enemyIds: snap.enemies.map(u => u.id), mapWidth: snap.mapWidth, mapHeight: snap.mapHeight, allowedActions: [] }
     const alive = (ids: number[]) => ids.filter(id => snap.self.some(u => u.id === id) && !this.locked(id))
+    if (spec.kind === 'explore') return { ...base, allowedUnitIds: alive(this.formations.membersOf(spec.formationId)), allowedActions: ['move', 'gather', 'stop'], region: { name: '侦察路径', x1: 0, y1: 0, x2: snap.mapWidth - 1, y2: snap.mapHeight - 1 } }
     if (spec.kind === 'combat') {
       const facts = this.goals.get(spec.id)!.facts
       return { ...base, allowedUnitIds: alive(this.formations.membersOf(spec.formationId)), allowedActions: spec.allowedActions, region: spec.region,
@@ -380,6 +460,10 @@ export class TaskRuntime {
       const view: GoalView = { spec: currentSpec, unitIds: constraints.management?.allowedUnitIds ?? constraints.allowedUnitIds, produceRemaining: constraints.produceRemaining ?? {}, submitted: progress?.sent ?? {}, observed: progress?.observed ?? {}, uncertain: progress?.uncertain ?? [], lossRatio: facts.lossRatio, retreatActive: facts.retreatTriggered }
       const arrival = this.movementArrival(spec, snap)
       if (arrival) view.arrival = arrival
+      if (spec.kind === 'explore' && this.exploration.progress.has(spec.explorationId)) {
+        view.exploration = this.exploration.view(spec)
+        if (!view.unitIds.length) view.blocked = '等待侦察成员实际交接就绪'
+      }
       if (spec.kind === 'production' && progress) {
         const missingPrerequisites = snap.production?.available.includes(spec.target) ? [] : spec.prerequisites.filter(name => !snap.self.some(unit => unit.type === 2 && unit.name === name))
         view.productionPlan = {
@@ -466,6 +550,7 @@ export class TaskRuntime {
         this.retiredSessions.add(this.sessionKey)
         this.cancelAllCommands()
         this.programs.clear(); this.goals.clear(); this.formations.clear()
+        this.exploration.clear(); this.skillRuns.clear()
         this.production.length = 0; this.handoffs.length = 0; this.seenUnitIds.clear(); this.pausedQueues.clear()
       }
       this.session = snap.session; this.sessionKey = snap.sessionKey
@@ -473,6 +558,8 @@ export class TaskRuntime {
     } else if (this.latest && snap.seq <= this.latest.seq) return
     this.latest = snap
     this.observe(snap)
+    this.observeExploration(snap)
+    this.syncSkillRuns()
     if (!this.draining) this.draining = this.drain().finally(() => { this.draining = undefined })
     await this.draining
   }
@@ -601,7 +688,7 @@ export class TaskRuntime {
         // 同一句话明确要求的建筑也可能先被其他目标当作前置生产；统一记到该建设目标，避免换代码后再造一遍。
         const target = spec.kind === 'production' && request.name !== spec.target ? [...this.goals.values()].find(candidate => {
           const desired = candidate.activeSpec ?? candidate.spec
-          return !['cancelled', 'completed'].includes(candidate.status) && desired.kind === 'production' && !desired.maintainPower && desired.target === request.name
+          return !['cancelled', 'completed', 'partial', 'failed'].includes(candidate.status) && desired.kind === 'production' && !desired.maintainPower && desired.target === request.name
             && (productionProgress(desired, this.production, snap).remaining[request.name] ?? 0) >= request.quantity
         }) : undefined
         record = { id: randomUUID(), goalId: target?.spec.id ?? item.goalId, name: request.name, quantity: request.quantity, building: spec.kind === 'production' && (request.name !== spec.target || spec.targetType === 2), queueType: fresh.constraints.goals![item.goalId]!.productionQueueTypes![request.name]!, state: 'reserved', observedIds: [], placed: false }

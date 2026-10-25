@@ -15,8 +15,9 @@ import { code, harness, outcome, production, snapshot, spec } from './helpers.ts
 
 function assets() {
   const root = mkdtempSync(join(tmpdir(), 'ra2c-game-rules-'))
-  for (const directory of ['templates', 'capabilities', 'games', 'tactics']) cpSync(new URL(`../prompts/${directory}/`, import.meta.url), join(root, directory), { recursive: true })
-  const url = pathToFileURL(join(root, 'templates') + sep)
+  for (const directory of ['templates', 'capabilities', 'games', 'tactics']) cpSync(new URL(`../prompts/${directory}/`, import.meta.url), join(root, 'prompts', directory), { recursive: true })
+  cpSync(new URL('../skills/', import.meta.url), join(root, 'skills'), { recursive: true })
+  const url = pathToFileURL(join(root, 'prompts/templates') + sep)
   return { root, url, loader: new PromptLoader(url), dispose: () => rmSync(root, { recursive: true, force: true }) }
 }
 const reply = (text: string) => ({ text, model: 'fixture', durationMs: 0 })
@@ -38,7 +39,7 @@ test('同一目录按真实可造项、阵营和角色选项目，当前中国�
 test('只改 Markdown 候选即可绑定新名称；实时规则可覆盖静态角色提示', async () => {
   const files = assets()
   try {
-    const file = join(files.root, 'games/current-mod.md')
+    const file = join(files.root, 'prompts/games/current-mod.md')
     writeFileSync(file, readFileSync(file, 'utf8').replaceAll('MTNK', 'CUSTOMTANK'))
     const profile = files.loader.load().game
     const { runtime } = await harness()
@@ -108,12 +109,12 @@ test('编译只组合相关战术，校验重试才加入恢复说明，错误�
   const files = assets()
   try {
     const first = files.loader.load()
-    const productionFile = join(files.root, 'tactics/production.md')
+    const productionFile = join(files.root, 'prompts/tactics/production.md')
     writeFileSync(productionFile, readFileSync(productionFile, 'utf8') + '\n新的生产约定。\n')
     const changed = files.loader.load()
     assert.ok(changed.compileFor([production()]).includes('新的生产约定。'))
     assert.ok(!first.compileFor([production()]).includes('新的生产约定。'))
-    writeFileSync(join(files.root, 'games/current-mod.md'), '损坏的目录')
+    writeFileSync(join(files.root, 'prompts/games/current-mod.md'), '损坏的目录')
     const errors: string[] = []
     assert.equal(files.loader.load({ onFallback: error => errors.push(error.message) }), changed)
     assert.match(errors[0]!, /current-mod\.md/)

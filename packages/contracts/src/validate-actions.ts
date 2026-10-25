@@ -2,10 +2,11 @@ import type { ActionRequest, Region, Snapshot, StepConstraints } from './index.t
 import type { ScriptAction } from './control.ts'
 import { inTargetRegion } from './spatial.ts'
 
-/** 运行期间正常消失/离队的对象只丢弃当次动作；结构、额度与边界仍严格校验。 */
+/** 清理过期动作，并按共享队列空位安排本步生产；结构、额度与边界仍严格校验。 */
 export function liveScriptActions(value: ScriptAction[], c: StepConstraints, snapshot?: Snapshot): ScriptAction[] {
-  if (!c.ignoreInactiveGoals || !Array.isArray(value) || value.length > (c.maxActions ?? 20)) return value
-  return value.flatMap(item => {
+  if (!Array.isArray(value) || value.length > (c.maxActions ?? 20)) return value
+  if (!c.ignoreInactiveGoals) return scheduleProduction(value, c, snapshot)
+  const live = value.flatMap(item => {
     if (!item || typeof item.goalId !== 'string' || !item.request || typeof item.request !== 'object') return [item]
     const goal = c.goals?.[item.goalId]
     if (!goal) return []
@@ -27,6 +28,35 @@ export function liveScriptActions(value: ScriptAction[], c: StepConstraints, sna
       return [{ ...item, request: { ...action, unitIds } } as ScriptAction]
     }
     return [item]
+  })
+  return scheduleProduction(live, c, snapshot)
+}
+
+/** 同步脚本可能对多个目标重复使用同一个队列空位。延后冲突项，不扩大目标额度。 */
+function scheduleProduction(actions: ScriptAction[], c: StepConstraints, snapshot?: Snapshot): ScriptAction[] {
+  const requested = new Map<string, number>()
+  for (const item of actions) {
+    const goal = item && c.goals?.[item.goalId], action = item?.request
+    if (!goal || action?.kind !== 'produce') continue
+    // 先保留真正的输入/额度错误交给原校验，不用队列裁剪掩盖它们。
+    if (validateActions([action], { ...goal, queueSpace: {} }, snapshot)) return actions
+    const key = `${item.goalId}:${action.name}`, total = (requested.get(key) ?? 0) + action.quantity
+    if (total > (goal.produceRemaining?.[action.name] ?? 0)) return actions
+    requested.set(key, total)
+  }
+  const remaining = new Map<number, number>()
+  for (const goal of Object.values(c.goals ?? {})) for (const [queue, space] of Object.entries(goal.queueSpace ?? {})) {
+    remaining.set(Number(queue), Math.min(remaining.get(Number(queue)) ?? space, space))
+  }
+  return actions.flatMap(item => {
+    const action = item?.request, goal = item && c.goals?.[item.goalId]
+    if (!goal || action?.kind !== 'produce') return [item]
+    const queue = goal.productionQueueTypes?.[action.name], space = queue === undefined ? undefined : remaining.get(queue)
+    if (space === undefined) return [item]
+    const quantity = Math.min(action.quantity, space)
+    if (quantity <= 0) return []
+    remaining.set(queue!, space - quantity)
+    return [{ ...item, request: { ...action, quantity } }]
   })
 }
 

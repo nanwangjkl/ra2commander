@@ -74,6 +74,26 @@ export class WerhdBridge {
     return this.latestSnapshot
   }
 
+  /** visible 表示黑幕已揭开，不是当前交战视野，也不证明可通行。 */
+  async readMapBatch(cells: number[], width: number, sessionKey: string): Promise<{ seen: number[]; impassable: number[] }> {
+    if (cells.length > 256) throw new Error('地图观察批次过大')
+    return this.frame.evaluate(({ cells, width, sessionKey }) => {
+      const win = window as unknown as { __ra2cSessionKey?: string; werhd?: { map: { visible(x: number, y: number): boolean; tile(x: number, y: number): { landType?: number; onBridge?: boolean; bridge?: unknown } | undefined } } }
+      if (win.__ra2cSessionKey !== sessionKey || !win.werhd) throw new Error('地图观察对局已变化')
+      const seen: number[] = [], impassable: number[] = []
+      for (const cell of cells) {
+        const x = cell % width, y = Math.floor(cell / width)
+        if (!win.werhd.map.visible(x, y)) continue
+        const tile = win.werhd.map.tile(x, y)
+        if (!tile) continue
+        seen.push(cell)
+        if (!tile.onBridge && !tile.bridge && [7, 8, 10].includes(tile.landType ?? -1)) impassable.push(cell)
+      }
+      if (win.__ra2cSessionKey !== sessionKey) throw new Error('地图观察对局已变化')
+      return { seen, impassable }
+    }, { cells, width, sessionKey })
+  }
+
   private findFrame(): Frame | undefined {
     if (this.targetFrame && !this.targetFrame.isDetached()) return this.targetFrame
     const pages = this.context.pages()

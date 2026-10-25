@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import type { CapabilityId, GameProfile, ResolvedCapabilityParameters as CapabilityParameters } from '@ra2c/command'
+import type { CapabilityId, GameProfile, PromptLibrary, ResolvedCapabilityParameters as CapabilityParameters } from '@ra2c/command'
+import type { SkillRun } from '@ra2c/runtime'
 import type { CombatGoal, FormationGoal, GoalSpec, ProductionGoal } from '@ra2c/contracts'
 import type { CommandContext } from '../commands.ts'
 import { checkPoint, destination, formationName, fullMap, rectangle, regionDestination, resolveOwner, selectUnits, type GameCatalog } from './selectors.ts'
+import { prepareExploration } from '../exploration.ts'
 
 export interface BindingContext {
   ctx: CommandContext
@@ -10,12 +12,15 @@ export interface BindingContext {
   check: () => void
   catalog: () => Promise<GameCatalog>
   game: GameProfile
+  prompts: PromptLibrary
+  commandId: string
   knownCatalog?: GameCatalog | undefined
   cancelUnderstanding: () => void
   formationGoals: Map<string, FormationGoal>
   movementGoals: Map<string, CombatGoal>
 }
 export interface BoundCapability {
+  skillRun?: SkillRun
   goals?: Array<{ goal: GoalSpec; choice: string }>
   choices?: string[]
   skipped?: string[]
@@ -62,7 +67,7 @@ async function control(params: CapabilityParameters['control.stop'], context: Bi
   for (const owner of owners) {
     const program = ctx.runtime.programs.get(owner)
     if (!program) continue
-    const goals = program.goalIds.map(id => ctx.runtime.goals.get(id)).filter(goal => goal && goal.status !== 'cancelled' && goal.status !== 'completed')
+    const goals = program.goalIds.map(id => ctx.runtime.goals.get(id)).filter(goal => goal && !['cancelled', 'completed', 'partial', 'failed'].includes(goal.status))
     if (!goals.length) continue
     if (!program.script || program.compileError || goals.some(goal => JSON.stringify(goal!.spec) !== JSON.stringify(goal!.activeSpec))) refreshOwners.push(owner)
     else ctx.runtime.resume(owner)
@@ -79,6 +84,54 @@ function findGoal(context: BindingContext, token: string) {
 }
 
 export const bindings: Binders = {
+  'skill.run': async (params, context) => {
+    const { ctx, prompts } = context
+    const skill = prompts.skills.get(params.skillId)
+    if (!skill) throw new Error(`尚不支持这个 Skill：${params.skillId}`)
+    const values = prompts.skills.parameters(skill.definition.id, params)
+    const runId = `skill-${randomUUID()}`
+    const formationId = params.formationId ? formationName(ctx, params.formationId, true) : `侦察-${runId.slice(6, 12)}`
+    if (ctx.formations.list().some(formation => formation.id === formationId) || ctx.runtime.hasPlannedFormation(formationId)) throw new Error('探路需要独立的新编队，请使用另一个队名')
+    const catalog = await context.catalog(); context.check()
+    const role = skill.definition.steps[0].role
+    const automaticSource = values.memberSource === 'auto'
+    const existing = selectUnits(ctx, { selector: role }, catalog).filter(dog => !automaticSource || !ctx.formations.ownerOf(dog.id)).slice(0, values.quantity)
+    const useExisting = values.memberSource === 'existing' || (automaticSource && existing.length > 0)
+    const reference = { runId, id: skill.definition.id, version: skill.definition.version, hash: skill.hash, instructions: skill.instructions }
+    let preparation: GoalSpec, choice: string
+    const skipped: string[] = []
+    if (useExisting) {
+      const dogs = existing
+      if (!dogs.length) throw new Error('没有现有侦察犬，未追加生产')
+      preparation = { id: id(), kind: 'formation', rawText: context.text, skill: reference, request: { kind: 'createFormation', formationId, unitIds: dogs.map(dog => dog.id), force: dogs.some(dog => !!ctx.formations.ownerOf(dog.id)) } }
+      choice = `使用现有${dogs.length}条侦察犬建立${formationId}（不新增生产）`
+      if (dogs.length < values.quantity) skipped.push(`现有侦察犬仅${dogs.length}条，按可用成员探路，未追加生产`)
+    } else {
+      const dog = catalog.resolve(role)
+      if (!dog) throw new Error('当前游戏目录未找到侦察犬')
+      preparation = { id: id(), kind: 'production', rawText: context.text, skill: reference, target: dog.name, quantity: values.quantity, prerequisites: [], queues: [], formationId }
+      choice = `新造${values.quantity}条${dog.label ?? '侦察犬'}（${dog.name}），编入${formationId}`
+    }
+    const exploreId = id()
+    await prepareExploration(ctx, exploreId, params.regionName, context.check)
+    const map = ctx.runtime.exploration.maps.get(ctx.runtime.exploration.progress.get(exploreId)!.mapId)!
+    const explore: GoalSpec = { id: exploreId, kind: 'explore', rawText: context.text, skill: reference, formationId, explorationId: exploreId, preparationGoalId: preparation.id, policy: structuredClone(skill.definition.exploration) }
+    return { goals: [{ goal: preparation, choice }, { goal: explore, choice: `${formationId} 探索${params.regionName ?? '全部分区'}；首名成员交接后开始，每个目标分区实际覆盖达到${Math.round(explore.policy.coverageRatio! * 100)}%完成` }], skipped,
+      skillRun: { id: runId, skillId: skill.definition.id, version: skill.definition.version, hash: skill.hash, source: skill.source, promptVersion: prompts.version, gameId: prompts.game.id, commandId: context.commandId, rawText: context.text, sessionKey: ctx.runtime.battleKey, createdAt: Date.now(), ...values, useExisting, formationId, preparationGoalId: preparation.id, exploreGoalId: explore.id, map: { id: map.mapId, schemeId: map.schemeId, schemeVersion: map.schemeVersion, geometryHash: map.id }, status: 'preparing' } }
+  },
+  'skill.cancel': async (params, context) => {
+    const runs = [...context.ctx.runtime.skillRuns.values()].filter(run => ['preparing', 'exploring'].includes(run.status) && (!params.runId || run.id === params.runId) && (!params.skillId || run.skillId === (context.prompts.skills.get(params.skillId)?.definition.id ?? params.skillId)))
+    const selected = params.all || params.runId ? runs : runs.slice(-1)
+    await Promise.all(selected.map(run => context.ctx.runtime.cancelSkillRun(run.id)))
+    return { choices: [selected.length ? `已取消${selected.length}次探路及其后续步骤，其余目标继续` : '没有正在执行的匹配 Skill'], refreshOwners: selected.length ? ['global'] : [], suppressOwners: selected.map(run => `formation:${run.formationId}`) }
+  },
+  'map.explore': async (params, context) => {
+    const formationId = formationName(context.ctx, params.formationId, false, true), goalId = id()
+    await prepareExploration(context.ctx, goalId, params.regionName, context.check)
+    const policy = context.prompts.skills.get('scout')!.definition.exploration
+    const preparation = [...context.ctx.runtime.goals.values()].reverse().find(goal => !['completed', 'partial', 'failed', 'cancelled'].includes(goal.status) && (goal.spec.kind === 'production' && goal.spec.formationId === formationId || goal.spec.kind === 'formation' && goal.spec.request.kind === 'createFormation' && goal.spec.request.formationId === formationId))
+    return bound({ id: goalId, kind: 'explore', rawText: context.text, formationId, explorationId: goalId, policy, ...(preparation ? { preparationGoalId: preparation.spec.id } : {}) }, `${formationId} 探索${params.regionName ?? '全部分区'}，每个目标分区实际覆盖达到${Math.round(policy.coverageRatio * 100)}%完成（不新增生产）`)
+  },
   'base.deploy': async (_params, context) => {
     const catalog = await context.catalog()
     const vehicle = context.ctx.runtime.snapshot!.self.filter(unit => unit.canDeploy && catalog.all.some(rule => rule.name === unit.name && rule.deploysInto && catalog.isRole(rule.deploysInto, 'constructionYard')))

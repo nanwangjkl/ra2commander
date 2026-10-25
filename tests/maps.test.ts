@@ -1,11 +1,22 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { MapRegionIndex, loadRegionScheme, type MapPoint, type RegionScheme } from '../packages/maps/src/index.ts'
+import { MapRegionIndex, loadRegionScheme, PlayableAreaIndex, loadPlayableArea, type MapPoint, type RegionScheme } from '../packages/maps/src/index.ts'
 
 const url = new URL('../maps/ice/schemes/nanwang-0.1.0.json', import.meta.url)
 const scheme: RegionScheme = JSON.parse(await readFile(url, 'utf8'))
 const index = await loadRegionScheme(url)
+
+test('原生地形有效范围排除图外边缘，地图哈希不匹配时拒绝混用', async () => {
+  const file = new URL('../maps/ice/playable-area.json', import.meta.url), area = await loadPlayableArea(file, scheme.map)
+  assert.equal(area.contains(54, 54), false) // 本局反复下达但引擎范围外的北侧落点。
+  assert.equal(area.contains(56, 56), true)
+  assert.equal(area.contains(84, 168), false)
+  assert.equal(area.contains(85, 168), true)
+  assert.equal(area.contains(-1, -1), false)
+  const value = JSON.parse(await readFile(file, 'utf8'))
+  assert.throws(() => new PlayableAreaIndex(value, { ...scheme.map, sha256: 'other' }), /不匹配/)
+})
 
 test('当前分区文件可读取、按名称查询，图片与地图坐标可转换', () => {
   assert.ok(index.scheme.regions.length > 0)

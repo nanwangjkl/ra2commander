@@ -8,7 +8,7 @@
 
 浏览器工作台第一阶段已由用户验收通过：游戏位于左侧 iframe，右侧侧栏可调宽、折叠，全屏保留整个工作台，Companion 重启沿用当前对局。侧栏已接入文本下令、原话、理解、实际选择、执行/完成状态与错误；追加的逐命令反馈、本机归档及侧栏精简已由用户验收通过，当前默认自动绑定冰天雪地分区。对局资料自动归档到本机，关闭游戏后仍保留供开发复盘，游戏侧栏不提供历史管理或代码预览。真实录音按[分阶段计划](doc/roadmap/browser-workbench-and-voice.md)另行验收后实施。
 
-M1（公共 API 桥）与 M2 单队循环已实测：文本命令经云模型（DeepSeek/GLM 可切换）编译为独立任务脚本，经快照驱动持续执行——26 坦克守区、战损六成边界回撤、改令/撤权、故障隔离均通过真实对局与合成回放验证。当前已改为编队/全局脚本统一替换，支持多目标生产、转编与持续补员、v3 持久化；本轮自动化验证与实机记录见[改造方案](doc/roadmap/script-ownership-refactor.md)。宿主保留请求失效检查及 QuickJS 子进程隔离。运行方式与显式授权参数见 [AGENTS.md](AGENTS.md)；首版范围与验证安排见[实施与验证计划](doc/roadmap/implementation-plan.md)。
+M1（公共 API 桥）与 M2 单队循环已实测：文本命令经云模型（DeepSeek/GLM 可切换）编译为独立任务脚本，经快照驱动持续执行——26 坦克守区、战损六成边界回撤、改令/撤权、故障隔离均通过真实对局与合成回放验证。当前已改为编队/全局脚本统一替换，支持多目标生产、转编与持续补员、v4 持久化（兼容 v3）；本轮自动化验证与实机记录见[改造方案](doc/roadmap/script-ownership-refactor.md)。宿主保留请求失效检查及 QuickJS 子进程隔离。运行方式与显式授权参数见 [AGENTS.md](AGENTS.md)；首版范围与验证安排见[实施与验证计划](doc/roadmap/implementation-plan.md)。
 
 ## 文档导航
 
@@ -22,7 +22,8 @@ M1（公共 API 桥）与 M2 单队循环已实测：文本命令经云模型（
 | [编队与全局脚本改造方案](doc/roadmap/script-ownership-refactor.md) | 如何改为每编队一份脚本、全局一份脚本，并统一替换？ |
 | [六句模拟语音测试](doc/roadmap/voice-six-commands.md) | 展开、建设、造兵编队、地名移动、补电和进攻的实机效果如何？ |
 | [工作台、侧栏与语音开发计划](doc/roadmap/browser-workbench-and-voice.md) | 如何分阶段加入游戏右侧命令栏和真实语音，逐阶段由玩家验收？ |
-| [基础能力、提示词与 Skill 改造方案](doc/roadmap/capabilities-prompts-and-skills.md) | 如何统一能力入口、将提示词外置为 Markdown，并组合“探路”等常规操作？（A～C 已验收，D 未开始） |
+| [探路 Skill](doc/spec/scouting-skills.md) | 如何配置、调用、取消和恢复探路，以及如何确认真实探索覆盖？ |
+| [基础能力、提示词与 Skill 改造方案](doc/roadmap/capabilities-prompts-and-skills.md) | 如何统一能力入口、将提示词外置为 Markdown，并组合“探路”等常规操作？（A～C 已验收，D 已实现待实机验收） |
 | [玩家基础能力](doc/spec/player-capabilities.md) | 已接通哪些能力，Markdown 参数如何连接模型、类型与宿主，如何新增能力？ |
 | [游戏规则与战术约定](doc/spec/game-rules-and-tactics.md) | 如何按真实规则选择阵营项目、复用前置，并按目标组合战术提示？ |
 | [对局记录与命令反馈](doc/spec/battle-records.md) | 如何提交命令反馈，并在本机归档理解、代码和实际成果供开发复盘？ |

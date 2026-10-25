@@ -11,12 +11,13 @@ export interface GoalFacts {
   blocked?: string
   cancelReason?: string
   routeIndex?: number
+  outcomeDetail?: string
 }
 export interface GoalState {
   ownerId: string
   spec: GoalSpec
   activeSpec?: GoalSpec
-  status: 'pending' | 'active' | 'completed' | 'cancelled'
+  status: 'pending' | 'active' | 'completed' | 'partial' | 'failed' | 'cancelled'
   facts: GoalFacts
 }
 export interface ProgramState {

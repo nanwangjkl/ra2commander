@@ -1,5 +1,5 @@
 // 由 prompts/capabilities/*.md 生成；修改定义后运行 pnpm capabilities:generate。
-export const CAPABILITY_CONTRACT_VERSION = '9b2025382c3c9f686cf93566c8e6517f7554cf05f359547181bd6ba7837b22a4'
+export const CAPABILITY_CONTRACT_VERSION = 'b987b6d4073607015ace2864466bdf4fe1ee9dca722c0c3bf0bd8173d05c17d1'
 export interface CapabilityParameters {
   "base.deploy": Record<string, never>
   "combat.attack-all": { formationId?: string }
@@ -17,8 +17,11 @@ export interface CapabilityParameters {
   "goal.edit": { goalId: string; quantity: number }
   "management.rally": { selector?: string; unitIds?: number[]; regionName?: string; x?: number; y?: number }
   "management.reinforce": { formationId: string; target: string; targetSize: number; sourceFormationId?: string }
+  "map.explore": { formationId: string; regionName?: string }
   "production.power": { reserve?: number }
   "production.produce": { target: string; quantity?: number; formationId?: string; queues?: number[] }
+  "skill.cancel": { runId?: string; skillId?: string; all?: boolean }
+  "skill.run": { skillId: string; quantity?: number; memberSource?: "auto" | "existing" | "new"; useExisting?: boolean; formationId?: string; regionName?: string }
 }
 export interface ResolvedCapabilityParameters {
   "base.deploy": Record<string, never>
@@ -37,8 +40,11 @@ export interface ResolvedCapabilityParameters {
   "goal.edit": { goalId: string; quantity: number }
   "management.rally": { selector: string; unitIds?: number[]; regionName?: string; x?: number; y?: number }
   "management.reinforce": { formationId: string; target: string; targetSize: number; sourceFormationId?: string }
+  "map.explore": { formationId: string; regionName?: string }
   "production.power": { reserve: number }
   "production.produce": { target: string; quantity: number; formationId?: string; queues: number[] }
+  "skill.cancel": { runId?: string; skillId?: string; all: boolean }
+  "skill.run": { skillId: string; quantity?: number; memberSource?: "auto" | "existing" | "new"; useExisting?: boolean; formationId?: string; regionName?: string }
 }
 export type CapabilityId = keyof CapabilityParameters
 export type CapabilityCall = { [Id in CapabilityId]: { capability: Id; params: CapabilityParameters[Id] } }[CapabilityId]

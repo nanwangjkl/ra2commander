@@ -3,6 +3,7 @@ import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, 
 import { join } from 'node:path'
 import type { BattleRecord, BattleRecordInfo, CommandEvent, CommandFeedback, FeedbackRating, CurrentCommands } from '@ra2c/contracts'
 import type { TaskRuntime } from '@ra2c/runtime'
+import { applyCommandEvent, type CardData } from '../ui/command-card.ts'
 
 type Compilation = BattleRecord['compilations'][number] & { sessionKey: string }
 type Entry = { kind: 'event' | 'transcript' | 'compilation' | 'observation' | 'feedback'; at: number; value: unknown }
@@ -102,6 +103,13 @@ export class BattleRecords {
       const facts = {
         goals: [...runtime.goals].map(([id, goal]) => ({ id, ...goal, execution: runtime.goalExecution(id) })),
         formations: runtime.formations.list(), production: runtime.production,
+        skillRuns: [...runtime.skillRuns.values()].map(({ source, ...run }) => run),
+        exploration: [...runtime.exploration.progress.values()].map(progress => {
+          const goal = runtime.goals.get(progress.goalId)?.spec, map = runtime.exploration.maps.get(progress.mapId)
+          return { goalId: progress.goalId, mapId: map?.mapId, schemeId: map?.schemeId, schemeVersion: map?.schemeVersion,
+            stalls: progress.stalls, failureStreak: progress.failureStreak, retryRounds: progress.retryRounds, rejected: progress.rejected,
+            ...(goal?.kind === 'explore' ? { coverage: runtime.exploration.view(goal) } : {}) }
+        }),
         programs: [...runtime.programs.values()].map(program => ({ id: program.id, status: program.status, goalIds: program.goalIds, activeGoalIds: program.activeGoalIds,
           script: program.script, compileError: program.compileError, errors: program.stats.errors, rejected: program.stats.rejected, lastError: program.stats.lastError })),
       }
@@ -198,7 +206,7 @@ export class BattleRecords {
   }
   markdown(record: BattleRecord): string {
     const fence = (value: string, lang = '') => { const ticks = '`'.repeat(Math.max(3, ...[...value.matchAll(/`+/g)].map(match => match[0].length + 1))); return `${ticks}${lang}\n${value}\n${ticks}` }
-    const labels: Record<string, string> = { received: '已收到', understanding: '理解中', understood: '已理解', binding: '绑定中', bound: '待生效', generating: '生成中', merged: '等待合并', effective: '脚本已生效', completed: '已完成', running: '执行中', continuous: '持续执行', paused: '暂停', faulted: '运行出错', blocked: '执行受阻', cancelled: '已取消', failed: '失败' }
+    const labels: Record<string, string> = { received: '已收到', understanding: '理解中', understood: '已理解', binding: '绑定中', bound: '待生效', generating: '生成中', merged: '等待合并', effective: '脚本已生效', completed: '已完成', running: '执行中', continuous: '持续执行', paused: '暂停', faulted: '运行出错', blocked: '执行受阻', cancelled: '已取消', failed: '失败', partial: '部分执行', 'partial-completed': '部分完成' }
     const info = this.info(record)
     const lines = ['# 对局记录', '', `对局：${record.sessionKey || '未进入对局'}`, `开始：${new Date(record.startedAt).toLocaleString('zh-CN')}`, `最后记录：${new Date(record.updatedAt).toLocaleString('zh-CN')}`, `命令 ${info.commands} 条，已反馈 ${info.feedback} 条，其中待改进 ${info.issues} 条。`, '', '执行结果来自最后观察到的游戏事实；游戏关闭后不推断完成或胜负。用户反馈单独保留。', '完整请求、响应、状态变化与反馈在同目录 events.jsonl 中，供开发复盘使用。', '']
     const ids = new Set([...record.events.map(event => event.commandId), ...Object.keys(record.transcripts)])
@@ -211,13 +219,15 @@ export class BattleRecords {
       if (summary) lines.push(`理解与实际选择：${summary}`)
       if (transcript?.imported) lines.push('此命令由旧转写迁入；缺失的代码与执行成果无法补回。')
       if (transcript?.error) lines.push(`错误：${String(transcript.error)}`)
-      const last = new Map<string, CommandEvent>()
-      const executions = new Map<string, CommandEvent>()
-      for (const event of events) last.set(event.goalId ?? 'command', event)
-      for (const event of events) if (event.execution && event.goalId) executions.set(event.goalId, event)
-      for (const item of last.values()) {
-        const event = executions.get(item.goalId ?? '') ?? item
-        lines.push(`- ${event.goalId ?? '命令'}：${labels[event.execution?.state ?? event.stage] ?? event.stage}${event.execution?.detail ? `，${event.execution.detail}` : ''}${event.execution?.progress ? `（${event.execution.progress.completed}/${event.execution.progress.total}）` : ''}${event.error ? `；${event.error}` : ''}`)
+      let card: CardData | undefined
+      // 原 seq 在重启后可能从头计数；归档按追加顺序回放，和侧栏本地序号一致。
+      events.forEach((event, index) => { card = applyCommandEvent({ ...event, seq: index + 1 }, card) })
+      if (card) {
+        lines.push(`- 命令：${labels[card.stage] ?? card.stage}${card.error ? `；${card.error}` : ''}`)
+        for (const [goalId, goal] of card.goals) {
+          const execution = goal.execution, state = execution?.state ?? goal.stage
+          lines.push(`- ${goalId}：${state === 'partial' ? '部分完成' : labels[state] ?? state}${execution?.detail ? `，${execution.detail}` : ''}${execution?.progress ? `（${execution.progress.completed}/${execution.progress.total}）` : ''}${goal.error ? `；${goal.error}` : ''}`)
+        }
       }
       const errors = new Set(events.filter(event => event.error).map(event => event.error!))
       for (const error of errors) lines.push(`- 过程错误／未执行项：${error}`)

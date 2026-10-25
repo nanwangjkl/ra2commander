@@ -128,3 +128,28 @@ test('中断的末行保留备份并可继续追加，不吞掉后续反馈', ()
     assert.equal(readFileSync(join(root, '.runtime/battles', id, 'events.jsonl.incomplete'), 'utf8'), '{"kind":')
   } finally { records.close(); rmSync(root, { recursive: true, force: true }) }
 })
+
+test('归档按侧栏相同规则汇总多目标状态，重启后的低序号事件仍能更新已完成', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ra2c-summary-state-'))
+  let records = new BattleRecords(root)
+  const base = { commandId: 'multi', source: 'sidebar' as const, sessionKey: 'battle', at: 1 }
+  try {
+    records.event({ ...base, stage: 'received', text: '建设并探路', seq: 1 })
+    records.event({ ...base, stage: 'bound', goalId: 'one', owner: 'global', seq: 2 })
+    records.event({ ...base, stage: 'bound', goalId: 'two', owner: 'formation:A', seq: 3 })
+    records.event({ ...base, stage: 'generating', owner: 'formation:A', seq: 4 })
+    records.event({ ...base, stage: 'execution', goalId: 'one', execution: { state: 'completed' }, seq: 5 })
+    records.event({ ...base, stage: 'execution', goalId: 'two', execution: { state: 'running' }, seq: 6 })
+    const id = records.list()[0]!.id
+    assert.match(records.markdown(records.read(id)!), /- 命令：执行中/)
+    records.close()
+    records = new BattleRecords(root)
+    records.event({ ...base, stage: 'execution', goalId: 'two', execution: { state: 'completed', progress: { completed: 17, total: 17 } }, seq: 1 })
+    records.close()
+    const summary = readFileSync(join(root, '.runtime/battles', id, 'summary.md'), 'utf8')
+    assert.match(summary, /- 命令：已完成/)
+    assert.match(summary, /- two：已完成（17\/17）/)
+    assert.doesNotMatch(summary, /- 命令：生成中/)
+    assert.equal(records.read(id)!.events.length, 7, '修复只改派生摘要，不覆盖原始事件')
+  } finally { records.close(); rmSync(root, { recursive: true, force: true }) }
+})
