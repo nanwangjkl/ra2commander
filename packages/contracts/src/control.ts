@@ -14,6 +14,10 @@ export interface CombatGoal extends GoalBase {
   retreat?: { lossAbove: number; x: number; y: number }
   transforms?: Record<string, string>
   destination?: { x: number; y: number; name?: string }
+  /** 同一命令内的有序路点；宿主推进进度，模型只读取本步 destination。 */
+  route?: Array<{ x: number; y: number; name?: string }>
+  /** 按有限路线巡逻，途中可交战，走完末站后完成。 */
+  patrol?: boolean
   /** 区域清敌的选敌范围，独立于行军地域；到达 destination 不表示清敌完成。 */
   attackRegion?: import('./spatial.ts').TargetRegion
 }
@@ -49,6 +53,15 @@ export type GoalSpec = CombatGoal | DeployGoal | ProductionGoal | FormationGoal 
 export const goalOwner = (goal: GoalSpec): ScriptOwner => goal.kind === 'combat' ? { kind: 'formation', formationId: goal.formationId } : { kind: 'global' }
 
 export interface ScriptAction { goalId: string; request: ActionRequest | FormationRequest }
+/** 本步部队主体是否抵达目的地；宿主与脚本共用，不要求全队挤到同一点。 */
+export interface ArrivalState {
+  reached: boolean
+  radius: number
+  nearby: number
+  required: number
+  total: number
+  laggingUnitIds: number[]
+}
 export interface GoalView {
   spec: GoalSpec
   unitIds: number[]
@@ -60,6 +73,7 @@ export interface GoalView {
   retreatActive: boolean
   blocked?: string
   maxUnits?: number
+  arrival?: ArrivalState
   productionPlan?: {
     missingPrerequisites: string[]
     pendingPrerequisites: string[]

@@ -64,6 +64,7 @@ html.sidebar-collapsed #sidebar, html.sidebar-collapsed #resize-sidebar { visibi
 .goal-status.stage-effective, .goal-status.stage-running, .goal-status.stage-continuous { color: #9bc3e0; }
 .goal-status.stage-completed { color: #8fc9a8; }
 .goal-progress { display: block; color: #93a598; margin-top: 2px; }
+.goal-detail { display: block; color: #a8b4c1; margin-top: 3px; overflow-wrap: anywhere; }
 .goal-status.stage-failed, .goal-status.stage-cancelled { color: #d08077; }
 .card-error summary { cursor: pointer; }
 .card-error p { margin-bottom: 0; }

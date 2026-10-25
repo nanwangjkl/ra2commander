@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { CapabilityId, GameProfile, ResolvedCapabilityParameters as CapabilityParameters } from '@ra2c/command'
-import type { CombatGoal, GoalSpec, ProductionGoal } from '@ra2c/contracts'
+import type { CombatGoal, FormationGoal, GoalSpec, ProductionGoal } from '@ra2c/contracts'
 import type { CommandContext } from '../commands.ts'
 import { checkPoint, destination, formationName, fullMap, rectangle, regionDestination, resolveOwner, selectUnits, type GameCatalog } from './selectors.ts'
 
@@ -12,6 +12,8 @@ export interface BindingContext {
   game: GameProfile
   knownCatalog?: GameCatalog | undefined
   cancelUnderstanding: () => void
+  formationGoals: Map<string, FormationGoal>
+  movementGoals: Map<string, CombatGoal>
 }
 export interface BoundCapability {
   goals?: Array<{ goal: GoalSpec; choice: string }>
@@ -113,10 +115,13 @@ export const bindings: Binders = {
       if (matched.length && matched.every(unit => ctx.formations.ownerOf(unit.id) === formationId)) return done(`现有${matched.length}个匹配单位已在${formationId}`)
       throw new Error('没有可编入的现有单位，未追加生产')
     }
+    const existing = context.formationGoals.get(formationId)
+    const members = [...new Set([...(existing && existing.request.kind !== 'dissolveFormation' ? existing.request.unitIds : []), ...selected.map(unit => unit.id)])]
     const exists = ctx.formations.list().some(formation => formation.id === formationId)
-    const result = bound({ id: id(), kind: 'formation', rawText: context.text, request: exists
-      ? { kind: 'transferUnits', formationId, unitIds: selected.map(unit => unit.id) }
-      : { kind: 'createFormation', formationId, unitIds: selected.map(unit => unit.id), force: selected.some(unit => !!ctx.formations.ownerOf(unit.id)) } }, `将现有${selected.length}个${params.selector === 'tanks' ? '坦克' : '匹配单位'}编入${formationId}（不新增生产）`)
+    const goal: FormationGoal = { id: existing?.id ?? id(), kind: 'formation', rawText: context.text, request: exists
+      ? { kind: 'transferUnits', formationId, unitIds: members }
+      : { kind: 'createFormation', formationId, unitIds: members, force: members.some(unit => !!ctx.formations.ownerOf(unit)) } }
+    const result = bound(goal, `将现有${members.length}个${!existing && params.selector === 'tanks' ? '坦克' : params.selector === 'combat' ? '战斗单位' : '匹配单位'}编入${formationId}（不新增生产）`)
     if (params.quantity !== 'all' && selected.length < params.quantity) result.skipped = [`现有未编队单位仅${selected.length}个，仍缺${params.quantity - selected.length}个；未追加生产`]
     return result
   },
@@ -134,16 +139,23 @@ export const bindings: Binders = {
     return bound({ id: id(), kind: 'formation', rawText: context.text, request: { kind: 'dissolveFormation', formationId } }, `解散编队 ${formationId}`)
   },
   'combat.move': async (params, context) => {
-    const formationId = formationName(context.ctx, params.formationId)
+    const formationId = formationName(context.ctx, params.formationId, false, true)
     const region = params.bounds ? rectangle(context.ctx.runtime.snapshot!, params.bounds) : fullMap(context.ctx.runtime.snapshot!)
-    const point = params.regionName || params.x !== undefined || params.y !== undefined ? await destination(context.ctx, params, context.check) : undefined
+    const point = params.regionName || params.x !== undefined || params.y !== undefined ? await destination(context.ctx, params, context.check, context.catalog) : undefined
     if (!point && !params.bounds) throw new Error('移动缺少目的地')
-    return bound({ id: id(), kind: 'combat', rawText: context.text, formationId, region, allowedActions: ['move', 'gather', 'stop'], ...(point ? { destination: point } : {}), ...(params.label ? { label: params.label } : {}) }, `${formationId} 前往${point && 'name' in point ? point.name : point ? `(${point.x}, ${point.y})` : '指定活动区'}`)
+    const previous = point ? context.movementGoals.get(formationId) : undefined
+    const route = previous?.destination && point ? [...(previous.route ?? [previous.destination]), point] : undefined
+    const patrol = !!(params.patrol || previous?.patrol)
+    const goal: CombatGoal = { id: previous?.id ?? id(), kind: 'combat', rawText: context.text, formationId, region,
+      allowedActions: patrol ? ['move', 'gather', 'stop', 'attack', 'attackMove'] : ['move', 'gather', 'stop'],
+      ...(point ? { destination: route?.[0] ?? point } : {}), ...(route ? { route } : {}), ...(patrol ? { patrol: true } : {}), ...(params.label ? { label: params.label } : {}) }
+    const places = route ?? (point ? [point] : [])
+    return bound(goal, `${formationId} ${patrol ? '沿路线巡逻' : route ? '按顺序前往' : '前往'}${places.length ? places.map(point => 'name' in point ? point.name : `(${point.x}, ${point.y})`).join(' → ') : '指定活动区'}`)
   },
   'combat.hold': async (params, context) => {
     const { ctx } = context
     const snap = ctx.runtime.snapshot!
-    const formationId = formationName(ctx, params.formationId)
+    const formationId = formationName(ctx, params.formationId, false, true)
     let region = params.bounds ? rectangle(snap, params.bounds) : undefined
     let point: Awaited<ReturnType<typeof regionDestination>>['destination'] | undefined
     if (params.regionName) {
@@ -167,7 +179,7 @@ export const bindings: Binders = {
     return bound(goal, `${formationId} ${params.mode === 'move' ? '赶路' : '守卫'}${region.name}`)
   },
   'combat.clear-region': async (params, context) => {
-    const formationId = formationName(context.ctx, params.formationId)
+    const formationId = formationName(context.ctx, params.formationId, false, true)
     const { region, destination } = await regionDestination(context.ctx, params.regionName, context.check)
     return bound({ id: id(), kind: 'combat', rawText: context.text, formationId, region: fullMap(context.ctx.runtime.snapshot!), destination, attackRegion: { id: region.id, name: region.name, polygons: region.polygons }, allowedActions: ['move', 'attackMove', 'attack', 'stop'] }, `${formationId} 前往并清理${region.name}区域内的敌人`)
   },
@@ -185,7 +197,7 @@ export const bindings: Binders = {
     return bound({ id: id(), kind: 'reinforce', rawText: context.text, formationId, name: target.name, targetSize: params.targetSize, source }, `${formationId} 持续补充 ${target.label ?? target.name} 至${params.targetSize}个，来源${source ?? '未编队单位'}`)
   },
   'management.rally': async (params, context) => {
-    const point = await destination(context.ctx, params, context.check)
+    const point = await destination(context.ctx, params, context.check, context.catalog)
     const matched = selectUnits(context.ctx, params, await context.catalog())
     const members = matched.filter(unit => !context.ctx.formations.ownerOf(unit.id))
     if (!members.length) throw new Error('没有可集结的未编队单位')

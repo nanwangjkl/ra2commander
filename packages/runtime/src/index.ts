@@ -8,6 +8,7 @@ import { codeHash, type StepExecutor } from '@ra2c/js-worker'
 import { FormationRegistry } from './formation.ts'
 import { emptyFacts, type GoalState, type ProgramState, type ProductionRecord, type Handoff } from './state.ts'
 import { observeProduction, productionProgress } from './production-progress.ts'
+import { assessArrival } from './arrival.ts'
 
 export { FormationRegistry } from './formation.ts'
 export type { Formation, CreateResult } from './formation.ts'
@@ -56,13 +57,18 @@ export class TaskRuntime {
   get snapshot(): Snapshot | undefined { return this.latest }
   hasPendingCommand(id: string): boolean { return this.pending.has(id) }
   pendingCommandIds(): string[] { return [...this.pending.keys()] }
+  hasPlannedFormation(id: string): boolean {
+    return [...this.goals.values()].some(goal => !['cancelled', 'completed'].includes(goal.status) && (
+      goal.spec.kind === 'formation' && goal.spec.request.kind === 'createFormation' && goal.spec.request.formationId === id && goal.spec.request.unitIds.some(unit => this.latest?.self.some(item => item.id === unit))
+      || goal.spec.kind === 'production' && goal.spec.formationId === id))
+  }
 
   /** 提供已有执行事实的精简视图；不改变目标，也不把动作提交当作完成。 */
   goalExecution(id: string): GoalExecution | undefined {
     const goal = this.goals.get(id)
     if (!goal) return undefined
-    if (goal.status === 'completed') return { state: 'completed' }
-    if (goal.status === 'cancelled') return { state: 'cancelled', detail: '目标已取消或被替换' }
+    if (goal.status === 'completed') return { state: 'completed', ...(goal.spec.kind === 'combat' && goal.spec.route ? { progress: { completed: goal.spec.route.length, total: goal.spec.route.length, label: '已到达路点' } } : {}) }
+    if (goal.status === 'cancelled') return { state: 'cancelled', detail: goal.facts.cancelReason ?? '目标已取消或被替换' }
     const program = this.programs.get(goal.ownerId)
     const spec = goal.activeSpec
     if (!spec && goal.status === 'pending' && goal.facts.completedQuantity !== undefined) return { state: 'completed', detail: `前次${goal.facts.completedQuantity}个已完成，新增总量待生效` }
@@ -72,11 +78,12 @@ export class TaskRuntime {
     if (program.status === 'stopped') return { state: 'cancelled', detail: '脚本已停止' }
     const view = this.frame(program, [spec], this.latest).snapshot.control!.goals[0]!
     const progress = spec.kind === 'production' && !spec.maintainPower
-      ? { completed: Math.min(spec.quantity, view.observed[spec.target]?.length ?? 0), total: spec.quantity } : undefined
+      ? { completed: Math.min(spec.quantity, view.observed[spec.target]?.length ?? 0), total: spec.quantity }
+      : spec.kind === 'combat' && spec.route ? { completed: goal.facts.routeIndex ?? 0, total: spec.route.length, label: '已到达路点' } : undefined
     const detail = view.blocked ?? (view.uncertain.length ? `提交结果待确认：${view.uncertain.join('、')}` : undefined)
     if (detail) return { state: 'blocked', detail, ...(progress ? { progress } : {}) }
     const continuous = (spec.kind === 'production' && !!spec.maintainPower) || spec.kind === 'reinforce' || (spec.kind === 'combat' && (spec.mode === 'hold' || spec.mode === 'assault' || (!spec.destination && !spec.attackRegion)))
-    return { state: continuous ? 'continuous' : 'running', ...(progress ? { progress } : {}) }
+    return { state: continuous ? 'continuous' : 'running', ...(progress ? { progress } : {}), ...(spec.kind === 'combat' && spec.route && view.spec.kind === 'combat' ? { detail: `当前目的地：${view.spec.destination?.name ?? `${view.spec.destination?.x},${view.spec.destination?.y}`}` } : {}) }
   }
 
   private program(owner: ScriptOwner): ProgramState {
@@ -94,9 +101,10 @@ export class TaskRuntime {
     const snap = this.latest
     const point = (x: number, y: number) => Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < snap.mapWidth && y < snap.mapHeight
     if (goal.kind === 'combat') {
-      if (!this.formations.list().some(f => f.id === goal.formationId)) throw new Error('编队不存在，请先建队')
+      if (!this.formations.list().some(f => f.id === goal.formationId) && !this.hasPlannedFormation(goal.formationId)) throw new Error('编队不存在，请先建队')
       const r = goal.region
       if (!r || !point(r.x1, r.y1) || !point(r.x2, r.y2) || r.x1 > r.x2 || r.y1 > r.y2) throw new Error('授权地域非法')
+      if (goal.route && (!goal.route.length || goal.route.some(stop => !point(stop.x, stop.y)))) throw new Error('路线目的地非法')
       if (goal.retreat && (!point(goal.retreat.x, goal.retreat.y) || !Number.isFinite(goal.retreat.lossAbove) || goal.retreat.lossAbove < 0 || goal.retreat.lossAbove >= 1)) throw new Error('回撤条件非法')
     } else if (goal.kind === 'deploy') {
       if (!goal.unitIds.length || goal.unitIds.some(id => !snap.self.some(u => u.id === id && u.canDeploy))) throw new Error('没有可展开的基地车')
@@ -128,7 +136,7 @@ export class TaskRuntime {
     const owner = goalOwner(spec)
     const program = this.program(owner)
     const old = this.goals.get(spec.id)
-    if (old && spec.kind === 'combat') throw new Error('编队新命令应使用新的目标 ID')
+    if (old && spec.kind === 'combat' && (old.status !== 'pending' || old.activeSpec || old.spec.rawText !== spec.rawText)) throw new Error('编队新命令应使用新的目标 ID')
     if (old && (old.ownerId !== program.id || old.spec.kind !== spec.kind || old.status === 'cancelled')) throw new Error('不能复用其他对象或已取消目标的 ID')
     if (old?.status === 'completed' && spec.kind !== 'production') throw new Error('该目标已完成，请建立新目标')
     if (old) {
@@ -143,7 +151,10 @@ export class TaskRuntime {
       old.facts.done = false
     } else this.goals.set(spec.id, { ownerId: program.id, spec: structuredClone(spec), status: 'pending', facts: emptyFacts() })
     if (owner.kind === 'formation') {
-      for (const id of program.goalIds) if (id !== spec.id && !program.activeGoalIds.includes(id)) this.goals.get(id)!.status = 'cancelled'
+      for (const id of program.goalIds) if (id !== spec.id && !program.activeGoalIds.includes(id)) {
+        const previous = this.goals.get(id)!
+        previous.status = 'cancelled'; previous.facts.cancelReason = `已被后续命令替换：${spec.rawText}`
+      }
       program.goalIds = [spec.id]
     }
     else if (!program.goalIds.includes(spec.id)) program.goalIds.push(spec.id)
@@ -195,7 +206,10 @@ export class TaskRuntime {
     for (const id of program.activeGoalIds) {
       if (!nextIds.has(id)) {
         const old = this.goals.get(id)
-        if (old?.status === 'active') old.status = 'cancelled'
+        if (old?.status === 'active') {
+          old.status = 'cancelled'
+          old.facts.cancelReason = `已被后续命令替换：${lease.goals.map(goal => goal.rawText).join('；')}`
+        }
       }
     }
     program.activeGoalIds = []
@@ -208,7 +222,7 @@ export class TaskRuntime {
         const ids = spec.kind === 'combat' ? this.formations.membersOf(spec.formationId) : spec.unitIds
         goal.facts.members = this.latest!.self.filter(u => ids.includes(u.id)).map(u => ({ id: u.id, name: u.name, rx: u.rx, ry: u.ry }))
       }
-      goal.facts.initialized = true
+      goal.facts.initialized = spec.kind !== 'combat' || goal.facts.members.length > 0
       program.activeGoalIds.push(spec.id)
     }
     program.script = { code, version: (program.script?.version ?? 0) + 1, hash: codeHash(code), ...(promptVersion ? { promptVersion } : {}) }
@@ -232,10 +246,11 @@ export class TaskRuntime {
   releaseCommand(lease: CompileLease): void { if (this.pending.get(lease.ownerId)?.lease === lease) this.cancelCommand(lease.ownerId) }
   cancelAllCommands(): void { for (const id of this.pending.keys()) this.cancelCommand(id) }
 
-  async cancelGoal(id: string): Promise<void> {
+  async cancelGoal(id: string, reason = '玩家已取消该目标'): Promise<void> {
     const goal = this.goals.get(id)
     if (!goal || goal.status === 'cancelled') return
     goal.status = 'cancelled'
+    goal.facts.cancelReason = reason
     const program = this.programs.get(goal.ownerId)!
     program.goalIds = program.goalIds.filter(g => g !== id)
     program.activeGoalIds = program.activeGoalIds.filter(g => g !== id)
@@ -265,7 +280,7 @@ export class TaskRuntime {
     this.cancelCommand(program.id)
     program.status = 'stopped'
     program.generation++
-    await Promise.all(goals.map(g => this.cancelGoal(g)))
+    await Promise.all(goals.map(g => this.cancelGoal(g, `${program.id} 脚本已停止`)))
   }
   pause(id: string): void {
     this.cancelCommand(id)
@@ -333,13 +348,24 @@ export class TaskRuntime {
     if (spec.kind === 'formation') {
       const r = spec.request
       const ids = r.kind === 'dissolveFormation' ? this.formations.membersOf(r.formationId) : r.unitIds
-      const allowed = alive(ids).filter(id => !spec.sourceOwners || spec.sourceOwners.some(([unit, from]) => unit === id && (this.formations.ownerOf(id) ?? null) === from))
-      return { ...base, management: { kind: r.kind, formationId: r.formationId, allowedUnitIds: allowed, maxUnits: ids.length, exact: true, ...(r.kind === 'createFormation' ? { force: !!r.force } : {}) } }
+      const needed = r.kind === 'dissolveFormation' ? ids : ids.filter(id => this.formations.ownerOf(id) !== r.formationId)
+      const allowed = alive(needed).filter(id => !spec.sourceOwners || spec.sourceOwners.some(([unit, from]) => unit === id && (this.formations.ownerOf(id) ?? null) === from))
+      const kind = r.kind === 'createFormation' && this.formations.list().some(formation => formation.id === r.formationId) ? 'transferUnits' : r.kind
+      return { ...base, management: { kind, formationId: r.formationId, allowedUnitIds: allowed, maxUnits: needed.length, exact: true, ...(kind === 'createFormation' && r.kind === 'createFormation' ? { force: !!r.force } : {}) } }
     }
     const target = snap.self.filter(u => u.name === spec.name && this.formations.ownerOf(u.id) === spec.formationId).length
     const unknown = new Set(this.production.filter(r => r.state === 'unknown' || r.state === 'reserved').flatMap(r => r.observedIds))
     const ids = snap.self.filter(u => u.name === spec.name && (this.formations.ownerOf(u.id) ?? null) === spec.source && !this.locked(u.id) && !unknown.has(u.id)).map(u => u.id)
     return { ...base, management: { kind: 'transferUnits', formationId: spec.formationId, allowedUnitIds: ids, maxUnits: Math.max(0, spec.targetSize - target) } }
+  }
+
+  private movementArrival(spec: GoalSpec, snap: Snapshot) {
+    const destination = spec.kind === 'combat' ? spec.route?.[this.goals.get(spec.id)?.facts.routeIndex ?? 0] ?? spec.destination
+      : spec.kind === 'rally' ? { x: spec.x, y: spec.y } : undefined
+    if (!destination) return undefined
+    const ids = new Set(spec.kind === 'combat' ? this.formations.membersOf(spec.formationId)
+      : spec.kind === 'rally' ? spec.unitIds.filter(id => !this.formations.ownerOf(id)) : [])
+    return assessArrival(snap.self.filter(unit => ids.has(unit.id)), destination, id => this.locked(id))
   }
 
   private frame(program: ProgramState, specs: GoalSpec[], snap: Snapshot, running = false): { snapshot: Snapshot; constraints: StepConstraints } {
@@ -350,7 +376,10 @@ export class TaskRuntime {
       const constraints = this.goalConstraints(spec, snap)
       goals[spec.id] = constraints
       const progress = spec.kind === 'production' ? productionProgress(spec, this.production, snap) : undefined
-      const view: GoalView = { spec, unitIds: constraints.management?.allowedUnitIds ?? constraints.allowedUnitIds, produceRemaining: constraints.produceRemaining ?? {}, submitted: progress?.sent ?? {}, observed: progress?.observed ?? {}, uncertain: progress?.uncertain ?? [], lossRatio: facts.lossRatio, retreatActive: facts.retreatTriggered }
+      const currentSpec = spec.kind === 'combat' && spec.route ? { ...spec, destination: spec.route[Math.min(facts.routeIndex ?? 0, spec.route.length - 1)]! } : spec
+      const view: GoalView = { spec: currentSpec, unitIds: constraints.management?.allowedUnitIds ?? constraints.allowedUnitIds, produceRemaining: constraints.produceRemaining ?? {}, submitted: progress?.sent ?? {}, observed: progress?.observed ?? {}, uncertain: progress?.uncertain ?? [], lossRatio: facts.lossRatio, retreatActive: facts.retreatTriggered }
+      const arrival = this.movementArrival(spec, snap)
+      if (arrival) view.arrival = arrival
       if (spec.kind === 'production' && progress) {
         const missingPrerequisites = snap.production?.available.includes(spec.target) ? [] : spec.prerequisites.filter(name => !snap.self.some(unit => unit.type === 2 && unit.name === name))
         view.productionPlan = {
@@ -362,6 +391,7 @@ export class TaskRuntime {
       }
       const blocked = progress?.blocked ?? facts.blocked
       if (blocked) view.blocked = blocked
+      if (spec.kind === 'combat' && !this.formations.list().some(formation => formation.id === spec.formationId)) view.blocked = `等待 ${spec.formationId} 编队完成`
       if (constraints.management) view.maxUnits = constraints.management.maxUnits
       if (constraints.management?.exact && constraints.management.allowedUnitIds.length !== constraints.management.maxUnits) view.blocked = '成员或来源已变化，请重新下达管理命令'
       views.push(view)
@@ -377,6 +407,11 @@ export class TaskRuntime {
     for (const goal of this.goals.values()) {
       const spec = goal.activeSpec
       if (spec?.kind !== 'combat') continue
+      if (!goal.facts.initialized) {
+        const ids = this.formations.membersOf(spec.formationId)
+        goal.facts.members = snap.self.filter(unit => ids.includes(unit.id)).map(unit => ({ id: unit.id, name: unit.name, rx: unit.rx, ry: unit.ry }))
+        goal.facts.initialized = goal.facts.members.length > 0
+      }
       const occupied = new Set(goal.facts.members.map(m => m.id))
       let dead = 0
       for (const member of goal.facts.members) {
@@ -401,15 +436,17 @@ export class TaskRuntime {
         if (!spec.maintainPower && assigned && (progress.observed[spec.target]?.length ?? 0) >= spec.quantity && !progress.uncertain.includes(spec.target)) this.complete(goal)
       } else if (spec.kind === 'deploy') {
         if (goal.facts.members.some(m => snap.self.some(u => u.name === spec.target && Math.hypot(u.rx - m.rx, u.ry - m.ry) <= 3))) this.complete(goal)
+      } else if (spec.kind === 'formation' && spec.request.kind !== 'dissolveFormation') {
+        if (spec.request.unitIds.every(id => this.formations.ownerOf(id) === spec.request.formationId && !this.locked(id))) this.complete(goal)
       } else if (spec.kind === 'rally') {
-        const units = snap.self.filter(u => spec.unitIds.includes(u.id))
-        if (units.length && units.every(u => Math.hypot(u.rx - spec.x, u.ry - spec.y) <= 1)) this.complete(goal)
+        if (this.movementArrival(spec, snap)?.reached) this.complete(goal)
       } else if (spec.kind === 'combat' && spec.destination && !spec.attackRegion && spec.mode !== 'hold' && spec.mode !== 'assault') {
-        const members = this.formations.membersOf(spec.formationId)
-        const units = snap.self.filter(unit => members.includes(unit.id))
-        // 同一格不能容纳整个编队；以所有存活成员进入目的地附近相邻格确认到达。
-        const radius = Math.max(2, Math.ceil(Math.sqrt(units.length)))
-        if (units.length && units.every(unit => !this.locked(unit.id) && Math.hypot(unit.rx - spec.destination!.x, unit.ry - spec.destination!.y) <= radius)) this.complete(goal)
+        if (this.movementArrival(spec, snap)?.reached) {
+          if (spec.route) {
+            goal.facts.routeIndex = (goal.facts.routeIndex ?? 0) + 1
+            if (goal.facts.routeIndex >= spec.route.length) this.complete(goal)
+          } else this.complete(goal)
+        }
       }
     }
     // 旧状态恢复时，所有目标可能早已完成；不要保留无活动目标的 active 状态。
@@ -497,7 +534,7 @@ export class TaskRuntime {
       if (program) {
         this.cancelCommand(program.id)
         program.generation++; program.status = 'stopped'
-        for (const id of [...program.activeGoalIds, ...program.goalIds]) { const g = this.goals.get(id); if (g) g.status = 'cancelled' }
+        for (const id of [...program.activeGoalIds, ...program.goalIds]) { const g = this.goals.get(id); if (g) { g.status = 'cancelled'; g.facts.cancelReason = `编队 ${request.formationId} 已解散` } }
         program.activeGoalIds = []; program.goalIds = []
       }
       this.formations.dissolve(request.formationId)
@@ -561,7 +598,13 @@ export class TaskRuntime {
       let record: ProductionRecord | undefined
       if (request.kind === 'produce') {
         const spec = goal.activeSpec
-        record = { id: randomUUID(), goalId: item.goalId, name: request.name, quantity: request.quantity, building: spec.kind === 'production' && (request.name !== spec.target || spec.targetType === 2), queueType: fresh.constraints.goals![item.goalId]!.productionQueueTypes![request.name]!, state: 'reserved', observedIds: [], placed: false }
+        // 同一句话明确要求的建筑也可能先被其他目标当作前置生产；统一记到该建设目标，避免换代码后再造一遍。
+        const target = spec.kind === 'production' && request.name !== spec.target ? [...this.goals.values()].find(candidate => {
+          const desired = candidate.activeSpec ?? candidate.spec
+          return !['cancelled', 'completed'].includes(candidate.status) && desired.kind === 'production' && !desired.maintainPower && desired.target === request.name
+            && (productionProgress(desired, this.production, snap).remaining[request.name] ?? 0) >= request.quantity
+        }) : undefined
+        record = { id: randomUUID(), goalId: target?.spec.id ?? item.goalId, name: request.name, quantity: request.quantity, building: spec.kind === 'production' && (request.name !== spec.target || spec.targetType === 2), queueType: fresh.constraints.goals![item.goalId]!.productionQueueTypes![request.name]!, state: 'reserved', observedIds: [], placed: false }
         this.production.push(record)
         try { await this.deps.checkpoint() }
         catch (err) { record.state = 'rejected'; goal.facts.blocked = `生产预留保存失败: ${String(err)}`; return }
@@ -570,6 +613,11 @@ export class TaskRuntime {
       const guard = () => valid() && goal.status === 'active' && goal.activeSpec === this.goals.get(item.goalId)?.activeSpec
       try {
         const results = await this.deps.submit([request], snap, guard)
+        if (request.kind === 'place' && results.length && results.every(result => !result.ok && result.submitted === 0 && ['no-spot', 'cannot-place'].includes(result.reason ?? ''))) {
+          goal.facts.blocked = `${request.name} 暂无可放置位置，保留就绪建筑并继续重试`
+          program.stats.rejected++
+          continue
+        }
         if (request.kind !== 'produce' && results.some(result => !result.ok && ['invisible-target', 'invalid-units', 'stale-snapshot', 'stale-session'].includes(result.reason ?? ''))) continue
         if (!results.length || results.some(r => !r.ok)) {
           const notSent = !results.length || results.every(r => !r.ok && r.submitted === 0 && ['stale-session', 'stale-snapshot', 'revoked-or-no-snapshot', 'no-api'].includes(r.reason ?? ''))

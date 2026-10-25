@@ -7,7 +7,7 @@ export type CommandSource = 'sidebar' | 'cli' | 'restored'
 export interface GoalExecution {
   state: 'running' | 'continuous' | 'completed' | 'blocked' | 'paused' | 'faulted' | 'cancelled'
   detail?: string
-  progress?: { completed: number; total: number }
+  progress?: { completed: number; total: number; label?: string }
 }
 
 export interface CommandEvent {

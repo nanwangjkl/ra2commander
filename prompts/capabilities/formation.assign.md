@@ -15,7 +15,7 @@
     },
     "selector": {
       "type": "string",
-      "description": "兵种原生名称/显示名，或 tanks、infantry、vehicles、aircraft、all",
+      "description": "兵种原生名称/显示名，或 combat（战斗单位，排除矿车等辅助单位）、tanks、infantry、vehicles、aircraft、all",
       "default": "all"
     },
     "quantity": {
@@ -38,3 +38,5 @@
 使用现有单位；目标编队不存在时建立，存在时转入。按数量编入优先未编队单位；数量不足先编入可用部分并反馈缺额，禁止把不足转换为生产。
 “5个坦克编入1队”：selector=tanks、quantity=5、formationId=1队。“所有坦克编入1队”：selector=tanks、quantity=all，可合并其他队伍。已在目标队内的不重复转入。也支持步兵、车辆、空军及具体兵种。
 摘要来自实际选中成员，明确这是现有单位。完成以成员归属与停车交接确认。
+
+“所有战斗单位编入1队”只用一个 selector=combat 调用，不拆成 tanks 和 vehicles。combat 按当前武器与辅助角色识别，包含灰熊和多功能步兵车，排除矿车、基地车、工程师和建筑。同句话对同一队的多个选择会合并并去重，再统一交接；同句后续移动可等待该队建立。

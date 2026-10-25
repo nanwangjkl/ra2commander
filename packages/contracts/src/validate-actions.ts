@@ -10,9 +10,14 @@ export function liveScriptActions(value: ScriptAction[], c: StepConstraints, sna
     const goal = c.goals?.[item.goalId]
     if (!goal) return []
     const action = item.request
+    if (action.kind === 'produce' && typeof action.name === 'string' && Number.isSafeInteger(action.quantity) && action.quantity > 0 && goal.produceRemaining?.[action.name] === 0) return []
     if (action.kind === 'attack' && Number.isSafeInteger(action.targetId) && !goal.enemyIds.includes(action.targetId)) return []
     if ('unitIds' in action && Array.isArray(action.unitIds) && action.unitIds.length && action.unitIds.every(id => Number.isSafeInteger(id))) {
-      if (['createFormation', 'transferUnits'].includes(action.kind)) return action.unitIds.every(id => goal.management?.allowedUnitIds.includes(id)) ? [item] : []
+      if (['createFormation', 'transferUnits'].includes(action.kind)) {
+        const management = goal.management
+        if (management?.exact && management.allowedUnitIds.length !== management.maxUnits) return []
+        return action.unitIds.every(id => management?.allowedUnitIds.includes(id)) ? [item] : []
+      }
       const unitIds = action.unitIds.filter(id => goal.allowedUnitIds.includes(id))
       if (!unitIds.length) return []
       if (action.kind === 'attackMove' && goal.targetRegion && snapshot && inTargetRegion(action.x, action.y, goal.targetRegion)

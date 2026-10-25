@@ -14,12 +14,13 @@ export function chineseNumber(value: string): number {
   return digits.indexOf(value)
 }
 export const normalizeName = (value: string): string => value.normalize('NFKC').replace(/^@/, '').replace(/\s+/g, '').replace(/([1-9])楼/g, (_match, n: string) => `${digits[Number(n)]}楼`)
-const formationAlias = (value: string) => normalizeName(value).replace(/^([\d一二三四五六七八九十两]+)队$/, (_match, n: string) => `${chineseNumber(n)}队`)
-export function formationName(ctx: CommandContext, value: string, allowNew = false): string {
+export const formationAlias = (value: string) => normalizeName(value).replace(/^([\d一二三四五六七八九十两]+)队$/, (_match, n: string) => `${chineseNumber(n)}队`)
+export function formationName(ctx: CommandContext, value: string, allowNew = false, allowPending = false): string {
   const normalized = formationAlias(value)
   const existing = ctx.formations.list().find(formation => formation.id === value.replace(/^@/, ''))
     ?? ctx.formations.list().find(formation => formationAlias(formation.id) === normalized)
   if (existing) return existing.id
+  if (allowPending && ctx.runtime.hasPlannedFormation(normalized)) return normalized
   if (allowNew) return normalized
   throw new Error(`编队不存在：${value}`)
 }
@@ -33,6 +34,10 @@ export function resolveOwner(ctx: CommandContext, token: string): string {
   throw new Error(`控制对象或任务标签不存在：${token}`)
 }
 
+export function isCombatUnit(unit: SnapshotUnit, catalog?: GameCatalog, profile?: GameProfile): boolean {
+  if (![1, 3, 7].includes(unit.type) || (!unit.primaryWeapon && !unit.secondaryWeapon)) return false
+  return !['harvester', 'constructionVehicle', 'engineer'].some(role => catalog ? catalog.isRole(unit.name, role, unit.type) : profile?.rolesFor(unit.name, unit.type).includes(role))
+}
 export function selectUnits(ctx: CommandContext, params: { selector?: string; unitIds?: number[]; sourceFormationId?: string }, catalog?: GameCatalog, profile?: GameProfile): SnapshotUnit[] {
   const snap = ctx.runtime.snapshot!
   const source = params.sourceFormationId ? formationName(ctx, params.sourceFormationId) : undefined
@@ -45,6 +50,7 @@ export function selectUnits(ctx: CommandContext, params: { selector?: string; un
     if (['infantry', '步兵', '所有步兵'].includes(selector)) return unit.type === 3
     if (['vehicles', '车辆', '所有车辆'].includes(selector)) return unit.type === 7
     if (['aircraft', '空军', '飞机'].includes(selector)) return unit.type === 1
+    if (['combat', '战斗单位', '作战单位', '所有战斗单位'].includes(selector)) return isCombatUnit(unit, catalog, profile)
     if (catalog) return catalog.matchesUnit(unit, selector)
     const role = profile?.roleForAlias(selector)
     return role ? !!profile?.rolesFor(unit.name, unit.type).includes(role) : unit.name.toLowerCase() === selector
@@ -78,7 +84,17 @@ export async function regionDestination(ctx: CommandContext, name: string, check
   }
   throw new Error('未找到分区内部的候选目的地')
 }
-export async function destination(ctx: CommandContext, params: { regionName?: string; x?: number; y?: number }, check: () => void) {
+export async function destination(ctx: CommandContext, params: { regionName?: string; x?: number; y?: number }, check: () => void, catalog?: GameCatalog | (() => Promise<GameCatalog>)) {
+  if (params.regionName && /^(?:我方)?(?:基地|家)(?:附近|旁边|周围|里)?$/.test(normalizeName(params.regionName))) {
+    const known = typeof catalog === 'function' ? await catalog() : catalog
+    const snap = ctx.runtime.snapshot!
+    const own = snap.self.slice().sort((a, b) => a.id - b.id)
+    const base = own.find(unit => known?.isRole(unit.name, 'constructionYard', unit.type))
+      ?? own.find(unit => known?.isRole(unit.name, 'constructionVehicle', unit.type))
+    if (!base) throw new Error('当前未找到己方建造厂或基地车')
+    check()
+    return { x: Math.min(snap.mapWidth - 1, Math.max(0, Math.round(base.rx + 4))), y: Math.min(snap.mapHeight - 1, Math.max(0, Math.round(base.ry + 4))), name: '基地附近' }
+  }
   if (params.regionName) return (await regionDestination(ctx, params.regionName, check)).destination
   if (params.x === undefined || params.y === undefined) throw new Error('缺少目的地分区或完整坐标')
   checkPoint(ctx.runtime.snapshot!, params.x, params.y)

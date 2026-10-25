@@ -4,7 +4,7 @@
 {
   "id": "ra2web-gonghui",
   "name": "ra2web 共和国之辉",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "factions": [
     {
       "id": "allied",
@@ -436,6 +436,23 @@
           "naval"
         ]
       }
+    },
+    {
+      "id": "infantryFightingVehicle",
+      "aliases": [
+        "ifv",
+        "多功能步兵车",
+        "多功能车",
+        "步兵战车"
+      ],
+      "members": [
+        {
+          "name": "FV",
+          "type": 7,
+          "factions": ["allied"],
+          "aliases": ["ifv", "多功能步兵车", "多功能车", "步兵战车"]
+        }
+      ]
     },
     {
       "id": "scoutDog",

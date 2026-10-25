@@ -38,8 +38,11 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
   const state: CapabilityExecution = { goals: [], choices: [], effects: [], skipped: [], results: [], summary: '' }
   const owners = new Set<string>(), suppressed = new Set<string>(), goalOwners = new Map<string, string>()
   const accepted: string[] = []
+  const acceptedGoals = new Map<string, number>()
   let catalog = options.catalog ? Promise.resolve(options.catalog) : undefined
   const context: BindingContext = { ctx, text: options.text, check,
+    formationGoals: new Map(),
+    movementGoals: new Map(),
     game: prompts.game,
     knownCatalog: options.catalog,
     catalog: () => catalog ??= loadGameCatalog(ctx, check, prompts.game),
@@ -58,13 +61,25 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
       for (const item of result.goals ?? []) {
         const existing = ctx.runtime.goals.get(item.goal.id)
         const track = !existing
+        const tracked = state.goals.findIndex(goal => goal.id === item.goal.id)
         if (track) { state.goals.push(item.goal); state.choices.push(item.choice) }
         try {
           const owner = ctx.runtime.upsertGoal(item.goal)
+          if (item.goal.kind === 'formation' && item.goal.request.kind !== 'dissolveFormation') context.formationGoals.set(item.goal.request.formationId, item.goal)
+          if (item.goal.kind === 'combat') {
+            if (call.capability === 'combat.move' && item.goal.destination) context.movementGoals.set(item.goal.formationId, item.goal)
+            else context.movementGoals.delete(item.goal.formationId)
+          }
           owners.add(owner); suppressed.delete(owner)
-          accepted.push(item.choice)
-          if (track) { goalOwners.set(item.goal.id, owner); emit({ stage: 'bound', goalId: item.goal.id, owner, choice: item.choice }) }
-          else state.effects.push(item.choice) // 改已有目标不夺走原命令卡片的进度绑定。
+          if (tracked >= 0) {
+            state.goals[tracked] = item.goal; state.choices[tracked] = item.choice
+            accepted[acceptedGoals.get(item.goal.id)!] = item.choice
+            emit({ stage: 'bound', goalId: item.goal.id, owner, choice: item.choice })
+          } else if (track) {
+            acceptedGoals.set(item.goal.id, accepted.length); accepted.push(item.choice)
+            goalOwners.set(item.goal.id, owner); emit({ stage: 'bound', goalId: item.goal.id, owner, choice: item.choice })
+          }
+          else { accepted.push(item.choice); state.effects.push(item.choice) } // 改已有目标不夺走原命令卡片的进度绑定。
         } catch (error) { state.skipped.push(String(error)); emit({ stage: 'failed', goalId: item.goal.id, choice: item.choice, error: `目标绑定失败：${String(error)}` }) }
       }
       for (const owner of result.refreshOwners ?? []) { owners.add(owner); suppressed.delete(owner) }

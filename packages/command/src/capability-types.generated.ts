@@ -1,11 +1,11 @@
 // 由 prompts/capabilities/*.md 生成；修改定义后运行 pnpm capabilities:generate。
-export const CAPABILITY_CONTRACT_VERSION = 'e054939867838fd33f3f352dd52649b774ea4277096148e631c266f1ee4d7de3'
+export const CAPABILITY_CONTRACT_VERSION = '9b2025382c3c9f686cf93566c8e6517f7554cf05f359547181bd6ba7837b22a4'
 export interface CapabilityParameters {
   "base.deploy": Record<string, never>
   "combat.attack-all": { formationId?: string }
   "combat.clear-region": { formationId: string; regionName: string }
   "combat.hold": { formationId: string; regionName?: string; bounds?: number[]; mode?: "hold" | "assault" | "move"; retreatLoss?: number; retreatX?: number; retreatY?: number; label?: string }
-  "combat.move": { formationId: string; regionName?: string; x?: number; y?: number; bounds?: number[]; label?: string }
+  "combat.move": { formationId: string; regionName?: string; x?: number; y?: number; bounds?: number[]; label?: string; patrol?: boolean }
   "control.pause": { scope?: "formation" | "global" | "all" | "units"; formationId?: string; selector?: string; unitIds?: number[] }
   "control.resume": { scope?: "formation" | "global" | "all" | "units"; formationId?: string; selector?: string; unitIds?: number[] }
   "control.stop": { scope?: "formation" | "global" | "all" | "units"; formationId?: string; selector?: string; unitIds?: number[] }
@@ -25,7 +25,7 @@ export interface ResolvedCapabilityParameters {
   "combat.attack-all": { formationId?: string }
   "combat.clear-region": { formationId: string; regionName: string }
   "combat.hold": { formationId: string; regionName?: string; bounds?: number[]; mode: "hold" | "assault" | "move"; retreatLoss?: number; retreatX?: number; retreatY?: number; label?: string }
-  "combat.move": { formationId: string; regionName?: string; x?: number; y?: number; bounds?: number[]; label?: string }
+  "combat.move": { formationId: string; regionName?: string; x?: number; y?: number; bounds?: number[]; label?: string; patrol: boolean }
   "control.pause": { scope: "formation" | "global" | "all" | "units"; formationId?: string; selector: string; unitIds?: number[] }
   "control.resume": { scope: "formation" | "global" | "all" | "units"; formationId?: string; selector: string; unitIds?: number[] }
   "control.stop": { scope: "formation" | "global" | "all" | "units"; formationId?: string; selector: string; unitIds?: number[] }

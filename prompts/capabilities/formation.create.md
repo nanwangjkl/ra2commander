@@ -15,7 +15,7 @@
     },
     "selector": {
       "type": "string",
-      "description": "兵种原生名称/显示名，或 tanks、infantry、vehicles、aircraft、all",
+      "description": "兵种原生名称/显示名，或 combat（战斗单位，排除矿车等辅助单位）、tanks、infantry、vehicles、aircraft、all",
       "default": "all"
     },
     "unitIds": {

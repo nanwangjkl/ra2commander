@@ -9,6 +9,8 @@ export interface GoalFacts {
   /** 已完成生产被追加总量时，保留前次完成事实供待生效/失败状态展示。 */
   completedQuantity?: number
   blocked?: string
+  cancelReason?: string
+  routeIndex?: number
 }
 export interface GoalState {
   ownerId: string
