@@ -65,7 +65,8 @@ export class TaskRuntime {
     if (goal.status === 'cancelled') return { state: 'cancelled', detail: '目标已取消或被替换' }
     const program = this.programs.get(goal.ownerId)
     const spec = goal.activeSpec
-    if (!spec || !program?.activeGoalIds.includes(id) || !this.latest) return undefined
+    if (!spec && goal.status === 'pending' && goal.facts.completedQuantity !== undefined) return { state: 'completed', detail: `前次${goal.facts.completedQuantity}个已完成，新增总量待生效` }
+    if (!spec || !program?.activeGoalIds.includes(id) || !this.latest) return program?.status === 'paused' ? { state: 'paused', detail: '目标保留，脚本已暂停' } : undefined
     if (program.status === 'paused') return program.stats.errors >= 3 && program.stats.lastError
       ? { state: 'faulted', detail: `脚本运行出错，已暂停：${program.stats.lastError}` } : { state: 'paused', detail: '脚本已暂停' }
     if (program.status === 'stopped') return { state: 'cancelled', detail: '脚本已停止' }
@@ -74,7 +75,7 @@ export class TaskRuntime {
       ? { completed: Math.min(spec.quantity, view.observed[spec.target]?.length ?? 0), total: spec.quantity } : undefined
     const detail = view.blocked ?? (view.uncertain.length ? `提交结果待确认：${view.uncertain.join('、')}` : undefined)
     if (detail) return { state: 'blocked', detail, ...(progress ? { progress } : {}) }
-    const continuous = (spec.kind === 'production' && !!spec.maintainPower) || spec.kind === 'reinforce' || (spec.kind === 'combat' && !spec.destination && !spec.attackRegion)
+    const continuous = (spec.kind === 'production' && !!spec.maintainPower) || spec.kind === 'reinforce' || (spec.kind === 'combat' && (spec.mode === 'hold' || spec.mode === 'assault' || (!spec.destination && !spec.attackRegion)))
     return { state: continuous ? 'continuous' : 'running', ...(progress ? { progress } : {}) }
   }
 
@@ -131,8 +132,14 @@ export class TaskRuntime {
     if (old && (old.ownerId !== program.id || old.spec.kind !== spec.kind || old.status === 'cancelled')) throw new Error('不能复用其他对象或已取消目标的 ID')
     if (old?.status === 'completed' && spec.kind !== 'production') throw new Error('该目标已完成，请建立新目标')
     if (old) {
+      const completedQuantity = old.status === 'completed' && old.spec.kind === 'production' ? old.activeSpec?.kind === 'production' ? old.activeSpec.quantity : old.spec.quantity : undefined
       old.spec = structuredClone(spec)
-      if (old.status === 'completed') old.status = 'pending'
+      if (old.status === 'completed') {
+        if (completedQuantity !== undefined) old.facts.completedQuantity = completedQuantity
+        old.status = 'pending'
+        delete old.activeSpec
+        program.activeGoalIds = program.activeGoalIds.filter(id => id !== spec.id)
+      }
       old.facts.done = false
     } else this.goals.set(spec.id, { ownerId: program.id, spec: structuredClone(spec), status: 'pending', facts: emptyFacts() })
     if (owner.kind === 'formation') {
@@ -388,7 +395,7 @@ export class TaskRuntime {
       } else if (spec.kind === 'rally') {
         const units = snap.self.filter(u => spec.unitIds.includes(u.id))
         if (units.length && units.every(u => Math.hypot(u.rx - spec.x, u.ry - spec.y) <= 1)) this.complete(goal)
-      } else if (spec.kind === 'combat' && spec.destination && !spec.attackRegion) {
+      } else if (spec.kind === 'combat' && spec.destination && !spec.attackRegion && spec.mode !== 'hold' && spec.mode !== 'assault') {
         const members = this.formations.membersOf(spec.formationId)
         const units = snap.self.filter(unit => members.includes(unit.id))
         // 同一格不能容纳整个编队；以所有存活成员进入目的地附近相邻格确认到达。

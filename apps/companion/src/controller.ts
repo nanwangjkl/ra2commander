@@ -107,7 +107,7 @@ export class ProgramController {
         // 普通改令失败时旧脚本继续；不能把其中已有的有效目标也标成失败。
         const goalIds = lease.goals.filter(spec => {
           const goal = runtime.goals.get(spec.id)
-          return goal && JSON.stringify(goal.spec) !== JSON.stringify(goal.activeSpec)
+          return goal && !goal.activeSpec
         }).map(spec => spec.id)
         runtime.failCompile(lease, String(err))
         const detail = err instanceof CompileError ? err.log.at(-1)?.errors.join('；') : undefined

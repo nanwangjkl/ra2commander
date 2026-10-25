@@ -12,16 +12,18 @@ import { code, harness, outcome, production, snapshot } from './helpers.ts'
 const markdown = (name: string) => readFileSync(new URL(`../prompts/templates/${name}`, import.meta.url), 'utf8').trim()
 
 function fixture() {
-  const directory = mkdtempSync(join(tmpdir(), 'ra2c-prompts-'))
+  const root = mkdtempSync(join(tmpdir(), 'ra2c-prompts-'))
+  const directory = join(root, 'templates')
   cpSync(new URL('../prompts/templates/', import.meta.url), directory, { recursive: true })
+  cpSync(new URL('../prompts/capabilities/', import.meta.url), join(root, 'capabilities'), { recursive: true })
   const url = pathToFileURL(directory + sep)
-  return { directory, url, loader: new PromptLoader(url), dispose: () => rmSync(directory, { recursive: true, force: true }) }
+  return { directory, url, loader: new PromptLoader(url), dispose: () => rmSync(root, { recursive: true, force: true }) }
 }
 
 test('提示词来自 Markdown，限定变量渲染且相同内容复用版本缓存', () => {
   const prompts = loadPrompts()
   assert.match(prompts.version, /^sha256:[0-9a-f]{16}$/)
-  assert.equal(prompts.render('interpret'), markdown('interpret.md'))
+  assert.equal(prompts.render('interpret'), markdown('interpret.md').replace('{{capabilities}}', () => prompts.capabilities.render()))
   assert.equal(prompts.render('compile'), markdown('compile.md'))
   assert.equal(prompts.render('repair', { error: '运行失败' }), markdown('repair.md').replace('{{error}}', '运行失败'))
   assert.equal(prompts.render('validationFeedback', { errors: '语法错误' }), markdown('validation-feedback.md').replace('{{errors}}', '语法错误'))
@@ -35,7 +37,8 @@ test('改动在下一次加载生效，错误文件保留整套旧提示，严�
   const previousCwd = process.cwd()
   try {
     process.chdir(files.directory)
-    assert.equal(loadPrompts().render('interpret'), markdown('interpret.md'))
+    const current = loadPrompts()
+    assert.equal(current.render('interpret'), markdown('interpret.md').replace('{{capabilities}}', () => current.capabilities.render()))
     const first = files.loader.load()
     writeFileSync(join(files.directory, 'compile.md'), '新版生成说明')
     writeFileSync(join(files.directory, 'repair.md'), '错误模板 {{typo}}')
@@ -50,6 +53,16 @@ test('改动在下一次加载生效，错误文件保留整套旧提示，严�
     assert.equal(next.render('compile'), '新版生成说明')
     assert.equal(first.render('compile'), markdown('compile.md'))
     assert.equal(files.loader.load(), next)
+    const ability = join(files.directory, '../capabilities/formation.assign.md')
+    const original = readFileSync(ability, 'utf8')
+    writeFileSync(ability, original + '\n额外的编队说明。\n')
+    const changed = files.loader.load()
+    assert.notEqual(changed.version, next.version)
+    assert.ok(changed.render('interpret').includes('额外的编队说明。'))
+    assert.ok(!next.render('interpret').includes('额外的编队说明。'))
+    writeFileSync(ability, original.replace('"allowAll": true', '"allowAll": false'))
+    assert.equal(files.loader.load({ onFallback: error => warnings.push(error.message) }), changed)
+    assert.match(warnings.at(-1)!, /能力定义错误|capabilities:generate/)
   } finally { process.chdir(previousCwd); files.dispose() }
 })
 

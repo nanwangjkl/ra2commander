@@ -6,6 +6,8 @@ export interface GoalFacts {
   lossRatio: number
   retreatTriggered: boolean
   done: boolean
+  /** 已完成生产被追加总量时，保留前次完成事实供待生效/失败状态展示。 */
+  completedQuantity?: number
   blocked?: string
 }
 export interface GoalState {

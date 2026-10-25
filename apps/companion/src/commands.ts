@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import type { Browser, Page } from 'playwright'
@@ -11,12 +10,14 @@ import { combatOptions, productionOptions } from './command-options.ts'
 import { loadRegionScheme, type MapRegionIndex } from '../../../packages/maps/src/index.ts'
 import { runTranscript } from './transcript.ts'
 import type { CommandLog } from './command-log.ts'
+import { executeCapabilities, executeCapability, executionText, loadCommandPrompts } from './capabilities/index.ts'
 const ROOT = resolve(import.meta.dirname, '../../..')
 
 export function usage(): string {
   return [
     '命令：',
     '  say <文字>             把文字作为模拟语音转写，解析目标并生成脚本',
+    '  cap list / cap <能力ID> <JSON参数>  统一玩家能力入口',
     '  map use ice            手动重新绑定冰天雪地分区（当前默认自动绑定）',
     '  status                 桥状态、会话代次、采样统计',
     '  units [n]              列出最近快照中的己方单位（默认前 20）',
@@ -80,15 +81,6 @@ export interface CommandContext {
 }
 
 const TYPE_LABEL: Record<number, string> = { 1: '空军', 2: '建筑', 3: '步兵', 7: '车辆' }
-
-function resolveOwner(token: string, ctx: CommandContext): string {
-  if (token === 'global' || ctx.runtime.programs.has(token)) return token
-  const formation = token.startsWith('@') ? token.slice(1) : token
-  if (ctx.runtime.programs.has(ownerId({ kind: 'formation', formationId: formation }))) return ownerId({ kind: 'formation', formationId: formation })
-  const goal = [...ctx.runtime.goals.values()].reverse().find(g => g.spec.id === token || g.spec.label === token)
-  if (goal) return goal.ownerId
-  throw new Error('控制对象或任务标签不存在')
-}
 
 function debugBusy(ids: number[], ctx: CommandContext): boolean {
   return ids.some(id => {
@@ -157,47 +149,26 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       ctx.currentProvider = () => p
       return `编译模型切换为 ${p.config.name} (${p.model})`
     }
+    case 'cap': {
+      if (args[0] === 'list') return loadCommandPrompts().capabilities.definitions().map(definition => `${definition.id} ${definition.name}`).join('\n')
+      if (!args[0]) return '用法: cap list | cap <能力ID> <JSON参数>'
+      const params = JSON.parse(args.slice(1).join(' ') || '{}')
+      return executionText(await executeCapabilities([{ capability: args[0], params }], ctx, { text: line }))
+    }
     case 'form': {
-      const sub = args[0]
-      const snap = bridge.latest
+      const sub = args[0], name = args[1], filter = args[2]
+      if (sub === 'list') return ctx.formations.list().map(formation => `  ${formation.id}: 成员 ${formation.memberIds.length}/${formation.originalMemberIds.length}（原始基准）`).join('\n') || '（无编队）'
       if (sub === 'create') {
-        const name = args[1]
-        const filter = args[2]
         if (!name || !filter) return '用法: form create <名> <ids|tanks|infantry|vehicles|all> [--force]'
-        if (!snap) return '尚无快照'
-        const force = args.includes('--force')
-        const explicitIds = /^[\d,-]+$/.test(filter) ? parseIds(filter, snap) : undefined
-        const matched = snap.self.filter((u) => {
-          if (explicitIds) return explicitIds.includes(u.id)
-          if (u.type === 3) return filter === 'infantry' || filter === 'all'
-          if (u.type === 7) {
-            if (filter === 'vehicles' || filter === 'all') return true
-            // tanks：按规则排除矿车/维修车等非战斗车辆（名称启发式，待规则目录化）。
-            if (filter === 'tanks') return !/HARV|CMIN|MINR|TRUCK|AMBULANCE/i.test(u.name)
-            return false
-          }
-          return false
-        })
-        if (!matched.length) return '没有匹配的单位'
-        return ctx.controller.submit({ id: `form-${randomUUID().slice(0, 8)}`, kind: 'formation', rawText: `建立编队 ${name}`, request: { kind: 'createFormation', formationId: name, unitIds: matched.map(u => u.id), force } })
-      }
-      if (sub === 'list') {
-        const lines = ctx.formations.list().map(
-          (f) => `  ${f.id}: 成员 ${f.memberIds.length}/${f.originalMemberIds.length}（原始基准）`,
-        )
-        return lines.length ? lines.join('\n') : '（无编队）'
+        const ids = /^[\d,-]+$/.test(filter) ? parseIds(filter, bridge.latest) : undefined
+        return executeCapability('formation.create', { formationId: name, ...(ids ? { unitIds: ids } : { selector: filter }), force: args.includes('--force') }, ctx, line)
       }
       if (sub === 'transfer') {
-        const ids = parseIds(args[1] ?? '', snap)
-        const to = args[2]
-        if (!ids?.length || !to) return '用法: form transfer <ids> <编队名>'
-        return ctx.controller.submit({ id: `transfer-${randomUUID().slice(0, 8)}`, kind: 'formation', rawText: `转编到 ${to}`, request: { kind: 'transferUnits', formationId: to, unitIds: ids } })
+        const ids = parseIds(name ?? '', bridge.latest)
+        if (!ids?.length || !filter) return '用法: form transfer <ids> <编队名>'
+        return executeCapability('formation.transfer', { formationId: filter, unitIds: ids }, ctx, line)
       }
-      if (sub === 'dissolve') {
-        const name = args[1]
-        if (!name || !ctx.formations.list().some(f => f.id === name)) return '编队不存在'
-        return ctx.controller.submit({ id: `dissolve-${randomUUID().slice(0, 8)}`, kind: 'formation', rawText: `解散 ${name}`, request: { kind: 'dissolveFormation', formationId: name } })
-      }
+      if (sub === 'dissolve' && name) return executeCapability('formation.dissolve', { formationId: name }, ctx, line)
       return '用法: form create|list|transfer|dissolve …'
     }
     case 'prod': {
@@ -215,23 +186,18 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       const target = args[0]
       if (!target || !/^[A-Za-z0-9_]+$/.test(target)) return '用法: produce <目标名> [数量] [--pause-queues=0,2] [指令]'
       const options = productionOptions(args.slice(1))
-      if (!bridge.latest?.production) return '尚无生产数据（未进局）'
-      const id = `prod-${target}-${randomUUID().slice(0, 8)}`
-      console.log(`[companion] 新增全局目标 ${id}，编译中…`)
-      return ctx.controller.submit({ id, kind: 'production', rawText: `生产 ${options.quantity} 个 ${target}；${options.text}`, target, quantity: options.quantity, prerequisites: [], queues: options.queues })
+      return executeCapability('production.produce', { target, ...(options.quantity !== undefined ? { quantity: options.quantity } : {}), ...(options.queues ? { queues: options.queues } : {}) }, ctx, options.text || line)
     }
     case 'reinforce': {
-      const formationId = args[0]?.replace(/^@/, '')
-      const name = args[1]
-      const targetSize = Number(args[2])
-      const sourceArg = args[3]
-      if (!formationId || !name || !Number.isSafeInteger(targetSize) || targetSize < 1 || (sourceArg && !sourceArg.startsWith('--source=@'))) return '用法: reinforce @编队 <兵种名> <维持数量> [--source=@来源编队]；默认仅用未编队单位'
-      return ctx.controller.submit({ id: `reinforce-${randomUUID().slice(0, 8)}`, kind: 'reinforce', rawText: line, formationId, name, targetSize, source: sourceArg ? sourceArg.slice(10) : null })
+      const formationId = args[0]?.replace(/^@/, ''), target = args[1], targetSize = Number(args[2]), sourceArg = args[3]
+      if (!formationId || !target || !Number.isSafeInteger(targetSize) || targetSize < 1 || (sourceArg && !sourceArg.startsWith('--source=@'))) return '用法: reinforce @编队 <兵种名> <维持数量> [--source=@来源编队]'
+      return executeCapability('management.reinforce', { formationId, target, targetSize, ...(sourceArg ? { sourceFormationId: sourceArg.slice(10) } : {}) }, ctx, line)
     }
     case 'rally': {
+      if (args[0] === 'all') return executeCapability('management.rally', { selector: 'all', x: Number(args[1]), y: Number(args[2]) }, ctx, line)
       const ids = parseIds(args[0] ?? '', bridge.latest)
-      if (!ids?.length) return '用法: rally <ids|all> <x> <y>；仅指挥未编队单位'
-      return ctx.controller.submit({ id: `rally-${randomUUID().slice(0, 8)}`, kind: 'rally', rawText: line, unitIds: ids, x: Number(args[1]), y: Number(args[2]) })
+      if (!ids?.length) return '用法: rally <ids|all> <x> <y>'
+      return executeCapability('management.rally', { unitIds: ids, x: Number(args[1]), y: Number(args[2]) }, ctx, line)
     }
     case 'goal': {
       const id = args[1] ?? ''
@@ -243,52 +209,33 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         ctx.runtime.resolveProduction(id, args[2] as 'sent' | 'not-sent')
         return '已按人工核对结果更新生产记录'
       }
-      const goal = ctx.runtime.goals.get(id)
-      if (!goal) return '目标不存在；goal list 查看目标 ID'
-      if (args[0] === 'cancel') {
-        await ctx.runtime.cancelGoal(id)
-        try { return `目标已取消；${await ctx.controller.refresh(goal.ownerId)}` }
-        catch (err) { return `目标已取消，其余目标继续；脚本更新失败：${String(err)}` }
-      }
-      if (args[0] === 'edit' && goal.spec.kind === 'production') {
-        const quantity = Number(args[2])
-        return ctx.controller.submit({ ...goal.spec, quantity, rawText: `生产 ${quantity} 个 ${goal.spec.target}` })
-      }
+      if (args[0] === 'cancel') return executeCapability('goal.cancel', { goalId: id }, ctx, line)
+      if (args[0] === 'edit') return executeCapability('goal.edit', { goalId: id, quantity: Number(args[2]) }, ctx, line)
       return '用法: goal list | goal cancel <ID> | goal edit <生产目标ID> <总量> | goal resolve <提交ID> sent|not-sent'
     }
     case 'global': {
-      if (args[0] === 'pause') { ctx.runtime.pause('global'); return '全局脚本已暂停，编队继续' }
-      if (args[0] === 'resume') {
-        const program = ctx.runtime.programs.get('global')
-        if (!program) return '没有全局目标'
-        if (!program.script || program.compileError || program.goalIds.some(id => { const g = ctx.runtime.goals.get(id); return g && JSON.stringify(g.spec) !== JSON.stringify(g.activeSpec) && g.status !== 'cancelled' && g.status !== 'completed' })) return ctx.controller.refresh('global')
-        ctx.runtime.resume('global'); return '全局脚本已恢复'
-      }
-      return '用法: global pause|resume'
+      if (args[0] === 'pause') return executeCapability('control.pause', { scope: 'global' }, ctx, line)
+      if (args[0] === 'resume') return executeCapability('control.resume', { scope: 'global' }, ctx, line)
+      if (args[0] === 'stop') return executeCapability('control.stop', { scope: 'global' }, ctx, line)
+      return '用法: global stop|pause|resume'
     }
     case 'task': {
       const sub = args[0]
       if (sub === 'new') {
-        const label = args[1]
-        const rest = args.slice(2)
+        const label = args[1], rest = args.slice(2)
         const formationId = rest[0]?.startsWith('@') ? rest.shift()!.slice(1) : undefined
-        if (!label || !formationId) return '用法: task new <标签> @编队 --region=x1,y1,x2,y2 <命令>；请先建队'
+        if (!label || !formationId) return '用法: task new <标签> @编队 --region=x1,y1,x2,y2 <命令>'
         const snap = bridge.latest
         if (!snap) return '尚无快照：请先进入对局'
         const options = combatOptions(rest, snap)
-        return ctx.controller.submit({ id: `combat-${randomUUID().slice(0, 8)}`, label, kind: 'combat', rawText: options.text, formationId, region: options.region, allowedActions: options.allowedActions, ...(options.retreat ? { retreat: options.retreat } : {}) })
+        return executeCapability('combat.hold', { formationId, label, bounds: [options.region.x1, options.region.y1, options.region.x2, options.region.y2], ...(options.mode ? { mode: options.mode } : {}), ...(options.retreat ? { retreatLoss: options.retreat.lossAbove, retreatX: options.retreat.x, retreatY: options.retreat.y } : {}) }, ctx, options.text)
       }
-      if (sub === 'list') {
-        return [...ctx.runtime.programs.values()].map(p => `${p.id} [${p.status}${ctx.runtime.hasPendingCommand(p.id) ? '/compiling' : ''}] v${p.script?.version ?? '-'} 目标=${p.goalIds.join(',') || '无'} actions=${p.stats.actions}${p.compileError ? ` 编译失败=${p.compileError}` : ''}${p.stats.lastError ? ` 错误=${p.stats.lastError}` : ''}`).join('\n') || '（无脚本）'
-      }
-      const id = resolveOwner(args[1] ?? '', ctx)
-      if (sub === 'stop') { await ctx.runtime.stop(id); return `${id} 已停止` }
-      if (sub === 'pause') { ctx.runtime.pause(id); return `${id} 已暂停` }
-      if (sub === 'resume') {
-        const program = ctx.runtime.programs.get(id)!
-        if (!program.script || program.compileError) return ctx.controller.refresh(id)
-        ctx.runtime.resume(id); return `${id} 已恢复`
-      }
+      if (sub === 'list') return [...ctx.runtime.programs.values()].map(program => `${program.id} [${program.status}${ctx.runtime.hasPendingCommand(program.id) ? '/compiling' : ''}] v${program.script?.version ?? '-'} 目标=${program.goalIds.join(',') || '无'} actions=${program.stats.actions}${program.compileError ? ` 编译失败=${program.compileError}` : ''}${program.stats.lastError ? ` 错误=${program.stats.lastError}` : ''}`).join('\n') || '（无脚本）'
+      const formationId = args[1]
+      if (!formationId) return '用法: task new|list|stop|pause|resume …'
+      if (sub === 'stop') return executeCapability('control.stop', { scope: 'formation', formationId }, ctx, line)
+      if (sub === 'pause') return executeCapability('control.pause', { scope: 'formation', formationId }, ctx, line)
+      if (sub === 'resume') return executeCapability('control.resume', { scope: 'formation', formationId }, ctx, line)
       return '用法: task new|list|stop|pause|resume …'
     }
     case 'move':
@@ -311,10 +258,10 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       return JSON.stringify(await bridge.submit({ kind: 'attack', unitIds: ids, targetId }))
     }
     case 'stop': {
+      if (args[0] === 'all') return executeCapability('control.stop', { scope: 'units', selector: 'all' }, ctx, line)
       const ids = parseIds(args[0] ?? '', bridge.latest)
       if (!ids?.length) return '用法: stop <ids|all>'
-      await ctx.runtime.stopUnits(ids)
-      return JSON.stringify(await bridge.submit({ kind: 'stop', unitIds: ids }))
+      return executeCapability('control.stop', { scope: 'units', unitIds: ids }, ctx, line)
     }
     case 'shot': {
       mkdirSync(join(ROOT, '.runtime/shots'), { recursive: true })

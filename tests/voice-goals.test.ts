@@ -16,7 +16,7 @@ test('模拟转写保留原话，将显示名绑定为内部名并合并卫星�
   const inputs: Array<{ messages: Array<{ content: string }> }> = []
   const provider = { generate: async (input: typeof inputs[number]) => {
     inputs.push(input)
-    return { text: inputs.length === 1 ? JSON.stringify({ summary: '制造卫星并保持电量健康', operations: [{ kind: 'produce', target: 'SpySat Uplink', quantity: 1 }, { kind: 'power', reserve: 100 }] }) : 'function step(s,m){return {actions:[],memory:m}}', model: 'fixture', durationMs: 0 }
+    return { text: inputs.length === 1 ? JSON.stringify({ summary: '制造卫星并保持电量健康', operations: [{ capability: 'production.produce', params: { target: 'SpySat Uplink', quantity: 1 } }, { capability: 'production.power', params: { reserve: 100 } }] }) : 'function step(s,m){return {actions:[],memory:m}}', model: 'fixture', durationMs: 0 }
   } }
   try {
     const { runtime } = await harness(executor)
@@ -51,7 +51,7 @@ test('同名重工和模型阵营误选都能落到本局可用项目并提交�
     const folder = mkdtempSync(join(tmpdir(), 'ra2c-transcript-'))
     let calls = 0
     const provider = { generate: async () => ({ text: ++calls === 1
-      ? JSON.stringify({ summary: '制造重工', operations: [{ kind: 'produce', target: example.target, quantity: 1 }] })
+      ? JSON.stringify({ summary: '制造重工', operations: [{ capability: 'production.produce', params: { target: example.target, quantity: 1 } }] })
       : 'function step(s,m){const g=s.control.goals[0];return {actions:g.produceRemaining[g.spec.target]>0?[{goalId:g.spec.id,request:{kind:"produce",name:g.spec.target,quantity:1}}]:[],memory:m}}', model: 'fixture', durationMs: 0 }) }
     const rules = async (name: string, type: number) => type === 2 && ['GAWEAP', 'NAWEAP'].includes(name)
       ? { label: 'War Factory', power: 0, prerequisite: [] } : undefined
@@ -74,7 +74,7 @@ test('多辆基地车会选择一辆展开，同句无法绑定的操作不阻�
   const folder = mkdtempSync(join(tmpdir(), 'ra2c-transcript-'))
   let calls = 0
   const provider = { generate: async () => ({ text: ++calls === 1
-    ? JSON.stringify({ summary: '展开基地并移动编队', operations: [{ kind: 'move', formationId: '不存在的队', regionName: '东区' }, { kind: 'deploy' }] })
+    ? JSON.stringify({ summary: '展开基地并移动编队', operations: [{ capability: 'combat.move', params: { formationId: '不存在的队', regionName: '东区' } }, { capability: 'base.deploy', params: {  } }] })
     : 'function step(s,m){const g=s.control.goals[0];return {actions:[{goalId:g.spec.id,request:{kind:"deploy",unitIds:g.unitIds}}],memory:m}}', model: 'fixture', durationMs: 0 }) }
   try {
     const { runtime, submitted } = await harness(executor)

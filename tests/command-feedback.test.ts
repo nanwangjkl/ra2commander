@@ -17,7 +17,7 @@ import { applyCommandEvent, type CardData } from '../apps/companion/ui/command-c
 import { activate, code, deferred, harness, outcome, production, snapshot, spec } from './helpers.ts'
 
 const modelResult = (text: string) => ({ text, model: 'fixture', durationMs: 0 })
-const plan = JSON.stringify({ summary: '制造电厂', operations: [{ kind: 'produce', target: 'GAPOWR', quantity: 1 }] })
+const plan = JSON.stringify({ summary: '制造电厂', operations: [{ capability: 'production.produce', params: { target: 'GAPOWR', quantity: 1 } }] })
 const executor = { run: async () => outcome() }
 const rules = async (name: string, type: number) => name === 'GAPOWR' && type === 2 ? { label: 'Power Plant', power: 200 } : undefined
 const provider = { generate: async (input: { messages: Array<{ content: string }> }) => modelResult('text' in JSON.parse(input.messages[1]!.content) ? plan : code) }
@@ -108,7 +108,7 @@ test('自动绑定冰天雪地，移动与建造描述对应各自目标，部�
       const payload = JSON.parse(input.messages[1]!.content)
       if ('text' in payload) {
         assert.equal(payload.map.name, '冰天雪地')
-        return modelResult(JSON.stringify({ summary: 'A队去三楼右下并造电厂', operations: [{ kind: 'move', formationId: 'A', regionName: '三楼右下' }, { kind: 'produce', target: 'GAPOWR', quantity: 1 }] }))
+        return modelResult(JSON.stringify({ summary: 'A队去三楼右下并造电厂', operations: [{ capability: 'combat.move', params: { formationId: 'A', regionName: '三楼右下' } }, { capability: 'production.produce', params: { target: 'GAPOWR', quantity: 1 } }] }))
       }
       if (payload.control.owner.kind === 'global') throw new Error('电厂脚本生成失败')
       return modelResult(code)

@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { readCapabilityDocuments } from './capability-definitions.ts'
+import { CapabilityCatalog } from './capability-catalog.ts'
 
 const PLACEHOLDER = /{{\s*([A-Za-z][\w]*)\s*}}/g
 const TEMPLATE_DIRECTORY = new URL('../../../prompts/templates/', import.meta.url)
 const DEFINITIONS = {
-  interpret: { file: 'interpret.md', variables: [] },
+  interpret: { file: 'interpret.md', variables: ['capabilities'] },
   compile: { file: 'compile.md', variables: [] },
   repair: { file: 'repair.md', variables: ['error'] },
   validationFeedback: { file: 'validation-feedback.md', variables: ['errors'] },
@@ -20,6 +22,7 @@ export class PromptLibrary {
   constructor(
     templates: Record<PromptName, string>,
     readonly version: string,
+    readonly capabilities: CapabilityCatalog,
   ) {
     this.templates = Object.freeze({ ...templates })
     Object.freeze(this)
@@ -29,14 +32,15 @@ export class PromptLibrary {
   render(name: 'repair', variables: { error: string }): string
   render(name: 'validationFeedback', variables: { errors: string }): string
   render(name: PromptName, variables: Record<string, string> = {}): string {
-    const expected = DEFINITIONS[name].variables as readonly string[]
+    const expected = (DEFINITIONS[name].variables as readonly string[]).filter(key => key !== 'capabilities')
     for (const key of Object.keys(variables)) {
       if (!expected.includes(key)) throw new Error(`提示词 ${name} 不接受变量 ${key}`)
     }
     for (const key of expected) {
       if (typeof variables[key] !== 'string') throw new Error(`提示词 ${name} 缺少变量 ${key}`)
     }
-    return this.templates[name].replace(PLACEHOLDER, (_match, key: string) => variables[key] ?? '')
+    const values = name === 'interpret' ? { ...variables, capabilities: this.capabilities.render() } : variables
+    return this.templates[name].replace(PLACEHOLDER, (_match, key: string) => values[key] ?? '')
   }
 }
 
@@ -66,19 +70,26 @@ export function readPrompts(directory = TEMPLATE_DIRECTORY): PromptLibrary {
     templates[name] = source.trim()
     hash.update(definition.file).update('\0').update(source).update('\0')
   }
-  return new PromptLibrary(templates, `sha256:${hash.digest('hex').slice(0, 16)}`)
+  const documents = readCapabilityDocuments(new URL('../capabilities/', directory))
+  const capabilities = new CapabilityCatalog(documents)
+  for (const document of documents) hash.update(document.file).update('\0').update(document.source).update('\0')
+  return new PromptLibrary(templates, `sha256:${hash.digest('hex').slice(0, 16)}`, capabilities)
 }
 
-export interface PromptLoadOptions { onFallback?: (error: Error) => void }
+export interface PromptLoadOptions {
+  onFallback?: (error: Error) => void
+  validate?: (prompts: PromptLibrary) => void
+}
 
 /** 缓存按加载目录隔离；只有整套文件通过校验后才替换上一份可用定义。 */
 export class PromptLoader {
   private lastGood?: PromptLibrary
   constructor(private readonly directory = TEMPLATE_DIRECTORY) {}
 
-  load({ onFallback = error => console.error(`[companion] ${error.message}；沿用上一份可用提示词`) }: PromptLoadOptions = {}): PromptLibrary {
+  load({ onFallback = error => console.error(`[companion] ${error.message}；沿用上一份可用提示词`), validate }: PromptLoadOptions = {}): PromptLibrary {
     try {
       const loaded = readPrompts(this.directory)
+      validate?.(loaded)
       if (this.lastGood?.version === loaded.version) return this.lastGood
       this.lastGood = loaded
       return loaded

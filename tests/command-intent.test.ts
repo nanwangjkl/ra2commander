@@ -26,7 +26,7 @@ test('重放两条错误解析：编入现有坦克、合并既有队伍，不�
       await runtime.onSnapshot(snap)
       const provider = { generate: async (input: { messages: Array<{ content: string }> }) => {
         const payload = JSON.parse(input.messages[1]!.content)
-        return reply('text' in payload ? JSON.stringify({ summary: '将现有全部灰熊坦克编入1队', operations: [{ kind: 'produce', target: 'MTNK', quantity: all ? 6 : 5, formationId: '1队' }] }) : formationCode)
+        return reply('text' in payload ? JSON.stringify({ summary: '将现有全部灰熊坦克编入1队', operations: [{ capability: 'production.produce', params: { target: 'MTNK', quantity: all ? 6 : 5, formationId: '1队' } }] }) : formationCode)
       } }
       const log = new CommandLog()
       const ctx = { runtime, formations, bridge: { rules }, commandLog: log, currentProvider: () => provider,
@@ -61,7 +61,7 @@ test('区域清敌纠正 move+attackAll，按真实分区选敌且只指挥指�
     await runtime.onSnapshot(snap)
     const provider = { generate: async (input: { messages: Array<{ content: string }> }) => {
       const payload = JSON.parse(input.messages[1]!.content)
-      if ('text' in payload) return reply(JSON.stringify({ summary: '前往三楼右下并攻击全部敌人', operations: [{ kind: 'move', formationId: '1队', regionName: '三楼右下' }, { kind: 'attackAll' }] }))
+      if ('text' in payload) return reply(JSON.stringify({ summary: '前往三楼右下并攻击全部敌人', operations: [{ capability: 'combat.move', params: { formationId: '1队', regionName: '三楼右下' } }, { capability: 'combat.attack-all', params: {  } }] }))
       assert.equal(payload.control.goals.length, 1)
       assert.equal(payload.control.goals[0].spec.attackRegion.name, '三楼右下')
       assert.deepEqual(payload.enemies.map((enemy: { id: number }) => enemy.id), [99])

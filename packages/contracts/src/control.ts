@@ -9,6 +9,8 @@ export interface CombatGoal extends GoalBase {
   formationId: string
   region: Region
   allowedActions: ActionRequest['kind'][]
+  /** 守区可包含就位点，抵达后仍持续；缺省兼容已有移动/清敌目标。 */
+  mode?: 'move' | 'hold' | 'assault'
   retreat?: { lossAbove: number; x: number; y: number }
   transforms?: Record<string, string>
   destination?: { x: number; y: number; name?: string }

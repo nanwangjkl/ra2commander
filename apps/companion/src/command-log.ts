@@ -62,11 +62,19 @@ export class CommandLog {
     try { files = readdirSync(folder).filter(file => file.endsWith('.json')).map(file => ({ file, at: statSync(join(folder, file)).mtimeMs })).sort((a, b) => a.at - b.at) } catch { return }
     for (const { file, at } of files) {
       try {
-        const record = JSON.parse(readFileSync(join(folder, file), 'utf8')) as { requestId: string; text: string; at?: number; sessionKey: string; plan?: { summary?: string }; goals?: GoalSpec[]; choices?: string[]; source?: CommandSource }
+        const record = JSON.parse(readFileSync(join(folder, file), 'utf8')) as { requestId: string; text: string; at?: number; sessionKey: string; plan?: { summary?: string }; goals?: GoalSpec[]; choices?: string[]; skipped?: string[]; terminalStage?: 'completed' | 'failed' | 'cancelled'; terminalError?: string; source?: CommandSource }
         if (record.sessionKey !== runtime.battleKey || typeof record.text !== 'string' || !Array.isArray(record.goals)) continue
         const goals = record.goals.filter(goal => runtime.goals.has(goal.id) && !this.bindings.has(goal.id))
-        if (!goals.length) continue
         const base = { commandId: `restored-${record.requestId || file}`, source: record.source ?? 'restored' as CommandSource, sessionKey: record.sessionKey, at: record.at ?? at }
+        if (this.events.some(event => event.commandId === base.commandId)) continue
+        if (!record.goals.length && ['completed', 'failed', 'cancelled'].includes(record.terminalStage ?? '')) {
+          this.emit({ ...base, stage: 'received', text: record.text })
+          if (record.plan?.summary) this.emit({ ...base, stage: 'understood', summary: record.plan.summary })
+          for (const error of record.skipped ?? []) this.emit({ ...base, stage: 'skipped', error })
+          this.emit({ ...base, stage: record.terminalStage!, ...(record.terminalError ? { error: record.terminalError } : {}) })
+          continue
+        }
+        if (!goals.length) continue
         this.emit({ ...base, stage: 'received', text: record.text })
         const summary = record.choices?.length === record.goals.length
           ? goals.map(goal => record.choices![record.goals!.indexOf(goal)]).join('；') : record.plan?.summary
