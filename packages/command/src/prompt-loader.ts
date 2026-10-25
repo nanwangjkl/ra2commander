@@ -3,6 +3,9 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { readCapabilityDocuments } from './capability-definitions.ts'
 import { CapabilityCatalog } from './capability-catalog.ts'
+import { readGameProfile, type GameProfile } from './game-profile.ts'
+import { readTactics, type TacticLibrary } from './tactics.ts'
+import type { GoalSpec } from '@ra2c/contracts'
 
 const PLACEHOLDER = /{{\s*([A-Za-z][\w]*)\s*}}/g
 const TEMPLATE_DIRECTORY = new URL('../../../prompts/templates/', import.meta.url)
@@ -23,6 +26,8 @@ export class PromptLibrary {
     templates: Record<PromptName, string>,
     readonly version: string,
     readonly capabilities: CapabilityCatalog,
+    readonly game: GameProfile,
+    readonly tactics: TacticLibrary,
   ) {
     this.templates = Object.freeze({ ...templates })
     Object.freeze(this)
@@ -40,7 +45,12 @@ export class PromptLibrary {
       if (typeof variables[key] !== 'string') throw new Error(`提示词 ${name} 缺少变量 ${key}`)
     }
     const values = name === 'interpret' ? { ...variables, capabilities: this.capabilities.render() } : variables
-    return this.templates[name].replace(PLACEHOLDER, (_match, key: string) => values[key] ?? '')
+    const rendered = this.templates[name].replace(PLACEHOLDER, (_match, key: string) => values[key] ?? '')
+    return name === 'interpret' ? [rendered, this.game.instructions, ...this.tactics.select('interpret').map(tactic => tactic.text)].join('\n\n') : rendered
+  }
+
+  compileFor(goals: readonly GoalSpec[], recovery = false): string {
+    return [this.render('compile'), this.game.instructions, ...this.tactics.select('compile', goals, recovery).map(tactic => tactic.text)].join('\n\n')
   }
 }
 
@@ -73,7 +83,11 @@ export function readPrompts(directory = TEMPLATE_DIRECTORY): PromptLibrary {
   const documents = readCapabilityDocuments(new URL('../capabilities/', directory))
   const capabilities = new CapabilityCatalog(documents)
   for (const document of documents) hash.update(document.file).update('\0').update(document.source).update('\0')
-  return new PromptLibrary(templates, `sha256:${hash.digest('hex').slice(0, 16)}`, capabilities)
+  const game = readGameProfile(new URL('../games/current-mod.md', directory))
+  const tactics = readTactics(new URL('../tactics/', directory))
+  hash.update('games/current-mod.md').update('\0').update(game.source).update('\0')
+  for (const document of tactics.sources) hash.update(`tactics/${document.file}`).update('\0').update(document.source).update('\0')
+  return new PromptLibrary(templates, `sha256:${hash.digest('hex').slice(0, 16)}`, capabilities, game.profile, tactics.library)
 }
 
 export interface PromptLoadOptions {

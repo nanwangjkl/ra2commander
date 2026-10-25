@@ -60,6 +60,12 @@ export interface GoalView {
   retreatActive: boolean
   blocked?: string
   maxUnits?: number
+  productionPlan?: {
+    missingPrerequisites: string[]
+    pendingPrerequisites: string[]
+    availableToProduce: string[]
+    readyToPlace: string[]
+  }
 }
 export interface ControlFrame {
   owner: ScriptOwner

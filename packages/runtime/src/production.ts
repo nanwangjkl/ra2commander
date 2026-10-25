@@ -6,21 +6,8 @@ export interface RulesLookup {
   prerequisites(name: string): Promise<string[] | undefined>
   /** 当前可造项目名（production.available()；目标在列即前置已被引擎确认满足）。 */
   available(): Promise<string[]>
-}
-
-/**
- * 规则前置中的通用类别名 → 三族建筑（gonghui MOD 实测 NASAM.prerequisite=[BARRACKS] 这类）。
- * 与快照中的既有建筑、可造清单求交后解析为具体建筑名。
- */
-const PREREQ_CATEGORY: Record<string, string[]> = {
-  CONYARD: ['GACNST', 'NACNST', 'YACNST'],
-  POWER: ['GAPOWR', 'NAPOWR', 'NAAPWR', 'YAPOWR'],
-  BARRACKS: ['GAPILE', 'NAPILE', 'YAPILE'],
-  REFINERY: ['GAREFN', 'NAREFN', 'YAREFN'],
-  PROC: ['GAREFN', 'NAREFN', 'YAREFN'],
-  FACTORY: ['GAWEAP', 'NAWEAP', 'YAWEAP'],
-  RADAR: ['GAAIRC', 'NARADR', 'YARADR'],
-  TECH: ['GATECH', 'NATECH', 'YATECH'],
+  /** 当前游戏目录提供的类别候选，已按本局阵营排序。 */
+  categories?: Record<string, string[]>
 }
 
 export interface PrerequisiteClosure {
@@ -55,17 +42,14 @@ export async function computePrerequisiteClosure(
     if (existing.has(name) || available.has(name)) {
       return existing.has(name) ? undefined : name // 已存在即满足；可造但未造返回自身
     }
-    const family = PREREQ_CATEGORY[name]
+    const family = lookup.categories?.[name.toUpperCase()]
     if (family) {
       const built = family.find((b) => existing.has(b))
       if (built) return undefined
       const buildable = family.find((b) => available.has(b))
       if (buildable) return buildable
-      // gonghui 的 PROC/POWER 可能在前置未满足时完全不在 available 中。
-      // 按已观测建造厂确定固定目录内的阵营，再递归查询其真实前置。
-      const prefix = ['GA', 'NA', 'YA'].find(p => existing.has(`${p}CNST`))
-      const factionBuilding = prefix ? family.find(b => b.startsWith(prefix)) : undefined
-      if (factionBuilding) return factionBuilding
+      // 类别本身不可造时，选择当前游戏目录提供的首个合理候选并查询真实前置。
+      if (family[0]) return family[0]
     }
     return name
   }
@@ -73,6 +57,8 @@ export async function computePrerequisiteClosure(
   const visit = async (name: string, path: string[]): Promise<void> => {
     if (visited.has(name) || existing.has(name)) return
     if (path.includes(name)) return // 循环前置保护
+    // 当前引擎确认可造，说明它的前置已满足；仍保留该项目本身的新增建设。
+    if (available.has(name)) { visited.add(name); order.push(name); return }
     const prereqs = await lookup.prerequisites(name)
     if (prereqs === undefined) {
       unknown.push(name)

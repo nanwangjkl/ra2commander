@@ -47,12 +47,13 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     signal = abort.signal
     emit({ stage: 'understanding' })
     try { await bindDefaultMap(ctx) } catch { check() } // 其他能力可继续；具体地域绑定会报告文件错误。
-    const catalog = await loadGameCatalog(ctx, check)
+    const catalog = await loadGameCatalog(ctx, check, prompts.game)
     check()
     record.promptVersions.interpret = prompts.version
     const result = await ctx.currentProvider().generate({ messages: [
       { role: 'system', content: prompts.render('interpret') },
-      { role: 'user', content: JSON.stringify({ text, faction: catalog.faction === 'GA' ? 'Allied 盟军' : catalog.faction === 'NA' ? 'Soviet 苏军' : catalog.faction === 'YA' ? 'Yuri 尤里' : null,
+      { role: 'user', content: JSON.stringify({ text, faction: prompts.game.factions().find(faction => faction.id === catalog.faction)?.label ?? null,
+        game: { id: prompts.game.id, version: prompts.game.version }, roles: prompts.game.roles().map(role => ({ id: role.id, aliases: role.aliases })),
         self: snap.self.map(unit => ({ id: unit.id, name: unit.name, type: unit.type, formationId: ctx.formations.ownerOf(unit.id) ?? null, canDeploy: unit.canDeploy })),
         formations: ctx.formations.list(), catalog: catalog.items,
         goals: [...ctx.runtime.goals.values()].filter(goal => goal.status !== 'cancelled').slice(-30).map(goal => ({ id: goal.spec.id, kind: goal.spec.kind, text: goal.spec.rawText, label: goal.spec.label, status: goal.status, owner: goal.ownerId, ...(goal.spec.kind === 'production' ? { target: goal.spec.target, quantity: goal.spec.quantity } : {}) })),
@@ -70,7 +71,7 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     record.modelPlan = structuredClone(plan)
     const valid: CapabilityCall[] = [], invalid: unknown[] = []
     for (const call of plan.operations) { try { valid.push(prompts.capabilities.parse(call)) } catch { invalid.push(call) } }
-    plan = { ...plan, operations: [...normalizeOperations(text, valid, ctx.mapSessionKey === key ? ctx.mapRegions : undefined), ...invalid] }
+    plan = { ...plan, operations: [...normalizeOperations(text, valid, ctx.mapSessionKey === key ? ctx.mapRegions : undefined, catalog), ...invalid] }
     record.plan = plan
     save()
     const update = (execution: CapabilityExecution) => { Object.assign(record, execution); plan.summary = execution.summary; save() }

@@ -351,6 +351,15 @@ export class TaskRuntime {
       goals[spec.id] = constraints
       const progress = spec.kind === 'production' ? productionProgress(spec, this.production, snap) : undefined
       const view: GoalView = { spec, unitIds: constraints.management?.allowedUnitIds ?? constraints.allowedUnitIds, produceRemaining: constraints.produceRemaining ?? {}, submitted: progress?.sent ?? {}, observed: progress?.observed ?? {}, uncertain: progress?.uncertain ?? [], lossRatio: facts.lossRatio, retreatActive: facts.retreatTriggered }
+      if (spec.kind === 'production' && progress) {
+        const missingPrerequisites = snap.production?.available.includes(spec.target) ? [] : spec.prerequisites.filter(name => !snap.self.some(unit => unit.type === 2 && unit.name === name))
+        view.productionPlan = {
+          missingPrerequisites,
+          pendingPrerequisites: missingPrerequisites.filter(name => (progress.sent[name] ?? 0) > (progress.observed[name]?.length ?? 0)),
+          availableToProduce: (constraints.allowedProduce ?? []).filter(name => (constraints.produceRemaining?.[name] ?? 0) > 0 && snap.production?.available.includes(name) && (constraints.queueSpace?.[constraints.productionQueueTypes?.[name] ?? 0] ?? 1) > 0),
+          readyToPlace: (constraints.allowedPlace ?? []).filter(name => snap.production?.queues.some(queue => queue.status === 3 && queue.items.some(item => item.name === name))),
+        }
+      }
       const blocked = progress?.blocked ?? facts.blocked
       if (blocked) view.blocked = blocked
       if (constraints.management) view.maxUnits = constraints.management.maxUnits

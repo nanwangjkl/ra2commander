@@ -28,7 +28,7 @@ export function productionProgress(goal: ProductionGoal, records: ProductionReco
     sent[name] = own.reduce((n, r) => n + r.quantity, 0)
     observed[name] = [...new Set(own.flatMap(r => r.observedIds))]
     if (name !== goal.target && snap.self.some(u => u.type === 2 && u.name === name)) observed[name] = snap.self.filter(u => u.type === 2 && u.name === name).map(u => u.id)
-    remaining[name] = name === goal.target ? Math.max(0, quantity - sent[name]!) : sent[name] || observed[name]!.length ? 0 : 1
+    remaining[name] = name === goal.target ? Math.max(0, quantity - sent[name]!) : sent[name] || observed[name]!.length || snap.production?.available.includes(goal.target) ? 0 : 1
     if (own.some(r => r.state === 'reserved' || r.state === 'unknown')) uncertain.push(name)
   }
   // 同名产物缺少可靠出生事件，前一个提交尚未观察完成时不再提交同名目标。

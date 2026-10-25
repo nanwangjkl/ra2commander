@@ -39,7 +39,9 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
   const accepted: string[] = []
   let catalog = options.catalog ? Promise.resolve(options.catalog) : undefined
   const context: BindingContext = { ctx, text: options.text, check,
-    catalog: () => catalog ??= loadGameCatalog(ctx, check),
+    game: prompts.game,
+    knownCatalog: options.catalog,
+    catalog: () => catalog ??= loadGameCatalog(ctx, check, prompts.game),
     cancelUnderstanding: () => { if (ctx.transcriptAbort?.signal !== options.signal) ctx.transcriptAbort?.abort(new Error('被控制命令中止')) },
   }
   const skip = (message: string) => { state.skipped.push(message); emit({ stage: 'skipped', error: message }) }

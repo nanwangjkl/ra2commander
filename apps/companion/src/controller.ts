@@ -17,7 +17,7 @@ interface ControllerDeps {
   runtime: TaskRuntime
   executor: Pick<StepExecutor, 'run'>
   provider: () => OpenAICompatibleProvider
-  prepare?: (goals: GoalSpec[], signal: AbortSignal) => Promise<GoalSpec[]>
+  prepare?: (goals: GoalSpec[], signal: AbortSignal, prompts: PromptLibrary) => Promise<GoalSpec[]>
   log?: (message: string) => void
   prompts?: Pick<PromptLoader, 'load'>
 }
@@ -80,7 +80,7 @@ export class ProgramController {
         if (lease.goals.length) prompts ??= loader.load({
           onFallback: error => (this.deps.log ?? console.error)(`[companion] ${error.message}；沿用上一份可用提示词`),
         })
-        const goals = this.deps.prepare ? await this.deps.prepare(lease.goals, lease.signal) : lease.goals
+        const goals = this.deps.prepare && lease.goals.length ? await this.deps.prepare(lease.goals, lease.signal, prompts!) : lease.goals
         if (lease.signal.aborted) return this.interrupted(lease)
         if (!runtime.prepareCompile(lease, goals)) continue
         const frame = runtime.compileFrame(lease)

@@ -28,7 +28,7 @@ test('模拟转写保留原话，将显示名绑定为内部名并合并卫星�
     assert.match(output, /已生效/)
     const prompts = loadPrompts()
     assert.equal(inputs[0]!.messages[0]!.content, prompts.render('interpret'))
-    assert.equal(inputs[1]!.messages[0]!.content, prompts.render('compile'))
+    assert.equal(inputs[1]!.messages[0]!.content, prompts.compileFor([...runtime.goals.values()].map(goal => goal.spec)))
     const requestId = /记录：(\S+)/.exec(output)![1]!
     const saved = JSON.parse(readFileSync(join(folder, '.runtime/transcripts', `${requestId}.json`), 'utf8'))
     assert.equal(saved.promptVersions.interpret, prompts.version)

@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { ProgramController } from '../apps/companion/src/controller.ts'
 import { handleCommand, type CommandContext } from '../apps/companion/src/commands.ts'
 import { prepareGoals } from '../apps/companion/src/prepare-goals.ts'
+import { loadPrompts } from '../packages/command/src/index.ts'
 import { StepExecutor } from '../packages/js-worker/src/index.ts'
 import { persistState, restoreState, saveStateFile, readStateFile, FormationRegistry, computePrerequisiteClosure } from '../packages/runtime/src/index.ts'
 import type { ActionRequest, GoalSpec, Snapshot } from '../packages/contracts/src/index.ts'
@@ -185,7 +186,7 @@ test('生产先保存预留再发送；重启的未决记录不重放，旧状�
 test('矿场前置先解析电厂，未落地解锁时不能提前提交矿场', async () => {
   const rules: Record<string, string[]> = { MTNK: ['GAWEAP'], GAWEAP: ['PROC', 'GAPILE', 'GACNST'], GAREFN: ['POWER', 'GACNST'], GAPILE: ['POWER', 'GACNST'], GAPOWR: ['GACNST'], GACNST: [] }
   const own = [{ ...snapshot().self[0]!, id: 100, name: 'GACNST', type: 2 }]
-  const closure = await computePrerequisiteClosure('MTNK', { available: async () => ['GAPOWR'], prerequisites: async name => rules[name] }, own)
+  const closure = await computePrerequisiteClosure('MTNK', { available: async () => ['GAPOWR'], prerequisites: async name => rules[name], categories: loadPrompts().game.categories(own) }, own)
   assert.deepEqual(closure.unknown, [])
   assert.ok(closure.toBuild.indexOf('GAPOWR') < closure.toBuild.indexOf('GAREFN'))
   assert.ok(closure.toBuild.indexOf('GAREFN') < closure.toBuild.indexOf('GAWEAP'))

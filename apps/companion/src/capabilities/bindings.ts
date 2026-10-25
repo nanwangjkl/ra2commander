@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { CapabilityId, ResolvedCapabilityParameters as CapabilityParameters } from '@ra2c/command'
+import type { CapabilityId, GameProfile, ResolvedCapabilityParameters as CapabilityParameters } from '@ra2c/command'
 import type { CombatGoal, GoalSpec, ProductionGoal } from '@ra2c/contracts'
 import type { CommandContext } from '../commands.ts'
 import { checkPoint, destination, formationName, fullMap, rectangle, regionDestination, resolveOwner, selectUnits, type GameCatalog } from './selectors.ts'
@@ -9,6 +9,8 @@ export interface BindingContext {
   text: string
   check: () => void
   catalog: () => Promise<GameCatalog>
+  game: GameProfile
+  knownCatalog?: GameCatalog | undefined
   cancelUnderstanding: () => void
 }
 export interface BoundCapability {
@@ -24,9 +26,8 @@ const bound = (goal: GoalSpec, choice: string): BoundCapability => ({ goals: [{ 
 const done = (choice: string): BoundCapability => ({ choices: [choice] })
 
 async function catalogTarget(target: string, context: BindingContext) {
-  // 终端原生项目名无需先扫描整个目录；前置和有效性仍由 prepareGoals 查询。
-  if (/^[A-Z][A-Z0-9_]+$/.test(target)) return { name: target, label: target, type: undefined as number | undefined }
   const rule = (await context.catalog()).resolve(target)
+  if (!rule && /^[A-Z][A-Z0-9_]+$/.test(target)) return { name: target, label: target, type: undefined as number | undefined }
   if (!rule) throw new Error(`未找到可用生产项目：${target}`)
   return rule
 }
@@ -34,7 +35,7 @@ async function control(params: CapabilityParameters['control.stop'], context: Bi
   const { ctx } = context
   context.cancelUnderstanding()
   const scope = params.scope
-  const units = scope === 'units' ? selectUnits(ctx, params) : undefined
+  const units = scope === 'units' ? selectUnits(ctx, params, context.knownCatalog, context.game) : undefined
   const owners = scope === 'all' ? [...new Set([...ctx.runtime.programs.keys(), ...ctx.runtime.pendingCommandIds()])]
     : scope === 'global' ? ['global']
       : units ? [...new Set(units.map(unit => ctx.formations.ownerOf(unit.id)).map(formation => formation ? `formation:${formation}` : 'global'))]
@@ -46,7 +47,7 @@ async function control(params: CapabilityParameters['control.stop'], context: Bi
     else await Promise.all(owners.map(owner => ctx.runtime.stop(owner)))
     context.check()
     // 没有活动脚本的成员也应能停车；stop all 包含未编队单位。
-    const ids = scope === 'all' ? selectUnits(ctx, {}).map(unit => unit.id) : units?.map(unit => unit.id)
+    const ids = scope === 'all' ? selectUnits(ctx, {}, undefined, context.game).map(unit => unit.id) : units?.map(unit => unit.id)
       ?? owners.filter(owner => owner.startsWith('formation:')).flatMap(owner => ctx.formations.membersOf(owner.slice(10)))
     if (ids?.length) await ctx.bridge.submit({ kind: 'stop', unitIds: ids })
     return { choices: [`${scope === 'all' ? '全部脚本' : owners.join('、') || '所选单位'} 已停止`], suppressOwners: owners }
@@ -78,13 +79,13 @@ function findGoal(context: BindingContext, token: string) {
 export const bindings: Binders = {
   'base.deploy': async (_params, context) => {
     const catalog = await context.catalog()
-    const vehicle = context.ctx.runtime.snapshot!.self.filter(unit => unit.canDeploy && catalog.all.some(rule => rule.name === unit.name && rule.deploysInto?.endsWith('CNST')))
+    const vehicle = context.ctx.runtime.snapshot!.self.filter(unit => unit.canDeploy && catalog.all.some(rule => rule.name === unit.name && rule.deploysInto && catalog.isRole(rule.deploysInto, 'constructionYard')))
       .sort((a, b) => Number(b.isIdle) - Number(a.isIdle) || a.id - b.id)[0]
     if (!vehicle) throw new Error('没有可展开的基地车')
     return bound({ id: id(), kind: 'deploy', rawText: context.text, unitIds: [vehicle.id], target: catalog.all.find(rule => rule.name === vehicle.name)!.deploysInto! }, `展开基地车 #${vehicle.id}`)
   },
   'production.produce': async (params, context) => {
-    const rule = (await context.catalog()).resolve(params.target) ?? await catalogTarget(params.target, context)
+    const rule = await catalogTarget(params.target, context)
     if (params.formationId && rule.type === 2) throw new Error('建筑不能编入部队编队')
     const goal: ProductionGoal = { id: id(), kind: 'production', rawText: context.text, target: rule.name, quantity: params.quantity, prerequisites: [], queues: params.queues, ...(params.formationId ? { formationId: formationName(context.ctx, params.formationId, true) } : {}) }
     return bound(goal, `生产${goal.quantity}个 ${rule.label ?? rule.name}（${rule.name}）${goal.formationId ? `，编入${goal.formationId}` : ''}`)

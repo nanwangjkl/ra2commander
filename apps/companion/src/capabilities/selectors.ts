@@ -2,51 +2,9 @@ import type { Region, Snapshot, SnapshotUnit } from '@ra2c/contracts'
 import type { CommandContext } from '../commands.ts'
 import { bindDefaultMap } from '../map-binding.ts'
 
-// 当前游戏的同类项目映射继续沿用；游戏目录与战术拆分在阶段 C 整理。
-const PRODUCTION_FAMILIES = [
-  ['AMCV', 'SMCV', 'PCV'], ['GACNST', 'NACNST', 'YACNST'], ['GAPOWR', 'NAPOWR', 'YAPOWR'],
-  ['GAREFN', 'NAREFN', 'YAREFN'], ['GAPILE', 'NAPILE', 'YAPILE'], ['GAWEAP', 'NAWEAP', 'YAWEAP'],
-  ['GAAIRC', 'NARADR', 'YAPSY'], ['GATECH', 'NATECH', 'YATECH'], ['GASPYSAT'], ['MTNK', 'HTNK', 'LTNK'],
-]
-interface CatalogItem { name: string; type: number; label?: string | undefined; power: number; deploysInto?: string | undefined; available: boolean; faction?: string | undefined }
-export class GameCatalog {
-  readonly items: CatalogItem[]
-  readonly faction: string | undefined
-  constructor(readonly all: CatalogItem[], snap: Snapshot) {
-    this.faction = snap.self.find(unit => /^(GA|NA|YA)CNST$/.test(unit.name))?.name.slice(0, 2)
-      ?? (snap.self.some(unit => unit.name === 'AMCV') ? 'GA' : snap.self.some(unit => unit.name === 'SMCV') ? 'NA' : snap.self.some(unit => unit.name === 'PCV') ? 'YA' : undefined)
-    const owned = new Set(snap.self.map(unit => unit.name))
-    const rank = (item: CatalogItem) => Number(item.available) * 4 + Number(item.faction === this.faction) * 2 + Number(owned.has(item.name))
-    this.items = all.filter(item => !this.faction || !item.faction || item.faction === this.faction || item.available).sort((a, b) => rank(b) - rank(a))
-  }
-  resolve(target: string): CatalogItem | undefined {
-    const normalized = target.trim().toLowerCase()
-    const exact = this.items.find(item => item.name.toLowerCase() === normalized)
-    if (exact) return exact
-    const matches = this.all.filter(item => item.name.toLowerCase() === normalized || item.label?.toLowerCase() === normalized)
-    const names = new Set(matches.flatMap(item => PRODUCTION_FAMILIES.find(family => family.includes(item.name)) ?? [item.name]))
-    return this.items.find(item => names.has(item.name))
-  }
-  powerPlant(): CatalogItem | undefined { return this.items.find(item => PRODUCTION_FAMILIES[2]!.includes(item.name) && item.power > 0) }
-}
-
-export async function loadGameCatalog(ctx: CommandContext, check: () => void): Promise<GameCatalog> {
-  const snap = ctx.runtime.snapshot!
-  const names = [...new Set([...PRODUCTION_FAMILIES.flat(), ...snap.self.map(unit => unit.name), ...(snap.production?.available ?? [])])]
-  const available = new Set(snap.production?.available ?? [])
-  const all = await Promise.all(names.map(async name => {
-    const known = snap.self.find(unit => unit.name === name)?.type
-    const types = [...new Set([...(known ? [known] : []), 2, 7, 3, 1])]
-    for (const type of types) {
-      const rule = await ctx.bridge.rules?.(name, type) as { label?: string; power?: number; deploysInto?: string } | undefined
-      check()
-      if (rule) return { name, type, label: rule.label, power: rule.power ?? 0, deploysInto: rule.deploysInto, available: available.has(name),
-        faction: /^(GA|NA|YA)/.exec(name)?.[1] ?? (['AMCV', 'MTNK'].includes(name) ? 'GA' : ['SMCV', 'HTNK'].includes(name) ? 'NA' : ['PCV', 'LTNK'].includes(name) ? 'YA' : undefined) }
-    }
-    return undefined
-  }))
-  return new GameCatalog(all.filter((item): item is NonNullable<typeof item> => !!item), snap)
-}
+import type { GameProfile } from '@ra2c/command'
+import { GameCatalog } from '../game-catalog.ts'
+export { GameCatalog, loadGameCatalog } from '../game-catalog.ts'
 
 const digits = '零一二三四五六七八九'
 export function chineseNumber(value: string): number {
@@ -75,12 +33,11 @@ export function resolveOwner(ctx: CommandContext, token: string): string {
   throw new Error(`控制对象或任务标签不存在：${token}`)
 }
 
-export function selectUnits(ctx: CommandContext, params: { selector?: string; unitIds?: number[]; sourceFormationId?: string }, catalog?: GameCatalog): SnapshotUnit[] {
+export function selectUnits(ctx: CommandContext, params: { selector?: string; unitIds?: number[]; sourceFormationId?: string }, catalog?: GameCatalog, profile?: GameProfile): SnapshotUnit[] {
   const snap = ctx.runtime.snapshot!
   const source = params.sourceFormationId ? formationName(ctx, params.sourceFormationId) : undefined
   const explicit = params.unitIds ? new Set(params.unitIds) : undefined
   const selector = normalizeName(params.selector ?? 'all').toLowerCase()
-  const rule = catalog?.resolve(selector)
   return snap.self.filter(unit => {
     if (source && ctx.formations.ownerOf(unit.id) !== source) return false
     if (explicit) return explicit.has(unit.id)
@@ -88,8 +45,9 @@ export function selectUnits(ctx: CommandContext, params: { selector?: string; un
     if (['infantry', '步兵', '所有步兵'].includes(selector)) return unit.type === 3
     if (['vehicles', '车辆', '所有车辆'].includes(selector)) return unit.type === 7
     if (['aircraft', '空军', '飞机'].includes(selector)) return unit.type === 1
-    if (['tanks', '坦克', '所有坦克'].includes(selector)) return unit.type === 7 && (/^(MTNK|HTNK|LTNK|GTNK|TTNK|APOC|MGTK|TNKD|DMTK|YTNK)$/.test(unit.name) || /tank|坦克/i.test(catalog?.all.find(item => item.name === unit.name)?.label ?? ''))
-    return unit.name.toLowerCase() === selector || unit.name === rule?.name || catalog?.all.find(item => item.name === unit.name)?.label?.toLowerCase() === selector
+    if (catalog) return catalog.matchesUnit(unit, selector)
+    const role = profile?.roleForAlias(selector)
+    return role ? !!profile?.rolesFor(unit.name, unit.type).includes(role) : unit.name.toLowerCase() === selector
   }).sort((a, b) => Number(!!ctx.formations.ownerOf(a.id)) - Number(!!ctx.formations.ownerOf(b.id)) || a.id - b.id)
 }
 

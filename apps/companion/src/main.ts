@@ -166,10 +166,10 @@ async function main(): Promise<void> {
   })
   controller = new ProgramController({
     runtime, executor, provider: currentModel,
-    prepare: (goals, signal) => {
+    prepare: (goals, signal, prompts) => {
       const snap = runtime.snapshot
       if (!snap) throw new Error('当前没有有效快照')
-      return prepareGoals(goals, snap, (name, type) => gameBridge.rules(name, type), signal)
+      return prepareGoals(goals, snap, (name, type) => gameBridge.rules(name, type), signal, prompts.game)
     },
     log: message => console.log(message),
   })
