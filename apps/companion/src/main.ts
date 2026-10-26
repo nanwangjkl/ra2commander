@@ -1,6 +1,6 @@
 import { ExplorationObserver } from './exploration.ts'
 import { MiningObserver } from './mining.ts'
-import { buildingExecutionMode } from './building-operations.ts'
+import { scriptedFixedKinds } from './execution-modes.ts'
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -104,7 +104,7 @@ async function main(): Promise<void> {
     console.log(`[companion] .env 未加载（${String(err).slice(0, 120)}）；仅桥命令可用`)
   }
 
-  const buildingExecutor = buildingExecutionMode()
+  const scriptKinds = scriptedFixedKinds()
   const providers = new Map<string, OpenAICompatibleProvider>()
   for (const name of configuredProviderNames(process.env)) {
     try {
@@ -236,7 +236,7 @@ async function main(): Promise<void> {
       })
       if (restored) {
         commandLog.restoreCurrent(ROOT, runtime)
-        if (buildingExecutor === 'script') controller.useBuildingScripts()
+        controller.useScriptExecution(scriptKinds)
       }
       commandLog.syncRuntime(runtime)
       records.observe(runtime)

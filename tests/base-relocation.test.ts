@@ -1,5 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { runTranscript } from '../apps/companion/src/transcript.ts'
+import { handleCommand } from '../apps/companion/src/commands.ts'
 import { StepExecutor } from '../packages/js-worker/src/index.ts'
 import { FormationRegistry, persistState, restoreState, type RuntimeDeps } from '../packages/runtime/src/index.ts'
 import { ProgramController } from '../apps/companion/src/controller.ts'
@@ -59,21 +64,29 @@ async function fixture(rejectFirst = false, staleFirst = false, startVehicle = f
     { name: 'GAREFN', type: 2, power: -50, available: true, aliases: ['矿场'], roles: ['refinery'], factions: [] },
   ], runtime.snapshot!, prompts.game)
   let generations = 0
-  const controller = new ProgramController({ runtime, executor, provider: () => ({ generate: async () => ({ text: staleFirst && generations++ === 0 ? `function step(s,m){const g=s.control.goals.find(g=>g.spec.kind==='relocate');return {actions:[{goalId:g.spec.id,request:{kind:'move',unitIds:[g.spec.unitId],x:g.spec.destination.x,y:g.spec.destination.y}}],memory:m}}` : source, model: 'fixture', durationMs: 0 }) }) as never,
+  const provider = { generate: async ({ messages }: { messages: Array<{ content: string }> }) => {
+    const payload = JSON.parse(messages[1]!.content)
+    generations++
+    return { text: 'text' in payload ? JSON.stringify({ summary: '搬迁基地', operations: [{ capability: 'base.relocate', params: { regionName: '一楼' } }] })
+      : staleFirst && generations === 1 ? `function step(s,m){const g=s.control.goals.find(g=>g.spec.kind==='relocate');return {actions:[{goalId:g.spec.id,request:{kind:'move',unitIds:[g.spec.unitId],x:g.spec.destination.x,y:g.spec.destination.y}}],memory:m}}` : source, model: 'fixture', durationMs: 0 }
+  } }
+  const controllerForRuntime = () => new ProgramController({ runtime, executor, provider: () => provider as never,
     prepare: async goals => goals.map(goal => goal.kind === 'production' ? { ...goal, targetType: 2, queueTypes: { GAREFN: 0 } } : goal) })
+  const controller = controllerForRuntime()
   const ctx = { runtime, formations: runtime.formations, controller, mapRegions: regions, mapSessionKey: runtime.battleKey } as unknown as CommandContext
-  const run = () => executeCapabilities([
+  Object.assign(ctx, { currentProvider: () => provider, bridge: { rules: async (name: string, type: number) => ({ GACNST: 2, AMCV: 7, GAREFN: 2 }[name] === type ? { label: name, prerequisite: [], ...(name === 'AMCV' ? { deploysInto: 'GACNST' } : name === 'GACNST' ? { undeploysInto: 'AMCV' } : {}) } : undefined) } })
+  const run = (onlyRelocation = false) => executeCapabilities([
     // 即使模型顺序颠倒，宿主也要先绑定搬迁依赖。
     { capability: 'production.produce', params: { target: '矿场', quantity: 1, placementAnchor: '一楼' } },
     { capability: 'base.relocate', params: { regionName: '一楼' } },
-  ], ctx, { text: '把基地搬到一楼，在一楼造一个矿场', prompts, catalog })
+  ].filter(call => !onlyRelocation || call.capability === 'base.relocate'), ctx, { text: onlyRelocation ? '把基地搬到一楼' : '把基地搬到一楼，在一楼造一个矿场', prompts, catalog })
   return { get runtime() { return runtime }, executor, ctx, actions, run, generations: () => generations, tick: () => runtime.onSnapshot(current()),
     restore: async () => {
       const saved = persistState(runtime)
       const restored = await harness(executor, { formations: new FormationRegistry(), submit, checkpoint: () => {} })
       await restored.runtime.onSnapshot(current())
       restoreState(restored.runtime, JSON.parse(JSON.stringify(saved)))
-      runtime = restored.runtime; ctx.runtime = runtime; ctx.formations = runtime.formations
+      runtime = restored.runtime; ctx.runtime = runtime; ctx.formations = runtime.formations; ctx.controller = controllerForRuntime()
     },
     own: () => own,
   }
@@ -86,6 +99,8 @@ test('基地搬迁换ID、候选展开与后续区域矿场按真实状态串联
     assert.deepEqual(result.skipped, [])
     const relocation = result.goals.find(goal => goal.kind === 'relocate') as RelocateGoal
     const mine = result.goals.find(goal => goal.kind === 'production') as ProductionGoal
+    assert.equal(f.generations(), 1, '混合命令仅为后续生产生成一次脚本')
+    assert.equal(relocation.executionMode, 'native')
     assert.equal(mine.afterGoalId, relocation.id)
     assert.equal(mine.placementRegion!.name, '一楼')
     for (let n = 0; n < 12 && f.runtime.goals.get(mine.id)?.status !== 'completed'; n++) await f.tick()
@@ -126,14 +141,19 @@ test('变形交接期间保存重连，继续跟踪新基地且不重放收起�
 })
 
 test('缓存旧基地ID的候选代码会在生效前反馈模型重新生成', async () => {
-  const f = await fixture(false, true)
+  const f = await fixture(false, true), original = process.env.RA2C_RELOCATION_EXECUTOR
+  process.env.RA2C_RELOCATION_EXECUTOR = 'script'
   try {
     const result = await f.run()
     assert.deepEqual(result.skipped, [])
     assert.equal(f.generations(), 2)
     assert.equal(f.actions.length, 0, '所有阶段检查均为隔离试跑')
     assert.equal(f.runtime.programs.get('global')!.script!.version, 1)
-  } finally { await f.executor.dispose() }
+  } finally {
+    if (original === undefined) delete process.env.RA2C_RELOCATION_EXECUTOR
+    else process.env.RA2C_RELOCATION_EXECUTOR = original
+    await f.executor.dispose()
+  }
 })
 
 test('已有基地车直接移动和展开，不追加生产基地车', async () => {
@@ -145,5 +165,44 @@ test('已有基地车直接移动和展开，不追加生产基地车', async ()
     assert.equal(f.actions.filter(action => action.kind === 'move').length, 1)
     assert.equal(f.actions.filter(action => action.kind === 'deploy').length, 1)
     assert.ok(f.actions.every(action => action.kind !== 'produce' || action.name === 'GAREFN'))
+  } finally { await f.executor.dispose() }
+})
+
+test('单独搬迁语音只理解一次，直接调用无需模型；暂停恢复不生成脚本', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ra2c-native-relocate-'))
+  const voice = await fixture(), direct = await fixture()
+  try {
+    await runTranscript('把基地搬到一楼', voice.ctx, root)
+    assert.equal(voice.generations(), 1)
+    assert.equal(voice.runtime.programs.get('global')!.script, undefined)
+    await direct.run(true)
+    assert.equal(direct.generations(), 0)
+    await handleCommand('global pause', direct.ctx); await direct.tick()
+    assert.deepEqual(direct.actions, [])
+    await handleCommand('global resume', direct.ctx)
+    const goal = [...direct.runtime.goals.values()][0]!
+    for (let n = 0; n < 8 && goal.status !== 'completed'; n++) await direct.tick()
+    assert.equal(goal.status, 'completed')
+    assert.equal(direct.generations(), 0)
+  } finally { voice.ctx.commandLog?.ensureArchive(root).close(); await voice.executor.dispose(); await direct.executor.dispose(); rmSync(root, { recursive: true, force: true }) }
+})
+
+test('搬迁回退等待脚本时继续识别变形，保留同一目标及后续建造依赖', async () => {
+  const f = await fixture()
+  try {
+    const result = await f.run(), goal = result.goals.find(goal => goal.kind === 'relocate')!, mine = result.goals.find(goal => goal.kind === 'production')!
+    await f.tick() // 已提交收起，引擎换 ID，尚未采样。
+    const facts = structuredClone(f.runtime.goals.get(goal.id)!.facts)
+    f.ctx.controller.useScriptExecution(['relocate'])
+    assert.deepEqual(f.runtime.goals.get(goal.id)!.facts, facts)
+    await f.tick() // 候选代码还未生成，仍应识别真实的新基地车。
+    assert.notEqual(f.runtime.goals.get(goal.id)!.facts.relocation!.unitId, yard.id)
+    await f.restore()
+    await f.ctx.controller.refresh('global')
+    for (let n = 0; n < 10 && f.runtime.goals.get(mine.id)!.status !== 'completed'; n++) await f.tick()
+    assert.equal(f.runtime.goals.get(goal.id)!.activeSpec!.executionMode, 'script')
+    assert.equal(f.runtime.goals.get(mine.id)!.status, 'completed')
+    assert.equal(f.actions.filter(action => action.kind === 'move' && action.unitIds.includes(yard.id)).length, 1)
+    assert.equal(f.actions.filter(action => action.kind === 'produce').length, 1)
   } finally { await f.executor.dispose() }
 })

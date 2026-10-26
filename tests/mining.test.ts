@@ -14,7 +14,8 @@ import { regionDestination } from '../apps/companion/src/capabilities/selectors.
 import { MiningObserver } from '../apps/companion/src/mining.ts'
 import { executeCapabilities } from '../apps/companion/src/capabilities/index.ts'
 import type { CommandContext } from '../apps/companion/src/commands.ts'
-import { deferred, harness, snapshot } from './helpers.ts'
+import { activate, deferred, harness, snapshot, spec } from './helpers.ts'
+import { handleCommand } from '../apps/companion/src/commands.ts'
 
 const source = `function step(s,m){const actions=[];for(const g of s.control.goals){if(g.spec.kind==='mining'){for(const request of g.mining.actions)actions.push({goalId:g.spec.id,request});}else if(g.spec.kind==='rally'&&g.unitIds.length)actions.push({goalId:g.spec.id,request:{kind:'move',unitIds:g.unitIds,x:g.spec.x,y:g.spec.y}});}return {actions,memory:m}}`
 const reply = (text: string) => ({ text, model: 'fixture', durationMs: 0 })
@@ -51,7 +52,7 @@ async function fixture(formation = false) {
     voice: () => runTranscript('让所有矿车到一楼的彩色矿区去采矿', ctx, root),
     tick: async (delta = 30) => runtime.onSnapshot({ ...runtime.snapshot!, self: own, seq: runtime.snapshot!.seq + 1, tick: runtime.snapshot!.tick + delta }),
     busy: (value: boolean, returning = false) => { own = own.map(unit => ({ ...unit, isIdle: !value, ...(returning && unit.id === 11 ? { rx: 2, ry: 2 } : {}) })) },
-    dispose: async () => { await executor.dispose(); rmSync(root, { recursive: true, force: true }) },
+    dispose: async () => { ctx.commandLog?.ensureArchive(root).close(); await executor.dispose(); rmSync(root, { recursive: true, force: true }) },
   }
 }
 
@@ -59,6 +60,8 @@ test('反馈命令经共同入口发出并行采矿；返厂和卸货不重发�
   const f = await fixture()
   try {
     const result = await f.voice()
+    assert.equal(f.requests(), 1, '正常新采矿命令只调用一次理解')
+    assert.equal(f.runtime.programs.get('global')!.script, undefined)
     assert.match(result, /不区分矿种/)
     assert.ok(f.goals().every(goal => goal.spec.kind === 'mining'))
     await f.observer.poll(f.ctx)
@@ -112,10 +115,11 @@ test('重编和同局恢复保留采矿发令事实；取消后迟到观察不�
   } finally { await f.dispose() }
 })
 
-test('已编队和未编队矿车分别使用独立脚本；单车改令保留其他矿车的任务', async () => {
+test('已编队和未编队矿车使用各自控制对象；单车改令保留其他矿车的任务', async () => {
   const f = await fixture(true)
   try {
     await f.voice()
+    assert.equal(f.requests(), 1, '多个控制对象的本机采矿不额外生成脚本')
     assert.deepEqual(f.goals().map(goal => goal.ownerId).sort(), ['formation:矿队', 'global'])
     await f.observer.poll(f.ctx); await f.tick(); await f.observer.poll(f.ctx); await f.tick()
     assert.equal(f.submitted.filter(action => action.kind === 'gather').length, 2)
@@ -125,5 +129,55 @@ test('已编队和未编队矿车分别使用独立脚本；单车改令保留�
     assert.equal(global.status, 'cancelled')
     assert.equal(grouped.status, 'active')
     assert.equal(f.runtime.formations.ownerOf(11), '矿队')
+  } finally { await f.dispose() }
+})
+
+test('编队脚本与本机采矿双向改令，撤销迟到候选并保留真实成员归属', async () => {
+  const f = await fixture(true)
+  try {
+    activate(f.runtime, spec({ id: 'old-tactics', formationId: '矿队', region: { name: '全图', x1: 0, y1: 0, x2: 199, y2: 199 } }))
+    const program = f.runtime.programs.get('formation:矿队')!, oldScript = program.script
+    const lease = f.runtime.beginCompile(program.id)
+    await f.voice()
+    const mining = f.goals().find(goal => goal.ownerId === program.id)!
+    assert.equal(lease.signal.aborted, true)
+    assert.equal(f.runtime.commitCompile(lease, source), false)
+    assert.equal(f.runtime.goals.get('old-tactics')!.status, 'cancelled')
+    assert.equal(program.script, oldScript, '本机改令不增加代码版本')
+    assert.deepEqual(program.activeGoalIds, [mining.spec.id])
+    await f.observer.poll(f.ctx); await f.tick(); await f.observer.poll(f.ctx); await f.tick()
+    const gathered = f.submitted.filter(action => action.kind === 'gather' && action.unitIds.includes(11)).length
+    activate(f.runtime, spec({ id: 'new-tactics', formationId: '矿队', region: { name: '全图', x1: 0, y1: 0, x2: 199, y2: 199 } }))
+    assert.equal(mining.status, 'cancelled')
+    assert.deepEqual(program.activeGoalIds, ['new-tactics'])
+    await f.tick(300)
+    assert.equal(f.submitted.filter(action => action.kind === 'gather' && action.unitIds.includes(11)).length, gathered)
+    assert.equal(f.runtime.formations.ownerOf(11), '矿队')
+  } finally { await f.dispose() }
+})
+
+test('直接采矿无模型；暂停恢复与按能力回退保留发令事实', async () => {
+  const f = await fixture(true)
+  try {
+    const catalog = await import('../apps/companion/src/game-catalog.ts').then(module => module.loadGameCatalog(f.ctx, () => {}, loadPrompts().game))
+    await executeCapabilities([{ capability: 'economy.gather', params: { regionName: '一楼' } }], f.ctx, { text: '所有矿车采一楼', catalog })
+    assert.equal(f.requests(), 0)
+    await handleCommand('global pause', f.ctx)
+    await handleCommand('task pause @矿队', f.ctx)
+    await f.observer.poll(f.ctx); await f.tick()
+    assert.deepEqual(f.submitted, [])
+    await handleCommand('global resume', f.ctx)
+    await handleCommand('task resume @矿队', f.ctx)
+    await f.observer.poll(f.ctx); await f.tick(); await f.observer.poll(f.ctx); await f.tick()
+    const sent = f.submitted.length
+    f.busy(true); await f.tick()
+    const facts = f.goals().map(goal => structuredClone(goal.facts.mining))
+    f.ctx.controller.useScriptExecution(['mining'])
+    assert.deepEqual(f.goals().map(goal => goal.facts.mining), facts)
+    for (const owner of ['global', 'formation:矿队']) await f.ctx.controller.refresh(owner)
+    await f.tick(120)
+    assert.equal(f.submitted.length, sent)
+    assert.ok(f.goals().every(goal => goal.activeSpec!.executionMode === 'script'))
+    assert.equal(f.requests(), 2, '回退后每个对象生成一次脚本')
   } finally { await f.dispose() }
 })

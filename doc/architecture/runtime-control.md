@@ -104,4 +104,4 @@ reinforce @一队 MTNK 6
 持久化状态写为 v4（保留目标、脚本、生产记录、战损、队列与交接，增加 Skill 和探索事实），兼容读入无 Skill 数据的 v3。v1/v2 不自动合并；首次写新格式前保留旧格式备份。恢复须当前快照确认同局，预留未决记录不自动重放。新版桥在同一游戏 API 上升级时保留对局身份并递增采样序号；换局、刷新或游戏 API 变化仍使旧请求失效，游戏与资源 profile 保留。
 
 
-新建筑维修、出售目标由本机固定流程执行，侧栏显示“本机执行”；语音通常只调用一次理解模型，`cap building.repair {}` / `cap building.sell {}` 无模型请求。它们不触发无关脚本重编、不增加代码版本，与脚本共享动作校验、预算和提交。目标执行方式随 v4 保存，无标记旧目标默认 `script`，保持原进度。详细错误与恢复规则见[建筑操作](../spec/building-operations.md)。
+新建筑维修、出售、采矿和基地搬迁目标由本机固定流程执行，侧栏显示“本机执行”；语音通常只调用一次理解模型，直接能力调用无模型请求。它们不触发无关脚本重编、不增加代码版本，与脚本共享动作校验、预算和提交。目标执行方式随 v4 保存，无标记旧目标默认 `script`，保持原进度。可分别通过 `RA2C_BUILDING_EXECUTOR`、`RA2C_MINING_EXECUTOR`、`RA2C_RELOCATION_EXECUTOR` 设为 `script` 回退，并保留同一目标与实际进度。详细规则见[建筑操作](../spec/building-operations.md)、[采矿](../spec/regional-mining.md)及[搬迁](../spec/base-relocation.md)。

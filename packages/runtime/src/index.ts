@@ -216,7 +216,7 @@ export class TaskRuntime {
       program.goalIds = [spec.id]
     }
     else if (!program.goalIds.includes(spec.id)) program.goalIds.push(spec.id)
-    if (goalExecutionMode(spec) === 'script') {
+    if (goalExecutionMode(spec) === 'script' || owner.kind === 'formation') {
       program.revision++
       delete program.compileError
       this.cancelCommand(program.id)
@@ -224,7 +224,7 @@ export class TaskRuntime {
     return program.id
   }
 
-  /** 本机目标独立生效，不切换代码/记忆，也不打断同对象正在生成的脚本。 */
+  /** 全局本机目标独立生效；编队改令替换该队旧任务并撤销迟到脚本。 */
   activateNativeGoals(id: string): string[] {
     const program = this.programs.get(id)
     if (!program || !this.latest) return []
@@ -232,6 +232,15 @@ export class TaskRuntime {
     for (const goalId of program.goalIds) {
       const goal = this.goals.get(goalId)!
       if (!goal || !['pending', 'active'].includes(goal.status) || goalExecutionMode(goal.spec) !== 'native' || JSON.stringify(goal.spec) === JSON.stringify(goal.activeSpec)) continue
+      if (program.owner.kind === 'formation') {
+        for (const oldId of program.activeGoalIds) if (oldId !== goalId) {
+          const old = this.goals.get(oldId)
+          if (old?.status === 'active') { old.status = 'cancelled'; old.facts.cancelReason = `已被后续命令替换：${goal.spec.rawText}` }
+        }
+        program.activeGoalIds = []
+        program.generation++
+        this.recovery.reset(program.id)
+      }
       goal.activeSpec = structuredClone(goal.spec)
       goal.status = 'active'
       delete goal.facts.nativeError
@@ -245,10 +254,10 @@ export class TaskRuntime {
   }
 
   /** 试点回退：保留同一目标及发令事实，停止本机来源，等待生成代码接管。 */
-  useBuildingScripts(): string[] {
+  useScriptExecution(kinds: readonly GoalSpec['kind'][]): string[] {
     const changed: string[] = []
     for (const goal of this.goals.values()) {
-      if (goal.spec.kind !== 'building' || goalExecutionMode(goal.spec) !== 'native' || !['pending', 'active'].includes(goal.status)) continue
+      if (!kinds.includes(goal.spec.kind) || goalExecutionMode(goal.spec) !== 'native' || !['pending', 'active'].includes(goal.status)) continue
       goal.spec = { ...goal.spec, executionMode: 'script' }
       delete goal.activeSpec
       delete goal.facts.nativeError
@@ -303,7 +312,7 @@ export class TaskRuntime {
     if (lease.repair && program.status !== lease.recoveryStatus) return false
     const nextIds = new Set(lease.goals.map(g => g.id))
     for (const id of program.activeGoalIds) {
-      if (!nextIds.has(id) && goalExecutionMode(this.goals.get(id)!.activeSpec!) === 'script') {
+      if (!nextIds.has(id) && (program.owner.kind === 'formation' || goalExecutionMode(this.goals.get(id)!.activeSpec!) === 'script')) {
         const old = this.goals.get(id)
         if (old?.status === 'active') {
           old.status = 'cancelled'
@@ -311,7 +320,7 @@ export class TaskRuntime {
         }
       }
     }
-    program.activeGoalIds = program.activeGoalIds.filter(id => this.goals.get(id)?.status === 'active' && goalExecutionMode(this.goals.get(id)!.activeSpec!) === 'native')
+    program.activeGoalIds = program.owner.kind === 'global' ? program.activeGoalIds.filter(id => this.goals.get(id)?.status === 'active' && goalExecutionMode(this.goals.get(id)!.activeSpec!) === 'native') : []
     for (const spec of lease.goals) {
       const goal = this.goals.get(spec.id)!
       if (['cancelled', 'completed', 'partial', 'failed'].includes(goal.status)) continue
@@ -439,9 +448,13 @@ export class TaskRuntime {
 
   private observe(snap: Snapshot): void {
     const converted = new Set<number>()
-    for (const goal of this.goals.values()) if (goal.activeSpec) {
-      const ctx = this.goalContext(goal.activeSpec, snap)
-      for (const id of handlerFor(goal.activeSpec).track?.(ctx) ?? []) converted.add(id)
+    for (const goal of this.goals.values()) {
+      // 回退等待脚本时仍观察已提交的变形，避免把新身份误记成生产。
+      const spec = goal.activeSpec ?? (goal.status === 'pending' && goal.facts.initialized ? goal.spec : undefined)
+      if (!spec || goal.facts.nativeError) continue
+      const ctx = this.goalContext(spec, snap)
+      try { for (const id of handlerFor(spec).track?.(ctx) ?? []) converted.add(id) }
+      catch (error) { if (goalExecutionMode(spec) !== 'native') throw error; this.nativeFault(goal, error) }
     }
     observeProduction(this.production, this.seenUnitIds, snap, converted)
     for (const last of [false, true]) for (const goal of this.goals.values()) {
@@ -594,7 +607,7 @@ export class TaskRuntime {
     const generation = program.generation, formationRevision = this.formations.revision
     const valid = () => this.programs.get(program.id) === program && program.status === 'active' && program.generation === generation && this.sessionKey === snap.sessionKey && this.latest === snap && this.formations.revision === formationRevision
     const specs = this.activeSpecs(program).filter(spec => goalExecutionMode(spec) === 'native')
-    // 混合对象给脚本保留一半预算；未发送的建筑下步仍由真实事实提出。
+    // 混合对象给脚本保留一半预算；未发送的固定步骤下步仍由真实事实提出。
     let available = this.activeSpecs(program).some(spec => goalExecutionMode(spec) === 'script') ? Math.floor(budget.remaining / 2) : budget.remaining
     for (const spec of specs) {
       if (!valid() || available <= 0) return

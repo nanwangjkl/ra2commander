@@ -18,9 +18,9 @@ export const relocate: GoalHandler<'relocate'> = {
   },
   initialize({ spec, goal, snap }) { goal.facts.relocation ??= initialRelocation(spec, snap); goal.facts.initialized = true },
   track(ctx) {
-    if (ctx.goal.status !== 'active' || !ctx.goal.facts.relocation) return []
+    if (!['active', 'pending'].includes(ctx.goal.status) || !ctx.goal.facts.relocation) return []
     const state = ctx.goal.facts.relocation
-    const converted = observeRelocation(ctx.spec, state, ctx.snap, paused(ctx))
+    const converted = observeRelocation(ctx.spec, state, ctx.snap, paused(ctx) || ctx.goal.status === 'pending')
     if (state.phase === 'completed') ctx.goal.status = 'completed'
     else if (state.phase === 'failed') { ctx.goal.status = 'failed'; ctx.goal.facts.outcomeDetail = state.detail }
     return converted === undefined ? [] : [converted]
@@ -31,6 +31,11 @@ export const relocate: GoalHandler<'relocate'> = {
     return projection(ctx, { ...baseConstraints(ctx), allowedUnitIds: view.action ? alive(ctx, [state.unitId]) : [], allowedActions: view.action ? [view.action.kind] : [], ...(view.action ? { relocationAction: view.action } : {}), region: world(ctx, '基地搬迁路径') }, { relocation: view, ...blocked(ctx) })
   },
   execution(_ctx, { view }) { if (!view.blocked) return { state: 'running', detail: view.relocation!.detail, progress: { completed: ['packing', 'moving', 'deploying', 'confirming', 'completed'].indexOf(view.relocation!.phase), total: 4, label: '基地搬迁阶段' } } },
+  nativeActions(ctx) {
+    const state = ctx.goal.facts.relocation ?? initialRelocation(ctx.spec, ctx.snap)
+    const { action } = relocationView(ctx.spec, state, ctx.snap)
+    return action ? [action] : []
+  },
   managedMembers: ({ goal, spec }) => [goal.facts.relocation?.unitId ?? spec.unitId],
   stopMembers: ({ goal, spec, snap }) => [goal.facts.relocation?.unitId ?? spec.unitId].filter(id => snap.self.some(unit => unit.id === id)),
   afterSubmit({ spec, goal, snap }, request, results) {

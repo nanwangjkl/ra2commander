@@ -36,6 +36,7 @@ export const mining: GoalHandler<'mining'> = {
     return projection(ctx, { ...baseConstraints(ctx), allowedUnitIds: unitIds, allowedActions: ['move', 'gather'], miningActions: view.actions, region: world(ctx, '采矿及返厂路径') }, { mining: view, ...(!view.knownOre && !view.actions.length && !view.assigned && ctx.snap.self.filter(unit => unitIds.includes(unit.id)).every(unit => unit.isIdle) ? { blocked: view.detail } : {}) })
   },
   execution(_ctx, { view }) { if (!view.blocked) return { state: view.mining!.assigned ? 'continuous' : 'running', detail: view.mining!.detail, progress: { completed: view.mining!.assigned, total: view.mining!.total, label: '已下达采矿指令' } } },
+  nativeActions: ctx => plan(ctx).view.actions,
   managedMembers: ({ spec }) => spec.unitIds,
   stopMembers: members,
   afterSubmit({ goal, snap }, request, results) { recordMiningResult(goal.facts.mining ??= initialMining(), request, results, snap) },

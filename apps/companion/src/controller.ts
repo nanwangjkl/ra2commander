@@ -83,10 +83,10 @@ export class ProgramController {
     return `${id} 本机执行已生效`
   }
 
-  useBuildingScripts(): void {
+  useScriptExecution(kinds: readonly GoalSpec['kind'][]): void {
     const runtime = this.deps.runtime
-    for (const goalId of runtime.useBuildingScripts()) {
-      this.publish({ stage: 'merged', owner: runtime.goals.get(goalId)!.ownerId, sessionKey: runtime.battleKey, goalIds: [goalId], executionMode: 'script', error: '已关闭建筑本机执行，保留进度并等待脚本接管' })
+    for (const goalId of runtime.useScriptExecution(kinds)) {
+      this.publish({ stage: 'merged', owner: runtime.goals.get(goalId)!.ownerId, sessionKey: runtime.battleKey, goalIds: [goalId], executionMode: 'script', error: '已关闭该能力的本机执行，保留进度并等待脚本接管' })
     }
   }
 

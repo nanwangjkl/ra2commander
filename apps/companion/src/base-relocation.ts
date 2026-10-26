@@ -3,6 +3,8 @@ import { inTargetRegion, type RelocateGoal } from '@ra2c/contracts'
 import type { ResolvedCapabilityParameters } from '@ra2c/command'
 import type { BindingContext, BoundCapability } from './capabilities/bindings.ts'
 import { checkPoint, normalizeName, regionDestination } from './capabilities/selectors.ts'
+import { fixedGoalExecutionMode } from './execution-modes.ts'
+import { releaseGlobalOrders } from './mining.ts'
 
 export const relocationKey = (params: { regionName?: string; x?: number; y?: number }) => params.regionName ? normalizeName(params.regionName) : `${params.x},${params.y}`
 
@@ -34,8 +36,9 @@ export async function bindRelocation(params: ResolvedCapabilityParameters['base.
     candidates.push(point)
   }
   if (!candidates.length) throw new Error('目标区域没有基地搬迁候选落点')
+  const goals = await releaseGlobalOrders(ctx, [selected.id])
   context.check()
-  const goal: RelocateGoal = { id: goalId, kind: 'relocate', rawText: context.text, unitId: selected.id, origin: { x: selected.rx, y: selected.ry }, vehicleName, yardName,
+  const goal: RelocateGoal = { id: goalId, kind: 'relocate', executionMode: fixedGoalExecutionMode('relocate'), rawText: context.text, unitId: selected.id, origin: { x: selected.rx, y: selected.ry }, vehicleName, yardName,
     destination: target, candidates, ...(region ? { targetRegion: region } : {}) }
-  return { goals: [{ goal, choice: `将基地 #${selected.id} 搬至${target.name ?? `${target.x},${target.y}`}，收起、移动后重新展开` }] }
+  return { goals: [...goals, { goal, choice: `将基地 #${selected.id} 搬至${target.name ?? `${target.x},${target.y}`}，收起、移动后重新展开` }] }
 }

@@ -250,7 +250,7 @@ test('关闭建筑试点保留同一目标与事实，由脚本接管；后续�
   try {
     await f.voice('维修受损的建筑'); await f.tick()
     const goal = f.goals()[0]!, id = goal.spec.id, facts = structuredClone(goal.facts)
-    f.ctx.controller.useBuildingScripts()
+    f.ctx.controller.useScriptExecution(['building'])
     assert.equal(goal.spec.id, id)
     assert.equal(goal.spec.executionMode, 'script')
     assert.deepEqual(goal.facts, facts)

@@ -34,7 +34,7 @@ RTS 优先快速反应。能理解行动目标时，Agent 应结合当前战况�
 
 [基础能力、提示词与 Skill 改造](doc/roadmap/capabilities-prompts-and-skills.md)的阶段 A～C 已经用户验收，用户在启动 Companion 体验后确认 C（规则与战术拆分）效果良好并要求提交推送，用户于 2026-10-25 验收前轮修正并批准开始 D（探路 Skill）；用户于 2026-10-26 认可探路流程，继续按逐区 60% 微调并复核对局记录，后续阶段未启动。此批准不改变工作台与真实语音计划的阶段边界。
 
-[运行时整理与响应速度改造](doc/roadmap/runtime-simplification.md)的阶段 1 已于 2026-10-26 由用户验收通过，阶段 2～4 已于 2026-10-27 由用户验收通过。阶段 4 已提交推送 `a7e87cb`。用户已于 2026-10-27 验收阶段 5A（建筑操作本机执行试点），批准提交推送后开始 5B（采矿与搬迁）。每阶段验收后再继续。
+[运行时整理与响应速度改造](doc/roadmap/runtime-simplification.md)的阶段 1 已于 2026-10-26 由用户验收通过，阶段 2～4 已于 2026-10-27 由用户验收通过。阶段 4 已提交推送 `a7e87cb`。用户已于 2026-10-27 验收阶段 5A（建筑操作本机执行试点），5A 已提交推送 `789f1a3`。用户已于 2026-10-27 验收 5B（采矿与搬迁本机执行）并要求提交推送。本轮阶段 1～5 全部验收；本计划没有阶段 6，后续工作须明确新方向，不自动接入其他路线图。
 
 ## 开发环境
 
@@ -42,7 +42,7 @@ RTS 优先快速反应。能理解行动目标时，Agent 应结合当前战况�
 - 本地游戏静态站点默认 `~/my/code/ra2web.github.io`（参考快照 `7f6858a`）。
 - 游戏资源默认 `~/Downloads/full-pack.7z`，导入一次后保存在 `.runtime/profile`。
 - 环境覆盖：`RA2C_GAME_DIR`、`RA2C_PACK`、`RA2C_PORT`、`RA2C_PROFILE`。
-- 建筑本机执行默认启用；用 `RA2C_BUILDING_EXECUTOR=script pnpm companion` 回退该能力，保留目标 ID 和实际进度并生成脚本接管。默认模式不迁移无标记的旧脚本目标。
+- 建筑操作、采矿、搬迁默认本机执行；分别设置 `RA2C_BUILDING_EXECUTOR=script`、`RA2C_MINING_EXECUTOR=script`、`RA2C_RELOCATION_EXECUTOR=script` 后运行 `pnpm companion` 可回退对应能力，保留目标 ID 和实际进度并生成脚本接管。默认模式不迁移无标记的旧脚本目标。
 
 ```sh
 pnpm install

@@ -23,7 +23,7 @@ M1（公共 API 桥）与 M2 单队循环已实测：文本命令经云模型（
 | [地图分区数据](doc/spec/map-regions.md) | 如何读取冰天雪地分区、核对坐标和提交其他方案？ |
 | [实施与验证计划](doc/roadmap/implementation-plan.md) | 先做什么，如何测量和验证首版？ |
 | [编队与全局脚本改造方案](doc/roadmap/script-ownership-refactor.md) | 如何改为每编队一份脚本、全局一份脚本，并统一替换？ |
-| [运行时整理与响应速度改造计划](doc/roadmap/runtime-simplification.md) | 如何分阶段改善调度、目标扩展、对象选择、归档和模型调用？（阶段 1～4 与 5A 已验收，5B 已获准开始） |
+| [运行时整理与响应速度改造计划](doc/roadmap/runtime-simplification.md) | 如何分阶段改善调度、目标扩展、对象选择、归档和模型调用？（阶段 1～5 全部验收） |
 | [六句模拟语音测试](doc/roadmap/voice-six-commands.md) | 展开、建设、造兵编队、地名移动、补电和进攻的实机效果如何？ |
 | [工作台、侧栏与语音开发计划](doc/roadmap/browser-workbench-and-voice.md) | 如何分阶段加入游戏右侧命令栏和真实语音，逐阶段由玩家验收？ |
 | [探路 Skill](doc/spec/scouting-skills.md) | 如何配置、调用、取消和恢复探路，以及如何确认真实探索覆盖？ |
