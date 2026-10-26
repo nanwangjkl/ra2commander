@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
 import type { CommandEvent, CommandSource, GoalExecution, GoalSpec } from '@ra2c/contracts'
 import type { TaskRuntime } from '@ra2c/runtime'
+import { applyCommandEvent, type CardData } from '../ui/command-card.ts'
+import { BattleRecords } from './battle-records.ts'
 import type { ProgramController } from './controller.ts'
 export type { CommandEvent, CommandStage, CommandSource } from '@ra2c/contracts'
 
@@ -14,12 +14,13 @@ export type { CommandEvent, CommandStage, CommandSource } from '@ra2c/contracts'
 const MAX_EVENTS = 2000
 
 export class CommandLog {
-  constructor(private readonly archive?: {
-    event: (event: CommandEvent) => void
-    transcript: (record: Record<string, unknown>) => void
-  }) {}
-
+  constructor(private archive?: BattleRecords) {}
+  ensureArchive(root: string): BattleRecords {
+    if (!this.archive) { this.archive = new BattleRecords(root); this.archive.importTranscripts(root) }
+    return this.archive
+  }
   recordTranscript(record: Record<string, unknown>): void { this.archive?.transcript(record) }
+  flushEvents(): void { this.archive?.flushEvents() }
   readonly streamId = randomUUID()
   private events: CommandEvent[] = []
   private nextSeq = 1
@@ -61,53 +62,56 @@ export class CommandLog {
     }
   }
 
-  /** 本次更新重启后，复用已有转写文件恢复当前局卡片，不重放命令。 */
+  /** 从同局归档恢复展示与目标关联；不重放命令，不将归档当作运行状态。 */
   restoreCurrent(root: string, runtime: TaskRuntime): void {
-    const folder = join(root, '.runtime/transcripts')
-    let files: Array<{ file: string; at: number }>
-    try { files = readdirSync(folder).filter(file => file.endsWith('.json')).map(file => ({ file, at: statSync(join(folder, file)).mtimeMs })).sort((a, b) => a.at - b.at) } catch { return }
-    for (const { file, at } of files) {
-      try {
-        const record = JSON.parse(readFileSync(join(folder, file), 'utf8')) as { requestId: string; text: string; at?: number; sessionKey: string; plan?: { summary?: string }; goals?: GoalSpec[]; choices?: string[]; skipped?: string[]; terminalStage?: 'completed' | 'failed' | 'cancelled'; terminalError?: string; source?: CommandSource }
-        if (record.sessionKey !== runtime.battleKey || typeof record.text !== 'string' || !Array.isArray(record.goals)) continue
-        const goals = record.goals.filter(goal => runtime.goals.has(goal.id) && !this.bindings.has(goal.id))
-        const base = { commandId: record.requestId || file, source: record.source ?? 'restored' as CommandSource, sessionKey: record.sessionKey, at: record.at ?? at }
-        if (this.events.some(event => event.commandId === base.commandId)) continue
-        if (!record.goals.length && ['completed', 'failed', 'cancelled'].includes(record.terminalStage ?? '')) {
-          this.emit({ ...base, stage: 'received', text: record.text })
-          if (record.plan?.summary) this.emit({ ...base, stage: 'understood', summary: record.plan.summary })
-          for (const error of record.skipped ?? []) this.emit({ ...base, stage: 'skipped', error })
-          this.emit({ ...base, stage: record.terminalStage!, ...(record.terminalError ? { error: record.terminalError } : {}) })
-          continue
-        }
-        if (!goals.length) continue
-        this.emit({ ...base, stage: 'received', text: record.text })
-        const summary = record.choices?.length === record.goals.length
-          ? goals.map(goal => record.choices![record.goals!.indexOf(goal)]).join('；') : record.plan?.summary
-        if (summary) this.emit({ ...base, stage: 'understood', summary })
-        for (const goal of goals) {
-          const state = runtime.goals.get(goal.id)!
-          const choice = record.choices?.length === record.goals.length ? record.choices[record.goals.indexOf(goal)] : undefined
-          this.emit({ ...base, stage: 'bound', goalId: goal.id, owner: state.ownerId, choice: choice ?? goal.rawText })
-          const program = runtime.programs.get(state.ownerId)
-          if (!state.activeSpec && program?.compileError) this.emit({ ...base, stage: 'failed', goalId: goal.id, owner: state.ownerId, error: program.compileError })
-        }
-      } catch { /* 单份旧记录损坏不阻断当前对局。 */ }
+    const archive = this.ensureArchive(root), history = archive.commandHistory(runtime.battleKey)
+    const existing = new Set(this.events.map(event => event.commandId))
+    for (const event of history.events) if (!existing.has(event.commandId)) this.accept({ ...event, seq: this.nextSeq++ }, false)
+    // 兼容启用完整事件流前的旧转写；只补足未记录的卡片和绑定。
+    for (const record of history.transcripts) {
+      const goals = ((record.goals ?? []) as GoalSpec[]).filter(goal => runtime.goals.has(goal.id) && !this.bindings.has(goal.id))
+      const id = String(record.requestId).replace(/^restored-/, ''), visible = this.events.some(event => event.commandId === id)
+      const base = { commandId: id, source: (record.source ?? 'restored') as CommandSource, sessionKey: runtime.battleKey, at: Number(record.at) || Date.now() }
+      if (!visible) {
+        this.accept({ ...base, seq: this.nextSeq++, stage: 'received', text: String(record.text) }, false)
+        if (record.plan?.summary) this.accept({ ...base, seq: this.nextSeq++, stage: 'understood', summary: record.plan.summary }, false)
+        for (const error of record.skipped ?? []) this.accept({ ...base, seq: this.nextSeq++, stage: 'skipped', error }, false)
+      }
+      for (const goal of goals) {
+        const state = runtime.goals.get(goal.id)!
+        this.accept({ ...base, seq: this.nextSeq++, stage: 'bound', goalId: goal.id, owner: state.ownerId, choice: goal.rawText }, false)
+        const program = runtime.programs.get(state.ownerId)
+        if (!state.activeSpec && program?.compileError) this.accept({ ...base, seq: this.nextSeq++, stage: 'failed', goalId: goal.id, owner: state.ownerId, error: program.compileError }, false)
+      }
+      if (!visible && ['completed', 'failed', 'cancelled'].includes(record.terminalStage)) this.accept({ ...base, seq: this.nextSeq++, stage: record.terminalStage, ...(record.terminalError ? { error: record.terminalError } : {}) }, false)
+    }
+    for (const commandId of new Set(this.events.map(event => event.commandId))) {
+      const events = this.events.filter(event => event.commandId === commandId)
+      if (events.some(event => event.goalId && runtime.goals.has(event.goalId))) continue
+      let card: CardData | undefined
+      events.forEach((event, index) => { card = applyCommandEvent({ ...event, seq: index + 1 }, card) })
+      if (card && !['completed', 'partial-completed', 'failed', 'cancelled'].includes(card.stage)) {
+        const last = events.at(-1)!
+        this.emit({ commandId, source: last.source, sessionKey: runtime.battleKey, stage: 'cancelled', error: '命令处理在重启前中断，未恢复后续步骤；实际成果以最后观察为准' })
+      }
     }
     this.syncRuntime(runtime)
   }
 
   emit(event: Omit<CommandEvent, 'seq' | 'at'> & { at?: number }): CommandEvent {
     const full: CommandEvent = { ...event, seq: this.nextSeq++, at: event.at ?? Date.now() }
-    this.archive?.event(full)
+    return this.accept(full, true)
+  }
+  private accept(full: CommandEvent, archive: boolean): CommandEvent {
+    if (archive) this.archive?.event(full)
     this.events.push(full)
     if (full.stage === 'bound' && full.goalId) this.bindings.set(full.goalId, { commandId: full.commandId, source: full.source, ...(full.sessionKey ? { sessionKey: full.sessionKey } : {}) })
+    if (full.stage === 'execution' && full.goalId && full.execution) this.execution.set(full.goalId, full.execution)
     if (this.events.length > MAX_EVENTS) {
       this.events.splice(0, this.events.length - MAX_EVENTS)
       const kept = new Set(this.events.map(event => event.commandId))
       for (const [id, binding] of this.bindings) if (!kept.has(binding.commandId)) { this.bindings.delete(id); this.execution.delete(id) }
     }
-    // 展示通道失效不能中断游戏指令。
     for (const subscriber of this.subscribers) {
       try { subscriber(full) } catch { this.subscribers.delete(subscriber) }
     }

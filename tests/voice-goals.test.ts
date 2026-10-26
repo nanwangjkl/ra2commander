@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { BattleRecords } from '../apps/companion/src/battle-records.ts'
 import { StepExecutor } from '../packages/js-worker/src/index.ts'
 import { ProgramController } from '../apps/companion/src/controller.ts'
 import { runTranscript } from '../apps/companion/src/transcript.ts'
@@ -30,9 +31,11 @@ test('模拟转写保留原话，将显示名绑定为内部名并合并卫星�
     assert.equal(inputs[0]!.messages[0]!.content, prompts.render('interpret'))
     assert.equal(inputs[1]!.messages[0]!.content, prompts.compileFor([...runtime.goals.values()].map(goal => goal.spec)))
     const requestId = /记录：(\S+)/.exec(output)![1]!
-    const saved = JSON.parse(readFileSync(join(folder, '.runtime/transcripts', `${requestId}.json`), 'utf8'))
-    assert.equal(saved.promptVersions.interpret, prompts.version)
-    assert.equal(saved.promptVersions.compile.global, prompts.version)
+    const archive = new BattleRecords(folder)
+    const saved = archive.read(archive.list()[0]!.id)!.transcripts[requestId]!
+    const versions = saved.promptVersions as { interpret: string; compile: Record<string, string> }
+    assert.equal(versions.interpret, prompts.version)
+    assert.equal(versions.compile.global, prompts.version)
     const goals = [...runtime.goals.values()]
     assert.equal(goals.length, 2)
     assert.ok(goals.every(g => g.spec.rawText === text && g.status === 'active'))

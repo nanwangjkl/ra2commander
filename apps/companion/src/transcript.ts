@@ -1,17 +1,17 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 import type { CapabilityCall } from '@ra2c/command'
 import type { GoalSpec } from '@ra2c/contracts'
 import type { CommandContext } from './commands.ts'
-import { newCommandId, type CommandEvent, type TraceOptions } from './command-log.ts'
+import { CommandLog, newCommandId, type CommandEvent, type TraceOptions } from './command-log.ts'
 import { bindDefaultMap } from './map-binding.ts'
 import { normalizeOperations } from './transcript-plan.ts'
 import { executeCapabilities, executionText, loadCommandPrompts, type BindingCorrection, type CapabilityExecution } from './capabilities/index.ts'
 import { isRepairVehicle, isCombatUnit, loadGameCatalog } from './capabilities/selectors.ts'
 
 export async function runTranscript(text: string, ctx: CommandContext, root: string, trace?: TraceOptions): Promise<string> {
-  const active = trace ?? (ctx.commandLog ? { commandId: newCommandId(), source: 'cli' as const, log: ctx.commandLog } : undefined)
+  const log = trace?.log ?? (ctx.commandLog ??= new CommandLog())
+  log.ensureArchive(root)
+  const active = trace ?? { commandId: newCommandId(), source: 'cli' as const, log }
   const key = ctx.runtime.battleKey
   const emit = (event: Partial<CommandEvent> & Pick<CommandEvent, 'stage'>) => {
     if (['completed', 'failed', 'cancelled'].includes(event.stage) && !event.goalId) {
@@ -21,7 +21,6 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     if (active) active.log.emit({ commandId: active.commandId, source: active.source, sessionKey: key, ...event })
   }
   const requestId = active?.commandId ?? randomUUID()
-  const folder = join(root, '.runtime/transcripts')
   const record = { requestId, text, at: Date.now(), source: active?.source ?? 'cli', model: '', durationMs: 0, sessionKey: key,
     messages: [] as Array<{ role: 'system' | 'user'; content: string }>, rawResponse: '', usage: undefined as unknown,
     promptVersions: { interpret: undefined as string | undefined, compile: {} as Record<string, string> },
@@ -30,18 +29,7 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     bindingRepairs: [] as unknown[],
     goals: [] as GoalSpec[], choices: [] as string[], effects: [] as string[], skipped: [] as string[], results: [] as string[], error: '',
     terminalStage: undefined as 'completed' | 'failed' | 'cancelled' | undefined, terminalError: '' }
-  let storageWarning = ''
-  const save = () => {
-    try {
-      mkdirSync(folder, { recursive: true })
-      writeFileSync(join(folder, `${requestId}.json`), JSON.stringify(record, null, 2))
-    } catch (error) {
-      const warning = String(error)
-      if (storageWarning !== warning) console.error(`[companion] 转写记录保存失败：${warning.slice(0, 160)}`)
-      storageWarning = warning
-    }
-    active?.log.recordTranscript(record)
-  }
+  const save = () => active.log.recordTranscript(record)
   let signal: AbortSignal | undefined
   const check = () => { signal?.throwIfAborted(); if (key !== ctx.runtime.battleKey) throw new Error('对局已变化，转写结果作废') }
   emit({ stage: 'received', text })
@@ -136,7 +124,8 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     try { save() } catch (saveError) { console.error(`[companion] 转写记录保存失败：${String(saveError).slice(0, 160)}`) }
     throw new Error(`${String(error)}；记录：${requestId}`)
   } finally {
-    active?.log.syncRuntime(ctx.runtime)
+    active.log.syncRuntime(ctx.runtime)
+    active.log.flushEvents()
     if (ctx.transcriptAbort?.signal === signal) delete ctx.transcriptAbort
   }
 }

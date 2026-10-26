@@ -16,6 +16,7 @@
     "prompts:check": "node --import tsx packages/command/src/check-prompts.ts",
     "capabilities:generate": "node --import tsx packages/command/src/generate-capabilities.ts",
     "capabilities:check": "node --import tsx apps/companion/src/capabilities/check.ts",
+    "records:read": "node --import tsx apps/companion/tools/read-battle.ts",
     "scenario:voice": "node --import tsx apps/companion/tools/run-voice-scenario.mjs",
     "playwright-install": "pnpm --filter @ra2c/companion exec playwright install chromium",
     "game-data:import": "node --import tsx packages/command/src/import-game-data.ts",

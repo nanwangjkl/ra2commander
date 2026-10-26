@@ -50,12 +50,16 @@ export class WorkbenchApi {
       try {
         if (path === '/commander/records') { json(200, { currentId: records.currentId, records: records.list(), warning: records.warning }); return true }
         const match = /^\/commander\/records\/(battle-[a-f0-9]{24})(?:\/(summary\.md|record\.json))?$/.exec(path)
+        if (match?.[2] === 'summary.md') {
+          const summary = records.summary(match[1]!, true)
+          if (!summary) { json(404, { error: '找不到对局记录' }); return true }
+          res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'no-store', 'content-disposition': `attachment; filename="${match[1]!}.md"` })
+          res.end(summary)
+          return true
+        }
         const record = match && records.read(match[1]!)
         if (!record) { json(404, { error: '找不到对局记录' }); return true }
-        if (match![2] === 'summary.md') {
-          res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'no-store', 'content-disposition': `attachment; filename="${record.id}.md"` })
-          res.end(records.markdown(record))
-        } else if (match![2] === 'record.json') {
+        if (match![2] === 'record.json') {
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'content-disposition': `attachment; filename="${record.id}.json"` })
           res.end(JSON.stringify(record, null, 2))
         } else json(200, record)

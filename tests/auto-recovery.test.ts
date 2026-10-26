@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { BattleRecords } from '../apps/companion/src/battle-records.ts'
 import { StepExecutor } from '../packages/js-worker/src/index.ts'
 import { ProgramController } from '../apps/companion/src/controller.ts'
 import { runTranscript } from '../apps/companion/src/transcript.ts'
@@ -53,10 +54,11 @@ test('失败绑定单独交回模型，成功目标先执行且不会重复创�
     assert.doesNotMatch(output, /未执行部分/)
     assert.equal([...f.runtime.goals.values()].filter(goal => goal.spec.kind === 'production').length, 1)
     assert.equal([...f.runtime.goals.values()].filter(goal => goal.spec.kind === 'rally').length, 1)
-    const folder = join(f.root, '.runtime/transcripts')
-    const record = JSON.parse(readFileSync(join(folder, readdirSync(folder)[0]!), 'utf8'))
-    assert.equal(record.bindingRepairs.length, 1)
-    assert.ok(record.bindingRepairs[0].response.text)
+    const archive = new BattleRecords(f.root)
+    const record = Object.values(archive.read(archive.list()[0]!.id)!.transcripts)[0]!
+    const repairs = record.bindingRepairs as Array<{ response: { text: string } }>
+    assert.equal(repairs.length, 1)
+    assert.ok(repairs[0]!.response.text)
     await f.runtime.onSnapshot(snapshot({ seq: 2, tick: 30 }))
     assert.deepEqual(f.submitted.flatMap(action => action.kind === 'produce' ? [action.quantity] : []), [2])
   } finally { await f.dispose() }
