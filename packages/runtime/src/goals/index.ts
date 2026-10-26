@@ -1,4 +1,4 @@
-import type { GoalSpec } from '@ra2c/contracts'
+import { validAttackObjective, type GoalSpec } from '@ra2c/contracts'
 import type { GoalState } from '../state.ts'
 import { attack } from './attack.ts'
 import { building } from './building.ts'
@@ -25,6 +25,7 @@ export function handlerFor(spec: GoalSpec): GoalHandler {
 export function validateGoalSpec(spec: GoalSpec, map: MapSize): void {
   if (!spec || typeof spec.id !== 'string' || !spec.id || typeof spec.rawText !== 'string' || !spec.rawText) throw new Error('目标缺少 ID 或命令')
   handlerFor(spec).validateSpec(spec, map)
+  if ((spec.kind === 'attack' || spec.kind === 'combat') && spec.objective && (!validAttackObjective(spec.objective) || spec.objective.search.destination && (spec.objective.search.destination.x < 0 || spec.objective.search.destination.y < 0 || spec.objective.search.destination.x >= map.mapWidth || spec.objective.search.destination.y >= map.mapHeight))) throw new Error('攻击要求非法')
 }
 export function validateGoalFacts(goal: GoalState, map: MapSize): void {
   const facts = goal.facts

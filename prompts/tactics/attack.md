@@ -9,3 +9,9 @@ attack 目标使用本步 g.attack.readyIds 和 g.attack.targets。只对 readyI
 对飞机优先直接 attack，由游戏处理飞近和开火，不做射程拒绝，也不发 attackMove、move 或 stop。装弹未满、弹药状态未知、尚待交接的飞机在 pendingIds，飞行出击中的在 attackingIds，已实际发射的在 firedIds；这些 ID 都不能再次发令。readyIds 为空时等待，不把首次 pending 写成 memory 永久结束。每步重新读 readyIds，满弹的先出击，不等整队装弹；宿主观察每架弹药下降或武器进入冷却后结束该机本次出击，返航和重新装弹交给游戏。不能用 request 已提交、敌人血量下降或目标摧毁代替逐机投弹确认。
 
 地面 readyIds 可以 attack，持续根据匹配敌人重选目标；无匹配敌人时继续观察，不猜隐藏敌军坐标或宣称全图胜利。生成代码不能缓存生成时的 ID/弹药或丢弃其他目标。避免对同一目标每步重复发令，但去重须包含动态 readyIds；新装满弹的飞机必须获得指令。
+
+攻击要求统一在 spec.objective：target 给出类别、ID 和可选真实分区；search.kind 分别为 visible（等待可见目标）、region（进入区域寻找）或 map（全图推进）；completion 区分地面持续作战与飞机单次发射。旧 targetKind/targetRegion 等仅为兼容字段，不扩大 objective 的目标范围。
+
+当 search.kind=region 且有 search.destination 时，地面 groundIds 即使暂时没有匹配敌人，也应 move 前往该点并在区域内继续搜索/观察；到达不表示清空。攻击移动只能选择目标分区内部落点，进入区域前用 move 赶路，不主动清理沿途其他分区。只移动 groundIds，飞机仍只直接 attack。search.kind=map 的地面成员主动接近可见匹配敌人；无目标时继续观察，不猜隐藏敌人位置。混编时地面搜索和飞机等待/出击独立推进。
+
+membership.kind=selected 表示本次固定选中的现有 ID；prepared 表示还会从明确的生产/编队目标接入本次成员，宿主按真实产物和交接维护 readyIds，不按兵种无限纳入后来生产的单位。不要自行扩大名单，也不要因首批成员已经出击就丢弃其余待准备成员。

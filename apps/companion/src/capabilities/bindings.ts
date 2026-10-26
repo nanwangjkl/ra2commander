@@ -3,14 +3,14 @@ import type { CapabilityId, GameProfile, PromptLibrary, ResolvedCapabilityParame
 import type { SkillRun } from '@ra2c/runtime'
 import { directionLabels, type CombatGoal, type FormationGoal, type GoalSpec, type ProductionGoal } from '@ra2c/contracts'
 import type { CommandContext } from '../commands.ts'
-import { checkPoint, destination, formationName, fullMap, rectangle, regionDestination, resolveOwner, selectUnits, type GameCatalog } from './selectors.ts'
+import { checkPoint, destination, formationName, fullMap, rectangle, regionDestination, resolveOwner, selectUnits, selectUnitSet, type GameCatalog } from './selectors.ts'
 import { prepareExploration } from '../exploration.ts'
 import { bindRepairSkill, repairGoal } from './repair-vehicle.ts'
 import { bindBuildingPlacement, bindPlacementRegion } from '../building-placement.ts'
 import { normalizeName } from './selectors.ts'
 import { bindRelocation } from '../base-relocation.ts'
 import { bindMining, releaseGlobalOrders } from '../mining.ts'
-import { bindAttack } from '../attack.ts'
+import { bindAttack, bindClearRegion, bindAttackAll } from '../attack.ts'
 import { bindBuildingOperation } from '../building-operations.ts'
 
 export interface BindingContext {
@@ -39,13 +39,6 @@ type Binders = { [Id in CapabilityId]: (params: CapabilityParameters[Id], contex
 const id = () => `command-${randomUUID().slice(0, 8)}`
 const bound = (goal: GoalSpec, choice: string): BoundCapability => ({ goals: [{ goal, choice }] })
 const done = (choice: string): BoundCapability => ({ choices: [choice] })
-
-function hasAircraft(formationId: string, context: BindingContext): boolean {
-  const { ctx } = context, planned = context.formationGoals.get(formationId)
-  const ids = new Set([...ctx.formations.membersOf(formationId), ...(planned && planned.request.kind !== 'dissolveFormation' ? planned.request.unitIds : [])])
-  return ctx.runtime.snapshot!.self.some(unit => ids.has(unit.id) && unit.type === 1)
-    || [...ctx.runtime.goals.values()].some(goal => ['pending', 'active'].includes(goal.status) && goal.spec.kind === 'production' && goal.spec.formationId === formationId && goal.spec.targetType === 1)
-}
 
 async function catalogTarget(target: string, context: BindingContext, expected: { type?: number; mobile?: boolean } = {}) {
   const rule = (await context.catalog()).resolve(target, expected)
@@ -116,7 +109,7 @@ export const bindings: Binders = {
     const catalog = await context.catalog(); context.check()
     const role = skill.definition.steps[0].role
     const automaticSource = values.memberSource === 'auto'
-    const existing = selectUnits(ctx, { selector: role }, catalog).filter(dog => !automaticSource || !ctx.formations.ownerOf(dog.id)).slice(0, values.quantity)
+    const existing = selectUnitSet(ctx, { selector: role, quantity: values.quantity }, catalog, context.game, { unassigned: automaticSource }).selected
     const useExisting = values.memberSource === 'existing' || (automaticSource && existing.length > 0)
     const reference = { runId, id: skill.definition.id, version: skill.definition.version, hash: skill.hash, instructions: skill.instructions }
     let preparation: GoalSpec, choice: string
@@ -197,17 +190,14 @@ export const bindings: Binders = {
   'formation.create': async (params, context) => {
     const { ctx } = context
     const formationId = formationName(ctx, params.formationId, true)
-    const matched = selectUnits(ctx, params, await context.catalog())
-    const selected = params.unitIds || params.force ? matched : matched.filter(unit => !ctx.formations.ownerOf(unit.id))
+    const { selected } = selectUnitSet(ctx, params, await context.catalog(), context.game, { unassigned: !params.unitIds && !params.force })
     if (!selected.length) throw new Error('没有匹配的可编队单位')
     return bound({ id: id(), kind: 'formation', rawText: context.text, request: { kind: 'createFormation', formationId, unitIds: selected.map(unit => unit.id), force: !!params.force } }, `建立编队 ${formationId}，编入${selected.length}个现有单位`)
   },
   'formation.assign': async (params, context) => {
     const { ctx } = context
     const formationId = formationName(ctx, params.formationId, true)
-    const matched = selectUnits(ctx, params, await context.catalog())
-    const available = matched.filter(unit => ctx.formations.ownerOf(unit.id) !== formationId && (params.quantity === 'all' || !ctx.formations.ownerOf(unit.id)))
-    const selected = params.quantity === 'all' ? available : available.slice(0, params.quantity)
+    const { matched, selected } = selectUnitSet(ctx, params, await context.catalog(), context.game, { excludeFormationId: formationId, unassigned: params.quantity !== 'all' })
     if (!selected.length) {
       if (matched.length && matched.every(unit => ctx.formations.ownerOf(unit.id) === formationId)) return done(`现有${matched.length}个匹配单位已在${formationId}`)
       throw new Error('没有可编入的现有单位，未追加生产')
@@ -224,8 +214,7 @@ export const bindings: Binders = {
   },
   'formation.transfer': async (params, context) => {
     const formationId = formationName(context.ctx, params.formationId)
-    const matched = selectUnits(context.ctx, params, await context.catalog()).filter(unit => context.ctx.formations.ownerOf(unit.id) !== formationId)
-    const selected = params.quantity === 'all' ? matched : matched.slice(0, params.quantity)
+    const { selected } = selectUnitSet(context.ctx, params, await context.catalog(), context.game, { excludeFormationId: formationId })
     if (!selected.length) return done(`没有需要转入${formationId}的匹配单位`)
     const result = bound({ id: id(), kind: 'formation', rawText: context.text, request: { kind: 'transferUnits', formationId, unitIds: selected.map(unit => unit.id) } }, `将${selected.length}个现有单位转入${formationId}`)
     if (params.quantity !== 'all' && selected.length < params.quantity) result.skipped = [`来源单位仅${selected.length}个，未追加生产`]
@@ -275,27 +264,8 @@ export const bindings: Binders = {
     } else if (params.retreatX !== undefined || params.retreatY !== undefined) throw new Error('回撤点缺少战损阈值')
     return bound(goal, `${formationId} ${params.mode === 'move' ? '赶路' : '守卫'}${region.name}`)
   },
-  'combat.clear-region': async (params, context) => {
-    const formationId = formationName(context.ctx, params.formationId, false, true)
-    if (hasAircraft(formationId, context)) return bindAttack({ selector: 'combat', formationId, target: 'enemies', quantity: 'all', regionName: params.regionName }, context)
-    const { region, destination } = await regionDestination(context.ctx, params.regionName, context.check)
-    return bound({ id: id(), kind: 'combat', rawText: context.text, formationId, region: fullMap(context.ctx.runtime.snapshot!), destination, attackRegion: { id: region.id, name: region.name, polygons: region.polygons }, allowedActions: ['move', 'attackMove', 'attack', 'stop'] }, `${formationId} 前往并清理${region.name}区域内的敌人`)
-  },
-  'combat.attack-all': async (params, context) => {
-    if (params.selector || params.unitIds) return bindAttack({ selector: params.selector ?? 'combat', target: 'enemies', quantity: 'all', ...(params.unitIds ? { unitIds: params.unitIds } : {}), ...(params.formationId ? { formationId: params.formationId } : {}) }, context)
-    const { ctx } = context
-    const formationId = params.formationId ? formationName(ctx, params.formationId, false, true) : undefined
-    if (formationId && hasAircraft(formationId, context)) return bindAttack({ selector: 'combat', formationId, target: 'enemies', quantity: 'all' }, context)
-    const formations = ctx.formations.list().filter(formation => (!formationId || formation.id === formationId) && ctx.runtime.snapshot!.self.some(unit => formation.memberIds.includes(unit.id) && (unit.primaryWeapon || unit.secondaryWeapon)))
-    if (!formations.length && formationId && ctx.runtime.hasPlannedFormation(formationId)) return bound({ id: id(), kind: 'combat', rawText: context.text, formationId, region: fullMap(ctx.runtime.snapshot!), allowedActions: ['move', 'attackMove', 'attack', 'stop'] }, `编队 ${formationId} 交接完成后进攻`)
-    if (!formations.length) throw new Error('没有可用作战编队')
-    const goals: NonNullable<BoundCapability['goals']> = []
-    for (const formation of formations) {
-      if (hasAircraft(formation.id, context)) goals.push(...(await bindAttack({ selector: 'combat', formationId: formation.id, target: 'enemies', quantity: 'all' }, context)).goals ?? [])
-      else goals.push({ goal: { id: id(), kind: 'combat', rawText: context.text, formationId: formation.id, region: fullMap(ctx.runtime.snapshot!), allowedActions: ['move', 'attackMove', 'attack', 'stop'] }, choice: `编队 ${formation.id} 全图进攻` })
-    }
-    return { goals }
-  },
+  'combat.clear-region': bindClearRegion,
+  'combat.attack-all': bindAttackAll,
   'management.reinforce': async (params, context) => {
     const target = await catalogTarget(params.target, context)
     const formationId = formationName(context.ctx, params.formationId)
@@ -304,8 +274,7 @@ export const bindings: Binders = {
   },
   'management.rally': async (params, context) => {
     const point = await destination(context.ctx, params, context.check, context.catalog)
-    const matched = selectUnits(context.ctx, params, await context.catalog())
-    const members = matched.filter(unit => !context.ctx.formations.ownerOf(unit.id))
+    const { matched, selected: members } = selectUnitSet(context.ctx, params, await context.catalog(), context.game, { unassigned: true })
     if (!members.length) throw new Error('没有可集结的未编队单位')
     const retained = await releaseGlobalOrders(context.ctx, members.map(unit => unit.id))
     const result = bound({ id: id(), kind: 'rally', rawText: context.text, unitIds: members.map(unit => unit.id), x: point.x, y: point.y }, `将${members.length}个未编队单位集结到${'name' in point ? point.name : `(${point.x}, ${point.y})`}`)

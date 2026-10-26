@@ -14,7 +14,10 @@ export interface CatalogItem extends RuleFacts {
 }
 const normalized = (value: string) => value.normalize('NFKC').replace(/\s+/g, '').toLowerCase()
 
+interface CatalogQuery { name: string; role: string | undefined; roleType: number | undefined; matches: CatalogItem[]; names: Set<string> }
+
 export class GameCatalog {
+  private readonly queries = new Map<string, CatalogQuery>()
   readonly items: CatalogItem[]
   readonly faction: string | undefined
   constructor(readonly all: CatalogItem[], snap: Snapshot, readonly profile: GameProfile) {
@@ -23,19 +26,26 @@ export class GameCatalog {
     const rank = (item: CatalogItem) => Number(item.available) * 8 + Number(!item.limitation) * 4 + Number(item.factions.includes(this.faction ?? '')) * 2 + Number(owned.has(item.name))
     this.items = all.filter(item => !this.faction || !item.factions.length || item.factions.includes(this.faction) || item.available).sort((a, b) => rank(b) - rank(a))
   }
+  /** 生产选择、现有单位和待加入成员共用相同的名称/角色匹配。 */
+  private query(target: string) {
+    const name = normalized(target), cached = this.queries.get(name)
+    if (cached) return cached
+    const role = this.profile.roleForAlias(target)
+    const matches = this.all.filter(item => normalized(item.name) === name || normalized(item.label ?? '') === name || item.aliases.some(alias => normalized(alias) === name))
+    const query = { name, role, roleType: role ? this.profile.roles().find(definition => definition.id === role)?.match?.type : undefined, matches, names: new Set(matches.map(item => item.name)) }
+    this.queries.set(name, query)
+    return query
+  }
   resolve(target: string, expected: { type?: number; mobile?: boolean } = {}): CatalogItem | undefined {
-    const name = normalized(target)
+    const { name, role, matches, names } = this.query(target)
     // 原生 ID 保留明确选择；中文同名按操作类型和人工角色别名消歧。
     const exact = this.items.find(item => normalized(item.name) === name)
     if (exact) return exact
-    const matches = this.all.filter(item => normalized(item.name) === name || normalized(item.label ?? '') === name || item.aliases.some(alias => normalized(alias) === name))
-    const names = new Set(matches.map(item => item.name))
     const compatible = this.items.filter(item => (expected.type === undefined || item.type === expected.type) && (!expected.mobile || item.type !== 2))
     const preferred = (item: CatalogItem) => Number(this.profile.memberAliases(item.name).some(alias => normalized(alias) === name)) * 2
       - Number(!!this.profile.entry(item.name)?.undeploysInto)
     const sameName = compatible.filter(item => names.has(item.name)).sort((a, b) => preferred(b) - preferred(a))[0]
     if (sameName) return sameName
-    const role = this.profile.roleForAlias(target)
     const definitions = this.profile.roles()
     // 类型大类只响应明确的类别名，不能把“犀牛”的跨阵营替代扩大成任意车辆。
     const typeRoles = new Set(definitions.filter(role => !role.members.length && role.match && !role.match.flags && !role.match.excludeFlags && !role.match.positivePower && !role.match.labelIncludes).map(role => role.id))
@@ -51,12 +61,16 @@ export class GameCatalog {
     const hinted = type ?? this.profile.member(name)?.type
     return hinted !== undefined && this.profile.rolesFor(name, hinted).includes(role)
   }
-  matchesUnit(unit: SnapshotUnit, selector: string): boolean {
-    const role = this.profile.roleForAlias(selector)
-    if (role) return this.isRole(unit.name, role, unit.type)
-    const actual = this.all.find(item => item.name === unit.name)
-    const name = normalized(selector)
-    return normalized(unit.name) === name || normalized(actual?.label ?? '') === name || (actual?.aliases ?? this.profile.memberAliases(unit.name)).some(alias => normalized(alias) === name)
+  matchesUnit(unit: Pick<SnapshotUnit, 'name' | 'type'>, selector: string): boolean {
+    const { name, role, roleType, names } = this.query(selector)
+    if (role) {
+      return (roleType === undefined || unit.type === roleType) && this.isRole(unit.name, role, unit.type)
+    }
+    return normalized(unit.name) === name || names.has(unit.name) || this.profile.memberAliases(unit.name).some(alias => normalized(alias) === name)
+  }
+  selectorHasRole(selector: string, role: string): boolean {
+    const query = this.query(selector)
+    return query.role === role || query.matches.some(item => item.roles.includes(role))
   }
   forTranscript(text: string) {
     const input = normalized(text)

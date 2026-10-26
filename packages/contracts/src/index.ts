@@ -156,6 +156,7 @@ export interface ActionContext {
 export { validateActions, validateScriptActions, liveScriptActions, inRegion } from './validate-actions.ts';
 export { inTargetRegion, validTargetRegion, type TargetRegion } from './spatial.ts';
 export * from './control.ts';
+export * from './attack-objective.ts';
 export * from './placement.ts';
 export type { CommandEvent, CommandSource, CommandStage, GoalExecution } from './command-log.ts';
 export type { BattleRecord, BattleRecordInfo, CommandFeedback, FeedbackRating, CurrentCommands } from './battle-record.ts';

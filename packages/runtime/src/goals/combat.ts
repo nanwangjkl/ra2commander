@@ -1,4 +1,4 @@
-import { inTargetRegion, validTargetRegion } from '@ra2c/contracts'
+import { attackObjective, matchingAttackTargets, validTargetRegion } from '@ra2c/contracts'
 import { alive, baseConstraints, blocked, formationExists, movementArrival, point, projection } from './common.ts'
 import type { GoalContext, GoalHandler } from './types.ts'
 
@@ -39,14 +39,18 @@ export const combat: GoalHandler<'combat'> = {
   },
   observe(ctx) {
     const { spec, goal } = ctx
-    if (spec.destination && !spec.attackRegion && spec.mode !== 'hold' && spec.mode !== 'assault' && movementArrival(ctx)?.reached) {
+    if (spec.destination && !attackObjective(spec)?.target.region && spec.mode !== 'hold' && spec.mode !== 'assault' && movementArrival(ctx)?.reached) {
       if (spec.route) { goal.facts.routeIndex = (goal.facts.routeIndex ?? 0) + 1; if (goal.facts.routeIndex >= spec.route.length) goal.status = 'completed' }
       else goal.status = 'completed'
     }
   },
   project(ctx) {
     const { spec, goal: { facts }, snap } = ctx
-    const constraints = { ...baseConstraints(ctx), allowedUnitIds: members(ctx), allowedActions: spec.allowedActions, region: spec.region, ...(spec.attackRegion ? { targetRegion: spec.attackRegion, enemyIds: snap.enemies.filter(enemy => inTargetRegion(enemy.rx, enemy.ry, spec.attackRegion!)).map(enemy => enemy.id) } : {}), ...(spec.retreat ? { retreat: { x: spec.retreat.x, y: spec.retreat.y, active: facts.retreatTriggered } } : {}) }
+    const objective = attackObjective(spec)
+    const constraints = { ...baseConstraints(ctx), allowedUnitIds: members(ctx), allowedActions: spec.allowedActions, region: spec.region,
+      ...(objective ? { enemyIds: matchingAttackTargets(spec, snap.enemies).map(enemy => enemy.id), ...(objective.target.region ? { targetRegion: objective.target.region } : {}) } : {}),
+      ...(spec.retreat ? { retreat: { x: spec.retreat.x, y: spec.retreat.y, active: facts.retreatTriggered } } : {}) }
+
     const arrival = movementArrival(ctx)
     return projection(ctx, constraints, { spec: spec.route ? { ...spec, destination: spec.route[Math.min(facts.routeIndex ?? 0, spec.route.length - 1)]! } : spec, ...(arrival ? { arrival } : {}), ...blocked(ctx), ...(!formationExists(ctx, spec.formationId) ? { blocked: `等待 ${spec.formationId} 编队完成` } : {}) })
   },

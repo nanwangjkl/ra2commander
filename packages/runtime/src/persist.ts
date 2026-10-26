@@ -1,6 +1,7 @@
 import { closeSync, constants, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { ownerId, goalOwner, validBuildingPlacement, validTargetRegion } from '@ra2c/contracts'
+import { ownerId, goalOwner, normalizeAttackGoal, validBuildingPlacement, validTargetRegion } from '@ra2c/contracts'
+import { validateAttackSources } from './attack-selection.ts'
 import { validateGoalSpec, validateGoalFacts } from './goals/index.ts'
 import type { TaskRuntime } from './index.ts'
 import type { Formation } from './formation.ts'
@@ -43,6 +44,7 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
     if (id !== goal.spec.id || !programIds.has(goal.ownerId) || goal.ownerId !== ownerId(goalOwner(goal.spec)) || (goal.activeSpec && (goal.activeSpec.id !== id || goal.activeSpec.kind !== goal.spec.kind || ownerId(goalOwner(goal.activeSpec)) !== goal.ownerId)) || !goal.facts || !Array.isArray(goal.facts.members) || !['pending', 'active', 'completed', 'partial', 'failed', 'cancelled'].includes(goal.status)) throw new Error('目标状态非法')
     for (const spec of [goal.spec, goal.activeSpec]) if (spec) {
       validateGoalSpec(spec, runtime.snapshot)
+      if (spec.kind === 'attack') validateAttackSources(spec, new Map(state.goals))
       if (spec.kind === 'production' && spec.afterGoalId && state.goals.some(([key, target]) => key === spec.afterGoalId && target.spec.kind !== 'relocate')) throw new Error('建筑搬迁依赖非法')
     }
     validateGoalFacts(goal, runtime.snapshot)
@@ -102,6 +104,8 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
   for (const p of state.programs) runtime.programs.set(p.id, structuredClone(p))
   for (const [id, goal] of state.goals) {
     const restored = structuredClone(goal)
+    restored.spec = normalizeAttackGoal(restored.spec)
+    if (restored.activeSpec) restored.activeSpec = normalizeAttackGoal(restored.activeSpec)
     // 旧 v3/v4 的 done 从未参与判断；只保留 status 与实际进度。
     delete (restored.facts as typeof restored.facts & { done?: boolean }).done
     runtime.goals.set(id, restored)

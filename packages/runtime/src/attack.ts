@@ -1,4 +1,4 @@
-import { inTargetRegion, type ActionRequest, type ActionResult, type AttackGoal, type GoalView, type Snapshot } from '@ra2c/contracts'
+import { matchingAttackTargets, attackMembership, type ActionRequest, type ActionResult, type AttackGoal, type GoalView, type Snapshot } from '@ra2c/contracts'
 
 interface AttackMember {
   unitId: number
@@ -15,8 +15,8 @@ export const initialAttack = (): AttackState => ({ members: [] })
 /** 只依据本次已接受的攻击和真实弹药/武器变化确认出击，不用接口成功代替开火。 */
 export function planAttack(spec: AttackGoal, snap: Snapshot, ids: number[], previous: AttackState, preparing: boolean, retainedIds = spec.unitIds) {
   const state = structuredClone(previous)
-  if (!spec.dynamicNames) state.members = state.members.filter(member => retainedIds.includes(member.unitId))
-  const selected = spec.dynamicNames ? ids : retainedIds
+  state.members = state.members.filter(member => retainedIds.includes(member.unitId))
+  const selected = retainedIds
   for (const id of selected) if (!state.members.some(member => member.unitId === id)) state.members.push({ unitId: id, aircraft: snap.self.find(unit => unit.id === id)?.type === 1 || spec.aircraftIds.includes(id), phase: 'pending' })
   const readyIds: number[] = [], pendingIds: number[] = [], attackingIds: number[] = [], firedIds: number[] = [], lostIds: number[] = [], groundIds: number[] = []
   for (const member of state.members) {
@@ -45,16 +45,15 @@ export function planAttack(spec: AttackGoal, snap: Snapshot, ids: number[], prev
   }
   const targets = attackTargets(spec, snap)
   const totalAircraft = state.members.filter(member => member.aircraft).length
-  const detail = `${totalAircraft ? `已投弹${firedIds.length}/${totalAircraft}架；等待装弹/交接${pendingIds.length}架；出击中${attackingIds.length}架` : `指挥${readyIds.length}个现有单位攻击`}${preparing ? '；等待本次编队准备完成' : ''}${lostIds.length ? `；损失或转交${lostIds.length}个成员` : ''}${!targets.length ? '；等待发现匹配敌人' : ''}`
+  const emptyPreparation = !state.members.length && attackMembership(spec).kind === 'prepared'
+  const detail = emptyPreparation && !preparing ? '本次准备目标已结束，但没有可接管的匹配成员，未追加生产' : `${totalAircraft ? `已投弹${firedIds.length}/${totalAircraft}架；等待装弹/交接${pendingIds.length}架；出击中${attackingIds.length}架` : `指挥${readyIds.length}个现有单位攻击`}${preparing ? '；等待本次编队准备完成' : ''}${lostIds.length ? `；损失或转交${lostIds.length}个成员` : ''}${!targets.length ? '；等待发现匹配敌人' : ''}`
   const view: NonNullable<GoalView['attack']> = { readyIds, pendingIds, attackingIds, firedIds, lostIds, totalAircraft, groundIds, targets, preparing, detail }
-  const finished = !preparing && state.members.length > 0 && state.members.every(member => ['fired', 'lost', 'released'].includes(member.phase))
-  return { state, view, finished, outcome: lostIds.length ? firedIds.length ? 'partial' as const : 'failed' as const : 'completed' as const }
+  const finished = !preparing && (state.members.length > 0 || emptyPreparation) && state.members.every(member => ['fired', 'lost', 'released'].includes(member.phase))
+  return { state, view, finished, outcome: emptyPreparation ? 'failed' as const : lostIds.length ? firedIds.length ? 'partial' as const : 'failed' as const : 'completed' as const }
 }
 
 export function attackTargets(spec: AttackGoal, snap: Snapshot) {
-  return snap.enemies.filter(unit => (spec.targetId === undefined || unit.id === spec.targetId)
-    && (!spec.targetRegion || inTargetRegion(unit.rx, unit.ry, spec.targetRegion))
-    && (spec.targetKind === 'enemies' || spec.targetKind === 'base' && spec.targetNames.includes(unit.name) || spec.targetKind === 'buildings' && unit.type === 2 || spec.targetKind === 'units' && [1, 3, 7].includes(unit.type)))
+  return matchingAttackTargets(spec, snap.enemies)
 }
 
 export function recordAttack(state: AttackState, request: ActionRequest, results: ActionResult[], snap: Snapshot): void {

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import {
-  validateScriptActions, liveScriptActions, inRegion, goalOwner, ownerId, directionLabels,
+  validateScriptActions, liveScriptActions, inRegion, goalOwner, normalizeAttackGoal, attackObjective, ownerId, directionLabels,
   type ActionRequest, type ActionResult, type ActionContext, type Snapshot, type StepConstraints,
   type GoalConstraints, type GoalSpec, type GoalView, type ScriptOwner, type FormationRequest, type GoalExecution,
 } from '@ra2c/contracts'
@@ -183,6 +183,7 @@ export class TaskRuntime {
   }
 
   upsertGoal(spec: GoalSpec): string {
+    spec = normalizeAttackGoal(spec)
     if (spec.kind === 'rally') spec = { ...spec, unitIds: [...new Set(spec.unitIds)].filter(id => !this.formations.ownerOf(id) && this.latest?.self.some(u => u.id === id)) }
     this.validateGoal(spec)
     if (spec.kind === 'formation' && !spec.sourceOwners) {
@@ -388,7 +389,7 @@ export class TaskRuntime {
       views.push(view)
     }
     const constraints: StepConstraints = { allowedUnitIds: [], enemyIds: snap.enemies.map(u => u.id), mapWidth: snap.mapWidth, mapHeight: snap.mapHeight, goals, ignoreInactiveGoals: running }
-    const regional = specs.length > 0 && specs.every(spec => spec.kind === 'combat' && spec.attackRegion)
+    const regional = specs.length > 0 && specs.every(spec => !!attackObjective(spec)?.target.region)
     const targetIds = new Set(Object.values(goals).flatMap(goal => goal.enemyIds))
     return { snapshot: { ...snap, enemies: regional ? snap.enemies.filter(enemy => targetIds.has(enemy.id)) : snap.enemies, constraints, control: { owner: program.owner, goals: views, formations: this.formations.list().map(f => ({ id: f.id, memberIds: [...f.memberIds] })) } }, constraints }
   }

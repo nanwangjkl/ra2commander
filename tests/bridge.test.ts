@@ -32,7 +32,8 @@ function pageBridge() {
   }
   const window: Record<string, any> = { werhd: api, __ra2cSnapshot: (s: ReturnType<typeof snapshot>) => snapshots.push(s) }
   const install = () => runInNewContext(readFileSync(new URL('../packages/game-werhd/src/bridge.js', import.meta.url), 'utf8'), {
-    window, crypto: { randomUUID }, performance, setInterval: (fn: () => void) => { poll = fn; return 1 }, clearInterval: () => {},
+    // 固定采集耗时，避免测试并行调度触发实机采样降频而读到上一帧。
+    window, crypto: { randomUUID }, performance: { now: () => 0 }, setInterval: (fn: () => void) => { poll = fn; return 1 }, clearInterval: () => {},
   })
   install()
   poll()

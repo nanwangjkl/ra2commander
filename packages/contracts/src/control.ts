@@ -12,6 +12,7 @@ export interface ExploreGoal extends GoalBase {
   policy: { pointSpacing: number; stallTicks: number; maxStallsPerRegion: number; coverageRatio?: number; interiorMargin?: number; retryPasses?: number; centerFirst?: boolean }
 }
 export interface CombatGoal extends GoalBase {
+  objective?: import('./attack-objective.ts').AttackObjective
   kind: 'combat'
   formationId: string
   region: Region
@@ -31,10 +32,12 @@ export interface CombatGoal extends GoalBase {
 export interface DeployGoal extends GoalBase { kind: 'deploy'; unitIds: number[]; target: string }
 export interface AttackGoal extends GoalBase {
   kind: 'attack'
+  objective?: import('./attack-objective.ts').AttackObjective
+  membership?: import('./attack-objective.ts').AttackMembership
   unitIds: number[]
   aircraftIds: number[]
   formationId?: string
-  /** 编队仍在生产/交接时，从真实成员中继续接入本次选中的兵种。 */
+  /** 旧 v4 兼容字段；新目标使用 membership 限定具体准备来源。 */
   dynamicNames?: string[]
   preparationGoalIds: string[]
   ammoCapacity: Record<string, number>

@@ -92,7 +92,9 @@ export class GameProfile {
       .filter(item => item.score > 0).sort((a, b) => b.score - a.score)[0]?.id
   }
   roleForAlias(alias: string): string | undefined {
-    return this.definition.roles.find(role => role.id.toLowerCase() === normalize(alias) || [...role.aliases, ...(role.prerequisiteCategories ?? [])].some(name => normalize(name) === normalize(alias)))?.id
+    const value = normalize(alias)
+    const find = (name: string) => this.definition.roles.find(role => role.id.toLowerCase() === name || [...role.aliases, ...(role.prerequisiteCategories ?? [])].some(alias => normalize(alias) === name))?.id
+    return find(value) ?? find(value.replace(/^(?:所有|全部|全体)(?:的)?/, ''))
   }
   rolesFor(name: string, type: number, facts: RuleFacts = {}): string[] {
     return this.definition.roles.filter(role => {

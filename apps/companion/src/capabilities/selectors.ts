@@ -3,6 +3,7 @@ import type { CommandContext } from '../commands.ts'
 import { bindDefaultMap } from '../map-binding.ts'
 
 import type { GameProfile } from '@ra2c/command'
+import { resolveUnitSelection, type SelectionPolicy, type SelectionQuery } from '../unit-selection.ts'
 import { GameCatalog } from '../game-catalog.ts'
 export { GameCatalog, loadGameCatalog } from '../game-catalog.ts'
 
@@ -34,34 +35,14 @@ export function resolveOwner(ctx: CommandContext, token: string): string {
   throw new Error(`控制对象或任务标签不存在：${token}`)
 }
 
-export function isCombatUnit(unit: SnapshotUnit, catalog?: GameCatalog, profile?: GameProfile): boolean {
-  if (![1, 3, 7].includes(unit.type) || (!unit.primaryWeapon && !unit.secondaryWeapon)) return false
-  return !['harvester', 'constructionVehicle', 'engineer'].some(role => catalog ? catalog.isRole(unit.name, role, unit.type) : profile?.rolesFor(unit.name, unit.type).includes(role))
-}
-export function isRepairVehicle(unit: SnapshotUnit, ctx: Pick<CommandContext, 'runtime'>, catalog?: GameCatalog, profile?: GameProfile): boolean {
-  if (!(catalog ? catalog.isRole(unit.name, 'infantryFightingVehicle', unit.type) : profile?.rolesFor(unit.name, unit.type).includes('infantryFightingVehicle'))) return false
-  if (unit.transport?.passengers?.some(passenger => catalog ? catalog.isRole(passenger.name, 'engineer', passenger.type) : profile?.rolesFor(passenger.name, passenger.type).includes('engineer'))) return true
-  const engineers = new Set([...ctx.runtime.goals.values()].flatMap(goal => goal.facts.repair?.engineerIds ?? []))
-  return !!unit.transport?.unitIds.some(id => engineers.has(id))
+export { isCombatUnit, isRepairVehicle } from '../unit-selection.ts'
+export function selectUnitSet(ctx: CommandContext, params: SelectionQuery & { sourceFormationId?: string }, catalog?: GameCatalog, profile?: GameProfile, policy: SelectionPolicy = {}) {
+  const sourceFormationId = params.sourceFormationId ? formationName(ctx, params.sourceFormationId) : undefined
+  return resolveUnitSelection(ctx, params, catalog, profile, { ...policy, ...(sourceFormationId ? { sourceFormationId } : {}) })
 }
 export function selectUnits(ctx: CommandContext, params: { selector?: string; unitIds?: number[]; sourceFormationId?: string }, catalog?: GameCatalog, profile?: GameProfile): SnapshotUnit[] {
-  const snap = ctx.runtime.snapshot!
-  const source = params.sourceFormationId ? formationName(ctx, params.sourceFormationId) : undefined
-  const explicit = params.unitIds ? new Set(params.unitIds) : undefined
-  const selector = normalizeName(params.selector ?? 'all').toLowerCase()
-  return snap.self.filter(unit => {
-    if (source && ctx.formations.ownerOf(unit.id) !== source) return false
-    if (explicit) return explicit.has(unit.id)
-    if (['all', '全部', '所有单位'].includes(selector)) return [1, 3, 7].includes(unit.type)
-    if (['infantry', '步兵', '所有步兵'].includes(selector)) return unit.type === 3
-    if (['vehicles', '车辆', '所有车辆'].includes(selector)) return unit.type === 7
-    if (['aircraft', '空军', '飞机'].includes(selector)) return unit.type === 1
-    if (['combat', '战斗单位', '作战单位', '所有战斗单位'].includes(selector)) return isCombatUnit(unit, catalog, profile)
-    if (['repairvehicles', '维修车', '修理车', '维修车辆'].includes(selector)) return isRepairVehicle(unit, ctx, catalog, profile)
-    if (catalog) return catalog.matchesUnit(unit, selector)
-    const role = profile?.roleForAlias(selector)
-    return role ? !!profile?.rolesFor(unit.name, unit.type).includes(role) : unit.name.toLowerCase() === selector
-  }).sort((a, b) => Number(!!ctx.formations.ownerOf(a.id)) - Number(!!ctx.formations.ownerOf(b.id)) || a.id - b.id)
+  const { selector, unitIds, sourceFormationId } = params
+  return selectUnitSet(ctx, { ...(selector ? { selector } : {}), ...(unitIds ? { unitIds } : {}), ...(sourceFormationId ? { sourceFormationId } : {}) }, catalog, profile).selected
 }
 
 export function checkPoint(snap: Snapshot, x: number, y: number): void {

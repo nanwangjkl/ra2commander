@@ -4,7 +4,7 @@ import type { MiningGoal } from '@ra2c/contracts'
 import { initialMining, miningBatch, observeOre } from '@ra2c/runtime'
 import type { CommandContext } from './commands.ts'
 import type { BindingContext, BoundCapability } from './capabilities/bindings.ts'
-import { formationName, regionDestination } from './capabilities/selectors.ts'
+import { formationName, regionDestination, selectUnitSet } from './capabilities/selectors.ts'
 
 /** 新命令接管所选未编队成员，其余成员保留原目标及原卡片的进度。 */
 export async function releaseGlobalOrders(ctx: CommandContext, ids: number[]): Promise<NonNullable<BoundCapability['goals']>> {
@@ -22,8 +22,7 @@ export async function releaseGlobalOrders(ctx: CommandContext, ids: number[]): P
 export async function bindMining(params: ResolvedCapabilityParameters['economy.gather'], context: BindingContext): Promise<BoundCapability> {
   const catalog = await context.catalog(), { region, destination } = await regionDestination(context.ctx, params.regionName, context.check)
   const formation = params.formationId ? formationName(context.ctx, params.formationId) : undefined
-  const matches = context.ctx.runtime.snapshot!.self.filter(unit => catalog.isRole(unit.name, 'harvester', unit.type) && (!params.unitIds || params.unitIds.includes(unit.id)) && (!formation || context.ctx.formations.ownerOf(unit.id) === formation))
-  const selected = params.quantity === 'all' ? matches : matches.slice(0, params.quantity)
+  const { selected } = selectUnitSet(context.ctx, { ...params, selector: 'harvester' }, catalog, context.game, { ...(formation ? { formationId: formation } : {}), eligible: unit => catalog.isRole(unit.name, 'harvester', unit.type) })
   if (!selected.length) throw new Error('没有匹配的现有矿车，未追加生产')
   const groups = new Map<string, number[]>()
   for (const unit of selected) {

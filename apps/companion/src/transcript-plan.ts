@@ -6,19 +6,21 @@ import type { GameCatalog } from './game-catalog.ts'
 /** 纠正已确认的编队/地域误解；原位替换，保留同句话各操作的先后关系。 */
 export function normalizeOperations(text: string, operations: CapabilityCall[], map?: MapRegionIndex, catalog?: GameCatalog): CapabilityCall[] {
   const raw = normalizeName(text)
+  const role = (value: string, name: 'aircraft' | 'tank') => catalog?.selectorHasRole(value, name) ?? (name === 'aircraft' ? /^(?:aircraft|飞机|空军)$/i : /^(?:tanks?|坦克|所有坦克)$/i).test(value)
+
   // 已复现：模型为“所有飞机攻击”擅自建队，建队等待后又将攻击扩大到侦察队。
   if (/(?:所有|全部|全体).*(?:飞机|战机|轰炸机)/.test(raw) && /攻击|轰炸|摧毁|消灭/.test(raw) && !/编入|编到|加入|建队|[一二三四五六七八九十\d]+队/.test(raw)) {
     const airClause = raw.split(/[，,。；;\n]/).find(clause => /(?:所有|全部|全体).*(?:飞机|战机|轰炸机)/.test(clause) && /攻击|轰炸|摧毁|消灭/.test(clause)) ?? raw
     const target = /基地/.test(airClause) ? 'base' as const : /建筑/.test(airClause) ? 'buildings' as const : /敌方单位|敌军单位/.test(airClause) ? 'units' as const : 'enemies' as const
     const region = map?.scheme.regions.slice().sort((a, b) => b.name.length - a.name.length).find(region => [region.name, ...region.aliases].some(name => airClause.includes(normalizeName(name))))
-    const implicit = new Set(operations.flatMap(call => call.capability === 'formation.assign' && /aircraft|飞机|空军/.test(call.params.selector ?? '') ? [formationAlias(call.params.formationId)] : []))
+    const implicit = new Set(operations.flatMap(call => call.capability === 'formation.assign' && role(call.params.selector ?? '', 'aircraft') ? [formationAlias(call.params.formationId)] : []))
     let replaced = false
     operations = operations.flatMap(call => {
-      if (call.capability === 'formation.assign' && /aircraft|飞机|空军/.test(call.params.selector ?? '')) return []
+      if (call.capability === 'formation.assign' && role(call.params.selector ?? '', 'aircraft')) return []
       if (!['combat.attack', 'combat.attack-all', 'combat.clear-region'].includes(call.capability)) return [call]
-      if (call.capability === 'combat.attack' && !['combat', 'aircraft', '飞机', '空军'].includes(call.params.selector ?? 'combat')) return [call]
+      if (call.capability === 'combat.attack' && call.params.selector !== undefined && call.params.selector !== 'combat' && !role(call.params.selector, 'aircraft')) return [call]
       if ('formationId' in call.params && call.params.formationId && !implicit.has(formationAlias(call.params.formationId))) return [call]
-      if (call.capability === 'combat.attack' && ['aircraft', '飞机', '空军'].includes(call.params.selector ?? '')) {
+      if (call.capability === 'combat.attack' && role(call.params.selector ?? '', 'aircraft')) {
         const { formationId: _implicitFormation, ...params } = call.params
         replaced = true
         return [{ ...call, params }]
@@ -51,12 +53,12 @@ export function normalizeOperations(text: string, operations: CapabilityCall[], 
     } else {
       const productionText = clause.replace(/(?:不要|别|无需|不用|禁止)(?:再)?(?:生产|制造|造|出兵)/g, '')
       if (!/坦克/.test(clause) || /制造|生产|建造|新造|再造|补足|补齐|(?:造|出).{0,8}坦克/.test(productionText)) continue
-      const count = clause.match(/([\d一二三四五六七八九十两]+)(?:个|辆|台)?(?:灰熊|犀牛|天启)?坦克/)
+      const count = clause.match(/([\d一二三四五六七八九十两]+)(?:个|辆|台)?[^，,。；;\d一二三四五六七八九十两]{0,8}坦克/)
       const quantity = /所有|全部|全体/.test(clause) || !count ? 'all' : chineseNumber(count[1]!)
       const otherProduction = clauses.some(other => other !== clause && /制造|生产|建造|新造|再造|补足|补齐|(?:造|出).{0,8}坦克/.test(other))
-      replace(call => call.capability === 'formation.assign' ? formationAlias(call.params.formationId) === targetId && /tanks|坦克|灰熊|犀牛|天启|^all$/i.test(call.params.selector ?? 'all')
+      replace(call => call.capability === 'formation.assign' ? formationAlias(call.params.formationId) === targetId && (call.params.selector === undefined || call.params.selector === 'all' || role(call.params.selector, 'tank'))
         : call.capability === 'production.produce' && (call.params.formationId ? formationAlias(call.params.formationId) === targetId : !otherProduction)
-          && (!!catalog?.resolve(call.params.target)?.roles.includes('tank') || /坦克|tank|MTNK|HTNK|APOC/i.test(call.params.target)),
+          && role(call.params.target, 'tank'),
       { capability: 'formation.assign', params: { selector: 'tanks', quantity, formationId: targetId } })
     }
   }
