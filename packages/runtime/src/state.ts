@@ -1,24 +1,43 @@
 import type { GoalSpec, ScriptOwner } from '@ra2c/contracts'
 
-export interface GoalFacts {
+export interface CommonGoalFacts {
   initialized: boolean
   members: Array<{ id: number; name: string; rx: number; ry: number }>
   lossRatio: number
   retreatTriggered: boolean
-  done: boolean
-  /** 已完成生产被追加总量时，保留前次完成事实供待生效/失败状态展示。 */
-  completedQuantity?: number
   blocked?: string
   cancelReason?: string
-  routeIndex?: number
   outcomeDetail?: string
-  repair?: import('./repair.ts').RepairState
+}
+/** 保持 v4 字段兼容，按目标类型列明进度归属。 */
+export interface GoalProgress {
+  routeIndex?: number
+  /** 已完成生产被追加总量时，保留前次完成事实供待生效/失败状态展示。 */
+  completedQuantity?: number
   placementBlocked?: boolean
+  repair?: import('./repair.ts').RepairState
   relocation?: import('./relocation.ts').RelocationState
   mining?: import('./mining.ts').MiningState
   attack?: import('./attack.ts').AttackState
   building?: import('./building.ts').BuildingState
 }
+export interface GoalFactKeys {
+  combat: 'routeIndex'
+  production: 'completedQuantity' | 'placementBlocked'
+  repair: 'repair'
+  relocate: 'relocation'
+  mining: 'mining'
+  attack: 'attack'
+  building: 'building'
+  explore: never
+  deploy: never
+  formation: never
+  reinforce: never
+  rally: never
+  transport: never
+}
+export type GoalFacts<K extends GoalSpec['kind'] = GoalSpec['kind']> = CommonGoalFacts & Pick<GoalProgress, GoalFactKeys[K]>
+
 export interface GoalState {
   ownerId: string
   spec: GoalSpec
@@ -58,4 +77,4 @@ export interface Handoff {
   unitIds: number[]
   owners: Array<[number, string | null]>
 }
-export const emptyFacts = (): GoalFacts => ({ initialized: false, members: [], lossRatio: 0, retreatTriggered: false, done: false })
+export const emptyFacts = (): GoalFacts => ({ initialized: false, members: [], lossRatio: 0, retreatTriggered: false })

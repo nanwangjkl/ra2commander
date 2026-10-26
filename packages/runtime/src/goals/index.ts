@@ -1,0 +1,36 @@
+import type { GoalSpec } from '@ra2c/contracts'
+import type { GoalState } from '../state.ts'
+import { attack } from './attack.ts'
+import { building } from './building.ts'
+import { combat } from './combat.ts'
+import { deploy } from './deploy.ts'
+import { explore } from './explore.ts'
+import { formation } from './formation.ts'
+import { mining } from './mining.ts'
+import { production } from './production.ts'
+import { rally } from './rally.ts'
+import { reinforce } from './reinforce.ts'
+import { relocate } from './relocate.ts'
+import { repair } from './repair.ts'
+import { transport } from './transport.ts'
+import type { GoalHandler, GoalKind, MapSize } from './types.ts'
+
+/** 新目标必须在这里登记；不引入动态插件、隐藏顺序或运行时注册。 */
+export const goalHandlers = { attack, building, combat, deploy, explore, formation, mining, production, rally, reinforce, relocate, repair, transport } satisfies { [K in GoalKind]: GoalHandler<K> }
+/** 规格和处理器由相同 kind 分派；类型收窄只在这个边界适配一次。 */
+export function handlerFor(spec: GoalSpec): GoalHandler {
+  if (!Object.hasOwn(goalHandlers, spec?.kind)) throw new Error(`未知目标类型：${spec?.kind}`)
+  return goalHandlers[spec.kind] as GoalHandler
+}
+export function validateGoalSpec(spec: GoalSpec, map: MapSize): void {
+  if (!spec || typeof spec.id !== 'string' || !spec.id || typeof spec.rawText !== 'string' || !spec.rawText) throw new Error('目标缺少 ID 或命令')
+  handlerFor(spec).validateSpec(spec, map)
+}
+export function validateGoalFacts(goal: GoalState, map: MapSize): void {
+  const facts = goal.facts
+  if (!facts || typeof facts.initialized !== 'boolean' || !Array.isArray(facts.members) || facts.members.some(member => !Number.isSafeInteger(member.id) || typeof member.name !== 'string' || !Number.isFinite(member.rx) || !Number.isFinite(member.ry)) || !Number.isFinite(facts.lossRatio) || facts.lossRatio < 0 || facts.lossRatio > 1 || typeof facts.retreatTriggered !== 'boolean') throw new Error('目标事实非法')
+  const kinds = { repair: 'repair', relocation: 'relocate', mining: 'mining', attack: 'attack', building: 'building', routeIndex: 'combat', completedQuantity: 'production', placementBlocked: 'production' } as const
+  for (const [field, kind] of Object.entries(kinds)) if (facts[field as keyof typeof kinds] !== undefined && goal.spec.kind !== kind) throw new Error(`${field} 进度与目标不符`)
+  if (facts.routeIndex !== undefined && (!Number.isSafeInteger(facts.routeIndex) || facts.routeIndex < 0) || facts.completedQuantity !== undefined && (!Number.isSafeInteger(facts.completedQuantity) || facts.completedQuantity < 0) || facts.placementBlocked !== undefined && typeof facts.placementBlocked !== 'boolean') throw new Error('目标进度非法')
+  handlerFor(goal.spec).validateFacts?.(goal, map)
+}

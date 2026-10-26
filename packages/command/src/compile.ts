@@ -2,11 +2,7 @@ import type { OpenAICompatibleProvider } from '@ra2c/model-providers'
 import type { Snapshot, StepConstraints, StepOutcome } from '@ra2c/contracts'
 import { compileChecks, extractCode } from './script-contract.ts'
 import { loadPrompts, type PromptLibrary } from './prompt-loader.ts'
-import { checkScoutHandoffs } from './scout-checks.ts'
-import { checkRepairStages } from './repair-checks.ts'
-import { checkRelocationStages } from './relocation-checks.ts'
-import { checkMiningStages } from './mining-checks.ts'
-import { checkAttackStages } from './attack-checks.ts'
+import { goalCompileChecks } from './goal-checks.ts'
 
 export interface CompileInput {
   snapshot: Snapshot
@@ -75,28 +71,10 @@ export async function compileCommand(
       signal?.throwIfAborted()
       if (!dry.ok) errors = [dry.error ?? '干跑失败']
       else {
-        const handoffError = await checkScoutHandoffs(code, input, executor)
-        signal?.throwIfAborted()
-        if (handoffError) errors = [handoffError]
-        if (!errors.length) {
-          const repairError = await checkRepairStages(code, input, executor)
+        for (const check of goalCompileChecks) {
+          const error = await check(code, input, executor)
           signal?.throwIfAborted()
-          if (repairError) errors = [repairError]
-        }
-        if (!errors.length) {
-          const relocationError = await checkRelocationStages(code, input, executor)
-          signal?.throwIfAborted()
-          if (relocationError) errors = [relocationError]
-        }
-        if (!errors.length) {
-          const miningError = await checkMiningStages(code, input, executor)
-          signal?.throwIfAborted()
-          if (miningError) errors = [miningError]
-        }
-        if (!errors.length) {
-          const attackError = await checkAttackStages(code, input, executor)
-          signal?.throwIfAborted()
-          if (attackError) errors = [attackError]
+          if (error) { errors = [error]; break }
         }
       }
     }

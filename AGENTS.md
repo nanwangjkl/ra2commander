@@ -34,7 +34,7 @@ RTS 优先快速反应。能理解行动目标时，Agent 应结合当前战况�
 
 [基础能力、提示词与 Skill 改造](doc/roadmap/capabilities-prompts-and-skills.md)的阶段 A～C 已经用户验收，用户在启动 Companion 体验后确认 C（规则与战术拆分）效果良好并要求提交推送，用户于 2026-10-25 验收前轮修正并批准开始 D（探路 Skill）；用户于 2026-10-26 认可探路流程，继续按逐区 60% 微调并复核对局记录，后续阶段未启动。此批准不改变工作台与真实语音计划的阶段边界。
 
-[运行时整理与响应速度改造](doc/roadmap/runtime-simplification.md)的阶段 1 已于 2026-10-26 由用户验收通过，用户批准提交推送后开始阶段 2（目标模块化与状态整理）；阶段 3～5 未开始。每阶段验收后再继续，阶段 5 的建筑操作试点与后续扩展分别验收。
+[运行时整理与响应速度改造](doc/roadmap/runtime-simplification.md)的阶段 1 已于 2026-10-26 由用户验收通过，阶段 2（目标模块化与状态整理）已于 2026-10-27 由用户验收通过，用户批准提交推送后开始阶段 3（对象选择与攻击目标统一）；阶段 4～5 未开始。每阶段验收后再继续，阶段 5 的建筑操作试点与后续扩展分别验收。
 
 ## 开发环境
 
@@ -183,7 +183,7 @@ apps/companion/            # 启动器：静态伺服、自动导入、文本 CL
 packages/contracts/        # 桥契约、宿主动作校验 + vendored werhd API 类型声明
 packages/game-werhd/       # 页面桥（bridge.js 注入 + 宿主侧 WerhdBridge）
 packages/command/          # Acorn 语法/契约检查、生成与有限修复
-packages/runtime/          # 控制对象、目标、脚本切换、生产记录、归属、探索与 v4 持久化
+packages/runtime/          # 控制对象协调、goals/ 静态目标处理器、生产记录、归属与 v4 持久化
 packages/js-worker/        # 独立子进程中的 QuickJS WASM 隔离执行器
 packages/model-providers/  # 可取消的云模型接入
 packages/maps/             # 分区方案读取、空间查询与离线提取工具

@@ -1,11 +1,11 @@
 import { matchesPlacement, inTargetRegion, type ProductionGoal, type Snapshot } from '@ra2c/contracts'
 import type { ProductionRecord } from './state.ts'
 
-export function submitted(records: ProductionRecord[], goalId: string, name: string): number {
+export function submitted(records: readonly ProductionRecord[], goalId: string, name: string): number {
   return records.filter(r => r.goalId === goalId && r.name === name && r.state !== 'rejected').reduce((n, r) => n + r.quantity, 0)
 }
 
-export function productionProgress(goal: ProductionGoal, records: ProductionRecord[], snap: Snapshot) {
+export function productionProgress(goal: ProductionGoal, records: readonly ProductionRecord[], snap: Snapshot) {
   const remaining: Record<string, number> = Object.create(null)
   const sent: Record<string, number> = Object.create(null)
   const observed: Record<string, number[]> = Object.create(null)
