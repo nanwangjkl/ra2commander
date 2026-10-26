@@ -326,7 +326,7 @@ export class BattleRecords {
         lines.push(`- 命令：${labels[card.stage] ?? card.stage}${card.error ? `；${card.error}` : ''}`)
         for (const [goalId, goal] of card.goals) {
           const execution = goal.execution, state = execution?.state ?? goal.stage
-          lines.push(`- ${goalId}：${state === 'partial' ? '部分完成' : labels[state] ?? state}${execution?.detail ? `，${execution.detail}` : ''}${execution?.progress ? `（${execution.progress.completed}/${execution.progress.total}）` : ''}${goal.error ? `；${goal.error}` : ''}`)
+          lines.push(`- ${goalId}${goal.executionMode === 'native' ? '（本机执行）' : ''}：${state === 'partial' ? '部分完成' : labels[state] ?? state}${execution?.detail ? `，${execution.detail}` : ''}${execution?.progress ? `（${execution.progress.completed}/${execution.progress.total}）` : ''}${goal.error ? `；${goal.error}` : ''}`)
         }
       }
       const errors = new Set(events.filter(event => event.error).map(event => event.error!))

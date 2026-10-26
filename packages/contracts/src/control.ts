@@ -3,7 +3,10 @@ import type { ActionRequest, Region, StepConstraints } from './index.ts'
 export type ScriptOwner = { kind: 'global' } | { kind: 'formation'; formationId: string }
 export const ownerId = (owner: ScriptOwner): string => owner.kind === 'global' ? 'global' : `formation:${owner.formationId}`
 
-interface GoalBase { id: string; rawText: string; label?: string; skill?: { runId: string; id: string; version: string; hash: string; instructions: string } }
+export type GoalExecutionMode = 'script' | 'native'
+interface GoalBase { id: string; rawText: string; label?: string; executionMode?: GoalExecutionMode; skill?: { runId: string; id: string; version: string; hash: string; instructions: string } }
+/** 无标记的旧目标继续使用脚本，恢复时不悄悄改变动作来源。 */
+export const goalExecutionMode = (spec: GoalSpec): GoalExecutionMode => spec.executionMode ?? 'script'
 export interface ExploreGoal extends GoalBase {
   kind: 'explore'
   formationId: string

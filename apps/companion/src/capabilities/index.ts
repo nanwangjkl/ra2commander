@@ -1,5 +1,5 @@
 import { loadPrompts, type CapabilityCall, type CapabilityId, type CapabilityParameters, type ResolvedCapabilityParameters, type PromptLibrary } from '@ra2c/command'
-import type { CommandEvent, GoalSpec } from '@ra2c/contracts'
+import { goalExecutionMode, type CommandEvent, type GoalSpec } from '@ra2c/contracts'
 import type { CommandContext } from '../commands.ts'
 import { bindings, type BindingContext } from './bindings.ts'
 import { loadGameCatalog, type GameCatalog } from './selectors.ts'
@@ -43,6 +43,7 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
   check()
   const emit = options.emit ?? (() => {})
   const state: CapabilityExecution = { goals: [], choices: [], effects: [], skipped: [], results: [], summary: '' }
+  const scriptOwners = new Set<string>()
   const owners = new Set<string>(), suppressed = new Set<string>(), goalOwners = new Map<string, string>()
   const accepted: string[] = []
   const acceptedCalls: CapabilityCall[] = [], failures: BindingFailure[] = []
@@ -91,13 +92,14 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
               else context.movementGoals.delete(item.goal.formationId)
             }
             owners.add(owner); suppressed.delete(owner)
+            if (goalExecutionMode(item.goal) === 'script') scriptOwners.add(owner)
             if (tracked >= 0) {
               state.goals[tracked] = item.goal; state.choices[tracked] = item.choice
               accepted[acceptedGoals.get(item.goal.id)!] = item.choice
-              emit({ stage: 'bound', goalId: item.goal.id, owner, choice: item.choice })
+              emit({ stage: 'bound', goalId: item.goal.id, owner, choice: item.choice, executionMode: goalExecutionMode(item.goal) })
             } else if (track) {
               acceptedGoals.set(item.goal.id, accepted.length); accepted.push(item.choice)
-              goalOwners.set(item.goal.id, owner); emit({ stage: 'bound', goalId: item.goal.id, owner, choice: item.choice })
+              goalOwners.set(item.goal.id, owner); emit({ stage: 'bound', goalId: item.goal.id, owner, choice: item.choice, executionMode: goalExecutionMode(item.goal) })
             }
             else { accepted.push(item.choice); state.effects.push(item.choice) } // 改已有目标不夺走原命令卡片的进度绑定。
           } catch (error) {
@@ -118,7 +120,7 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
             skip('Skill 目标绑定不完整，已撤销本次 Skill')
           }
         }
-        for (const owner of result.refreshOwners ?? []) { owners.add(owner); suppressed.delete(owner) }
+        for (const owner of result.refreshOwners ?? []) { owners.add(owner); scriptOwners.add(owner); suppressed.delete(owner) }
         for (const owner of result.suppressOwners ?? []) { owners.delete(owner); suppressed.add(owner) }
         state.effects.push(...(result.choices ?? [])); accepted.push(...(result.choices ?? []))
         for (const message of result.skipped ?? []) skip(message)
@@ -137,7 +139,9 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
     for (const owner of owners) {
       if (suppressed.has(owner)) continue
       check()
-      emit({ stage: 'generating', owner })
+      const native = [...ctx.runtime.goals.values()].some(goal => goal.ownerId === owner && ['pending', 'active'].includes(goal.status) && goalExecutionMode(goal.spec) === 'native') ? ctx.controller.activateNative(owner) : undefined
+      if (!scriptOwners.has(owner)) { if (native) state.results.push(native); options.onUpdate?.(state); continue }
+      emit({ stage: 'generating', owner, executionMode: 'script' })
       try {
         state.results.push(await ctx.controller.refresh(owner, false, { prompts, ...(options.commandId ? { commandId: options.commandId } : {}), onPromptVersion: version => options.onPromptVersion?.(owner, version) }))
         compileFailures.delete(owner)
@@ -152,7 +156,7 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
       }
       options.onUpdate?.(state)
     }
-    owners.clear()
+    owners.clear(); scriptOwners.clear()
   }
   await bindCalls(calls, failures)
   updateSummary()

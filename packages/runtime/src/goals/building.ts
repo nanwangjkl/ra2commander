@@ -28,6 +28,7 @@ export const building: GoalHandler<'building'> = {
     const { view } = plan(ctx)
     return projection(ctx, { ...baseConstraints(ctx), allowedUnitIds: view.actions.flatMap(action => 'unitIds' in action ? action.unitIds : []), allowedActions: [ctx.spec.operation === 'repair' ? 'repairBuilding' : 'sellBuilding'], buildingActions: view.actions }, { building: view })
   },
+  nativeActions: ctx => plan(ctx).view.actions,
   execution(ctx, { view }) { return { state: view.building!.pending ? 'pending' : 'running', ...execution(ctx, view.building!) } },
   terminalExecution(ctx) { return { state: ctx.goal.status as 'completed' | 'partial' | 'failed', ...execution(ctx, plan(ctx).view) } },
   managedMembers: ({ spec }) => spec.unitIds,

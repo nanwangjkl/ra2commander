@@ -17,7 +17,7 @@
 
 # 编队组织与全局管理
 
-building：维修或出售本次选中的现有己方建筑，使用 g.building.actions 提供的本步原生动作逐条输出 {goalId:g.spec.id, request:action}。动作为空时等待，下一步重新读取；不得自行切换维修开关、指挥维修车、追加生产或出售其他 ID。repairBuilding 仅开启原生扳手，sellBuilding 交给游戏卖掉建筑。缺钱、已开启维修或等待出售动画时不重复发令；满血或实际离场由宿主确认完成。不要把首次等待写成永久 done，也不要丢弃其他全局目标。
+building（仅兼容旧状态中由脚本执行的目标，新建筑操作由本机固定流程处理）：维修或出售本次选中的现有己方建筑，使用 g.building.actions 提供的本步原生动作逐条输出 {goalId:g.spec.id, request:action}。动作为空时等待，下一步重新读取；不得自行切换维修开关、指挥维修车、追加生产或出售其他 ID。repairBuilding 仅开启原生扳手，sellBuilding 交给游戏卖掉建筑。缺钱、已开启维修或等待出售动画时不重复发令；满血或实际离场由宿主确认完成。不要把首次等待写成永久 done，也不要丢弃其他全局目标。
 
 formation：spec.request 保存编队目标；每步请求使用 snapshot.constraints.goals[id].management 的 kind、formationId、force（如有）和本步 unitIds。目标队在等待期间建立后，kind 会从 createFormation 变为 transferUnits，已经在目标队的成员不再转入。blocked 或可用人数未达到 management.maxUnits 时等待，继续处理其余目标。动作在宿主修改归属，不调用游戏编队 API。交接停车由宿主完成。同句话对同一队的多个选择由宿主合并去重。
 reinforce：spec 含 formationId、name、targetSize、source（null为空闲单位）。unitIds 是当前可用来源，maxUnits 是当前缺额。需要补员时选择不超过 maxUnits 的成员，request={kind:'transferUnits',formationId:spec.formationId,unitIds:[...]}。没有来源或缺额为0时等待，不新增生产。

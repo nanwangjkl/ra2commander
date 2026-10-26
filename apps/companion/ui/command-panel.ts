@@ -59,7 +59,7 @@ export function mountCommandPanel(): void {
       const state = goal.execution?.state ?? goal.stage
       const progress = goal.execution?.progress
       const replaced = state === 'cancelled' && goal.execution?.detail?.startsWith('已被后续命令替换')
-      return `<li data-goal="${escape(id)}"><span class="goal-choice">${escape(goal.choice)}${progress ? `<small class="goal-progress">${escape(progress.label ?? '已产出')} ${progress.completed}/${progress.total}</small>` : ''}${(['cancelled', 'failed', 'partial'].includes(state) || progress?.label) && goal.execution?.detail ? `<small class="goal-detail">${escape(goal.execution.detail)}</small>` : ''}</span><span class="goal-status stage-${state}">${replaced ? '已被新命令替换' : state === 'partial' ? '部分完成' : LABEL[state] ?? state}${goal.version !== undefined ? ` · v${goal.version}` : ''}</span></li>`
+      return `<li data-goal="${escape(id)}"><span class="goal-choice">${escape(goal.choice)}${progress ? `<small class="goal-progress">${escape(progress.label ?? '已产出')} ${progress.completed}/${progress.total}</small>` : ''}${(['cancelled', 'failed', 'partial'].includes(state) || progress?.label) && goal.execution?.detail ? `<small class="goal-detail">${escape(goal.execution.detail)}</small>` : ''}</span><span class="goal-status stage-${state}">${replaced ? '已被新命令替换' : state === 'partial' ? '部分完成' : LABEL[state] ?? state}${goal.executionMode === 'native' ? ' · 本机执行' : goal.version !== undefined ? ` · v${goal.version}` : ''}</span></li>`
     }).join('')
     const completed = [...data.goals.values()].filter(goal => goal.execution?.state === 'completed').length
     const completion = completed && data.goals.size > 1 ? ` · ${completed}/${data.goals.size} 完成` : ''

@@ -4,6 +4,7 @@ export interface CardGoal {
   choice: string
   owner?: string
   stage: CommandStage
+  executionMode?: CommandEvent['executionMode']
   version?: number
   error: string
   execution?: GoalExecution
@@ -34,12 +35,15 @@ export function applyCommandEvent(event: CommandEvent, previous?: CardData): Car
       data.goals.set(event.goalId, { choice: event.choice ?? event.goalId, stage: 'bound', error: '', ...(event.owner ? { owner: event.owner } : {}) })
     }
     for (const [id, goal] of data.goals) {
-      if (event.goalId ? id !== event.goalId : goal.owner !== event.owner) continue
+      if (event.goalId ? id !== event.goalId : goal.owner !== event.owner || event.executionMode && (goal.executionMode ?? 'script') !== event.executionMode) continue
+      if (event.executionMode && goal.executionMode && event.executionMode !== goal.executionMode) delete goal.execution
       if (event.stage === 'execution') goal.execution = event.execution
       else goal.stage = event.stage
       if (event.choice) goal.choice = event.choice
       if (event.owner) goal.owner = event.owner
-      if (event.version !== undefined) goal.version = event.version
+      if (event.executionMode) goal.executionMode = event.executionMode
+      if (goal.executionMode === 'native') delete goal.version
+      else if (event.version !== undefined) goal.version = event.version
       if (event.stage !== 'execution') goal.error = event.error ?? ''
     }
   } else {

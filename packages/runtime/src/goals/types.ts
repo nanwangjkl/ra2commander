@@ -34,6 +34,8 @@ export interface GoalHandler<K extends GoalKind = GoalKind> {
   /** 探索在同轮生产与交接目标观察之后结算。 */
   observeLast?: boolean
   project(context: GoalContext<K>): GoalProjection
+  /** 固定流程只提出动作；校验、预算、提交和回执仍由控制对象协调。 */
+  nativeActions?(context: GoalContext<K>): ActionRequest[]
   execution?(context: GoalContext<K>, projection: GoalProjection): GoalExecution | undefined
   terminalExecution?(context: GoalContext<K>): GoalExecution | undefined
   progress?(context: GoalContext<K>, view: GoalView): Pick<GoalExecution, 'progress' | 'detail'>

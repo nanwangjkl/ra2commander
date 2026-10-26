@@ -24,5 +24,6 @@ export interface CommandEvent {
   owner?: string
   sessionKey?: string
   version?: number
+  executionMode?: import('./control.ts').GoalExecutionMode
   execution?: GoalExecution
 }

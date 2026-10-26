@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import {
-  validateScriptActions, liveScriptActions, inRegion, goalOwner, normalizeAttackGoal, attackObjective, ownerId, directionLabels,
+  validateScriptActions, liveScriptActions, inRegion, goalExecutionMode, goalOwner, normalizeAttackGoal, attackObjective, ownerId, directionLabels,
   type ActionRequest, type ActionResult, type ActionContext, type Snapshot, type StepConstraints,
-  type GoalConstraints, type GoalSpec, type GoalView, type ScriptOwner, type FormationRequest, type GoalExecution,
+  type GoalConstraints, type GoalSpec, type GoalView, type ScriptAction, type ScriptOwner, type FormationRequest, type GoalExecution,
 } from '@ra2c/contracts'
 import { codeHash, type StepExecutor } from '@ra2c/js-worker'
 import { FormationRegistry } from './formation.ts'
@@ -97,10 +97,11 @@ export class TaskRuntime {
     const program = this.programs.get(goal.ownerId)
     const spec = goal.activeSpec
     if (!spec && goal.status === 'pending' && goal.facts.completedQuantity !== undefined) return { state: 'completed', detail: `前次${goal.facts.completedQuantity}个已完成，新增总量待生效` }
-    if (!spec || !program?.activeGoalIds.includes(id) || !this.latest) return program?.status === 'paused' ? { state: 'paused', detail: '目标保留，脚本已暂停' } : undefined
+    if (!spec || !program?.activeGoalIds.includes(id) || !this.latest) return program?.status === 'paused' ? { state: 'paused', detail: '目标保留，控制对象已暂停' } : undefined
     if (program.status === 'paused') return program.stats.errors >= 3 && program.stats.lastError
-      ? { state: 'faulted', detail: `脚本运行出错，已暂停：${program.stats.lastError}` } : { state: 'paused', detail: '脚本已暂停' }
-    if (program.status === 'stopped') return { state: 'cancelled', detail: '脚本已停止' }
+      ? { state: 'faulted', detail: `脚本运行出错，已暂停：${program.stats.lastError}` } : { state: 'paused', detail: '控制对象已暂停' }
+    if (program.status === 'stopped') return { state: 'cancelled', detail: '控制对象已停止' }
+    if (goal.facts.nativeError) return { state: 'faulted', detail: `本机执行出错：${goal.facts.nativeError}` }
     const ctx = this.goalContext(spec, this.latest), projected = this.project(spec, this.latest), view = projected.view
     const activeHandler = handlerFor(spec)
     const execution = activeHandler.execution?.(ctx, projected)
@@ -183,7 +184,7 @@ export class TaskRuntime {
   }
 
   upsertGoal(spec: GoalSpec): string {
-    spec = normalizeAttackGoal(spec)
+    spec = { ...normalizeAttackGoal(spec), executionMode: goalExecutionMode(spec) }
     if (spec.kind === 'rally') spec = { ...spec, unitIds: [...new Set(spec.unitIds)].filter(id => !this.formations.ownerOf(id) && this.latest?.self.some(u => u.id === id)) }
     this.validateGoal(spec)
     if (spec.kind === 'formation' && !spec.sourceOwners) {
@@ -194,6 +195,7 @@ export class TaskRuntime {
     const program = this.program(owner)
     const old = this.goals.get(spec.id)
     if (old && goalOwner(spec).kind === 'formation' && (old.status !== 'pending' || old.activeSpec || old.spec.rawText !== spec.rawText)) throw new Error('编队新命令应使用新的目标 ID')
+    if (old && goalExecutionMode(old.spec) !== goalExecutionMode(spec)) throw new Error('改变执行方式须使用新的目标 ID')
     if (old && (old.ownerId !== program.id || old.spec.kind !== spec.kind || old.status === 'cancelled')) throw new Error('不能复用其他对象或已取消目标的 ID')
     if (old?.status === 'completed' && spec.kind !== 'production') throw new Error('该目标已完成，请建立新目标')
     if (old) {
@@ -214,10 +216,51 @@ export class TaskRuntime {
       program.goalIds = [spec.id]
     }
     else if (!program.goalIds.includes(spec.id)) program.goalIds.push(spec.id)
-    program.revision++
-    delete program.compileError
-    this.cancelCommand(program.id)
+    if (goalExecutionMode(spec) === 'script') {
+      program.revision++
+      delete program.compileError
+      this.cancelCommand(program.id)
+    }
     return program.id
+  }
+
+  /** 本机目标独立生效，不切换代码/记忆，也不打断同对象正在生成的脚本。 */
+  activateNativeGoals(id: string): string[] {
+    const program = this.programs.get(id)
+    if (!program || !this.latest) return []
+    const activated: string[] = []
+    for (const goalId of program.goalIds) {
+      const goal = this.goals.get(goalId)!
+      if (!goal || !['pending', 'active'].includes(goal.status) || goalExecutionMode(goal.spec) !== 'native' || JSON.stringify(goal.spec) === JSON.stringify(goal.activeSpec)) continue
+      goal.activeSpec = structuredClone(goal.spec)
+      goal.status = 'active'
+      delete goal.facts.nativeError
+      try { handlerFor(goal.activeSpec).initialize?.(this.goalContext(goal.activeSpec, this.latest)) }
+      catch (error) { this.nativeFault(goal, error) }
+      if (!program.activeGoalIds.includes(goalId)) program.activeGoalIds.push(goalId)
+      activated.push(goalId)
+    }
+    if (activated.length && ['idle', 'stopped'].includes(program.status)) program.status = 'active'
+    return activated
+  }
+
+  /** 试点回退：保留同一目标及发令事实，停止本机来源，等待生成代码接管。 */
+  useBuildingScripts(): string[] {
+    const changed: string[] = []
+    for (const goal of this.goals.values()) {
+      if (goal.spec.kind !== 'building' || goalExecutionMode(goal.spec) !== 'native' || !['pending', 'active'].includes(goal.status)) continue
+      goal.spec = { ...goal.spec, executionMode: 'script' }
+      delete goal.activeSpec
+      delete goal.facts.nativeError
+      goal.status = 'pending'
+      const program = this.programs.get(goal.ownerId)!
+      program.activeGoalIds = program.activeGoalIds.filter(id => id !== goal.spec.id)
+      if (program.status === 'active' && !this.activeSpecs(program).length) program.status = 'idle'
+      program.revision++
+      this.cancelCommand(program.id)
+      changed.push(goal.spec.id)
+    }
+    return changed
   }
 
   beginCompile(id: string, repair = false): CompileLease {
@@ -226,7 +269,7 @@ export class TaskRuntime {
     if (repair && !['active', 'paused'].includes(program.status)) throw new Error('脚本不处于运行或故障暂停态')
     this.cancelCommand(id)
     const abort = new AbortController()
-    const goals = program.goalIds.map(g => this.goals.get(g)!).filter(g => g && !['cancelled', 'completed', 'partial', 'failed'].includes(g.status)).map(g => structuredClone(g.spec))
+    const goals = program.goalIds.map(g => this.goals.get(g)!).filter(g => g && goalExecutionMode(g.spec) === 'script' && !['cancelled', 'completed', 'partial', 'failed'].includes(g.status)).map(g => structuredClone(g.spec))
     const lease: CompileLease = { ownerId: id, sessionKey: this.sessionKey, revision: program.revision, formationRevision: this.formations.revision, signal: abort.signal, repair, goals, ...(repair ? { recoveryStatus: program.status as 'active' | 'paused' } : {}) }
     this.pending.set(id, { lease, abort })
     return lease
@@ -239,7 +282,7 @@ export class TaskRuntime {
 
   prepareCompile(lease: CompileLease, goals: GoalSpec[]): boolean {
     if (!this.currentLease(lease)) return false
-    if (goals.length !== lease.goals.length || goals.some((g, i) => g.id !== lease.goals[i]!.id || ownerId(goalOwner(g)) !== lease.ownerId)) throw new Error('预处理改变了目标归属')
+    if (goals.length !== lease.goals.length || goals.some((g, i) => g.id !== lease.goals[i]!.id || ownerId(goalOwner(g)) !== lease.ownerId || goalExecutionMode(g) !== 'script')) throw new Error('预处理改变了目标归属')
     for (const goal of goals) {
       // 管理动作可能已提交归属、仍等待停车确认，不能要求“新队尚不存在”。
       if (goal.kind !== 'formation') this.validateGoal(goal)
@@ -260,7 +303,7 @@ export class TaskRuntime {
     if (lease.repair && program.status !== lease.recoveryStatus) return false
     const nextIds = new Set(lease.goals.map(g => g.id))
     for (const id of program.activeGoalIds) {
-      if (!nextIds.has(id)) {
+      if (!nextIds.has(id) && goalExecutionMode(this.goals.get(id)!.activeSpec!) === 'script') {
         const old = this.goals.get(id)
         if (old?.status === 'active') {
           old.status = 'cancelled'
@@ -268,7 +311,7 @@ export class TaskRuntime {
         }
       }
     }
-    program.activeGoalIds = []
+    program.activeGoalIds = program.activeGoalIds.filter(id => this.goals.get(id)?.status === 'active' && goalExecutionMode(this.goals.get(id)!.activeSpec!) === 'native')
     for (const spec of lease.goals) {
       const goal = this.goals.get(spec.id)!
       if (['cancelled', 'completed', 'partial', 'failed'].includes(goal.status)) continue
@@ -310,8 +353,7 @@ export class TaskRuntime {
     program.goalIds = program.goalIds.filter(g => g !== id)
     program.activeGoalIds = program.activeGoalIds.filter(g => g !== id)
     if (program.status === 'active' && !this.activeSpecs(program).length) program.status = 'idle'
-    program.revision++
-    this.cancelCommand(program.id)
+    if (goalExecutionMode(goal.spec) === 'script') { program.revision++; this.cancelCommand(program.id) }
     const snap = this.latest
     const spec = goal.activeSpec ?? goal.spec
     if (snap) {
@@ -351,7 +393,8 @@ export class TaskRuntime {
     this.recovery.reset(id)
     this.cancelCommand(id)
     const program = this.programs.get(id)
-    if (program?.script && program.status === 'paused') { program.status = 'active'; program.stats.errors = 0; program.generation++ }
+    if (program && (program.script || this.activeSpecs(program).length) && program.status === 'paused') { program.status = 'active'; program.stats.errors = 0; program.generation++ }
+    if (program) for (const spec of this.activeSpecs(program)) delete this.goals.get(spec.id)!.facts.nativeError
   }
   async stopUnits(ids: number[]): Promise<void> {
     const owners = new Set(ids.map(id => this.formations.ownerOf(id)).filter((x): x is string => !!x).map(formationId => ownerId({ kind: 'formation', formationId })))
@@ -406,7 +449,10 @@ export class TaskRuntime {
       if (goal.status !== 'active' || !spec) continue
       const handler = handlerFor(spec)
       if (!!handler.observeLast !== last) continue
-      const result = handler.observe?.(this.goalContext(spec, snap))
+      if (goal.facts.nativeError) continue
+      let result: { stopIds: number[] } | void
+      try { result = handler.observe?.(this.goalContext(spec, snap)) }
+      catch (error) { if (goalExecutionMode(spec) !== 'native') throw error; this.nativeFault(goal, error); continue }
       if (result?.stopIds.length) {
         const program = this.programs.get(goal.ownerId)!
         void this.deps.submit([{ kind: 'stop', unitIds: result.stopIds }], snap, () => this.sessionKey === snap.sessionKey && this.goals.get(spec.id) === goal && program.activeGoalIds.includes(spec.id) && !program.activeGoalIds.some(id => id !== spec.id && this.goals.get(id)?.status === 'active')).catch(error => this.deps.log?.(String(error)))
@@ -457,10 +503,13 @@ export class TaskRuntime {
         const program = programs[index]!
         // 在 await 前交棒；当前计算若被新快照抢占，下一轮也不会从它重新开始。
         this.nextProgram = (index + 1) % programs.length
-        if (program.status === 'active' && program.script) {
-          await this.step(program, snap)
+        if (program.status === 'active') {
+          const budget = { remaining: 20 }
+          if (this.activeSpecs(program).some(spec => goalExecutionMode(spec) === 'native')) await this.nativeStep(program, snap, budget)
+          if (this.latest !== snap) continue
+          if (program.status === 'active' && program.script) await this.step(program, snap, budget)
           if (this.latest === snap && program.status === 'active' && !this.hasPendingCommand(program.id)) {
-            const frame = this.frame(program, this.activeSpecs(program), snap, true)
+            const frame = this.frame(program, this.activeSpecs(program).filter(spec => goalExecutionMode(spec) === 'script'), snap, true)
             const waiting = new Set(this.handoffs.map(handoff => handoff.goalId))
             for (const goal of frame.snapshot.control!.goals) if (this.goals.get(goal.spec.id)?.facts.placementBlocked) waiting.add(goal.spec.id)
             const stalled = this.recovery.observe(program.id, this.recoveryKey(program), snap, frame.snapshot.control!.goals, frame.constraints.goals!, waiting)
@@ -531,19 +580,43 @@ export class TaskRuntime {
     program.stats.errors++; program.stats.lastError = error
     if (program.stats.errors < 3) return
     program.status = 'paused'; program.generation++
-    const ids = this.activeSpecs(program).flatMap(g => this.goalConstraints(g, snap).allowedUnitIds)
+    const ids = this.activeSpecs(program).filter(spec => goalExecutionMode(spec) === 'script').flatMap(g => this.goalConstraints(g, snap).allowedUnitIds)
     if (ids.length) await this.deps.submit([{ kind: 'stop', unitIds: [...new Set(ids)] }], snap, () => program.status === 'paused' && this.programs.get(program.id) === program && this.sessionKey === snap.sessionKey)
     if (program.status === 'paused' && this.programs.get(program.id) === program && !this.hasPendingCommand(program.id)) this.deps.onProgramFaulted?.(program.id)
   }
 
-  private async step(program: ProgramState, snap: Snapshot): Promise<void> {
+  private nativeFault(goal: GoalState, error: unknown): void {
+    goal.facts.nativeError = String(error).slice(0, 300)
+    this.deps.log?.(`[runtime] ${goal.spec.id} 本机执行出错：${goal.facts.nativeError}`)
+  }
+
+  private async nativeStep(program: ProgramState, snap: Snapshot, budget: { remaining: number }): Promise<void> {
+    const generation = program.generation, formationRevision = this.formations.revision
+    const valid = () => this.programs.get(program.id) === program && program.status === 'active' && program.generation === generation && this.sessionKey === snap.sessionKey && this.latest === snap && this.formations.revision === formationRevision
+    const specs = this.activeSpecs(program).filter(spec => goalExecutionMode(spec) === 'native')
+    // 混合对象给脚本保留一半预算；未发送的建筑下步仍由真实事实提出。
+    let available = this.activeSpecs(program).some(spec => goalExecutionMode(spec) === 'script') ? Math.floor(budget.remaining / 2) : budget.remaining
+    for (const spec of specs) {
+      if (!valid() || available <= 0) return
+      const goal = this.goals.get(spec.id)!
+      if (goal.facts.nativeError) continue
+      try {
+        const actions = handlerFor(spec).nativeActions!(this.goalContext(spec, snap)).slice(0, available).map(request => ({ goalId: spec.id, request }))
+        const before = budget.remaining
+        await this.submitActions(program, snap, actions, 'native', valid, budget)
+        available -= before - budget.remaining
+      } catch (error) { this.nativeFault(goal, error) }
+    }
+  }
+
+  private async step(program: ProgramState, snap: Snapshot, budget: { remaining: number }): Promise<void> {
     const script = program.script!
     const generation = program.generation
     const formationRevision = this.formations.revision
     const authorized = () => this.programs.get(program.id) === program && program.status === 'active' && program.generation === generation && program.script === script && this.sessionKey === snap.sessionKey
     const valid = () => authorized() && this.latest === snap && formationRevision === this.formations.revision
-    const specs = this.activeSpecs(program)
-    if (!specs.length) return
+    const specs = this.activeSpecs(program).filter(spec => goalExecutionMode(spec) === 'script')
+    if (!specs.length || !budget.remaining) return
     const frame = this.frame(program, specs, snap, true)
     for (const spec of specs) {
       if (spec.kind !== 'combat' || this.goals.get(spec.id)!.facts.retreatTriggered) continue
@@ -562,23 +635,34 @@ export class TaskRuntime {
     outcome.actions = liveScriptActions(outcome.actions, frame.constraints, frame.snapshot)
     const outputError = validateScriptActions(outcome.actions, frame.constraints, frame.snapshot)
     if (outputError) { await this.fault(program, outputError, snap); return }
-    for (const item of outcome.actions) {
-      if (!valid()) return
+    if (!await this.submitActions(program, snap, outcome.actions, 'script', valid, budget)) return
+    if (authorized()) { program.memory = outcome.memory; program.stats.errors = 0 }
+  }
+  /** 两种动作来源只在这里接入游戏；预算、即时校验、台账和回执共享。 */
+  private async submitActions(program: ProgramState, snap: Snapshot, actions: ScriptAction[], mode: 'script' | 'native', valid: () => boolean, budget: { remaining: number }): Promise<boolean> {
+    const failure = async (goal: GoalState, error: string) => {
+      if (mode === 'native') this.nativeFault(goal, error)
+      else await this.fault(program, error, snap)
+    }
+    for (const item of actions) {
+      if (!valid() || !budget.remaining) return false
       const goal = this.goals.get(item?.goalId)
       // 单目标取消/完成不使其他目标失效，也不把陈旧引用当作脚本异常。
-      if (!goal || goal.ownerId !== program.id || goal.status !== 'active' || !goal.activeSpec || !program.activeGoalIds.includes(item.goalId)) continue
-      const fresh = this.frame(program, [goal.activeSpec], snap, true)
+      if (!goal || goal.ownerId !== program.id || goal.status !== 'active' || !goal.activeSpec || !program.activeGoalIds.includes(item.goalId) || goalExecutionMode(goal.activeSpec) !== mode || goal.facts.nativeError) continue
+      const activeSpec = goal.activeSpec
+      const fresh = this.frame(program, [activeSpec], snap, true)
       const live = liveScriptActions([item], fresh.constraints, fresh.snapshot)[0]
       if (!live) continue
       item.request = live.request
       const error = validateScriptActions([item], fresh.constraints, fresh.snapshot)
-      if (error) { await this.fault(program, error, snap); return }
+      if (error) { await failure(goal, error); return false }
+      budget.remaining--
       const request = item.request
       if (request.kind === 'createFormation' || request.kind === 'transferUnits' || request.kind === 'dissolveFormation') {
         try { await this.manage(goal, request, snap); program.stats.actions++; program.stats.errors = 0 }
-        catch (err) { goal.facts.blocked = String(err); await this.fault(program, String(err), snap) }
+        catch (err) { goal.facts.blocked = String(err); await failure(goal, String(err)) }
         // 管理请求改变成员修订，下一步用最新归属重新执行。
-        return
+        return false
       }
       let record: ProductionRecord | undefined
       if (request.kind === 'produce') {
@@ -600,16 +684,19 @@ export class TaskRuntime {
         }
         this.production.push(record)
         try { await this.deps.checkpoint() }
-        catch (err) { record.state = 'rejected'; goal.facts.blocked = `生产预留保存失败: ${String(err)}`; return }
-        if (!valid() || goal.status !== 'active') { record.state = 'rejected'; return }
+        catch (err) { record.state = 'rejected'; goal.facts.blocked = `生产预留保存失败: ${String(err)}`; return false }
+        if (!valid() || goal.status !== 'active') { record.state = 'rejected'; return false }
       }
-      const guard = () => valid() && goal.status === 'active' && goal.activeSpec === this.goals.get(item.goalId)?.activeSpec
+      const guard = () => valid() && goal.status === 'active' && this.goals.get(item.goalId) === goal && goal.activeSpec === activeSpec
+      let phase: 'prepare' | 'submit' | 'receipt' = 'prepare'
       try {
-        const handler = handlerFor(goal.activeSpec)
+        const handler = handlerFor(activeSpec)
         handler.beforeSubmit?.(this.goalContext(goal.activeSpec, snap), request)
+        phase = 'submit'
         const results = await this.deps.submit([request], snap, guard)
+        phase = 'receipt'
         if (handler.afterSubmit?.(this.goalContext(goal.activeSpec, snap), request, results)) continue
-        this.recovery.trace(program.id, this.recoveryKey(program), snap.tick, { goalId: item.goalId, request, results })
+        if (mode === 'script') this.recovery.trace(program.id, this.recoveryKey(program), snap.tick, { goalId: item.goalId, request, results })
         if (request.kind === 'place' && results.length && results.every(result => !result.ok && result.submitted === 0 && ['no-spot', 'cannot-place'].includes(result.reason ?? ''))) {
           goal.facts.placementBlocked = true
           goal.facts.blocked = request.placement ? `${request.name} 在${request.placement.anchor.name ?? '参照点'}${directionLabels[request.placement.direction]}暂无合法位置，保留就绪建筑并继续尝试该方向` : `${request.name} 暂无可放置位置，保留就绪建筑并继续重试`
@@ -622,7 +709,7 @@ export class TaskRuntime {
           if (record) record.state = notSent ? 'rejected' : 'unknown'
           goal.facts.blocked = notSent ? '动作未发送' : '提交结果不确定，保留记录'
           program.stats.rejected++
-          return
+          return false
         }
         if (record) record.state = 'submitted'
         if (request.kind === 'pauseQueue' && snap.production?.queues.some(q => q.type === request.queueType && q.status !== 2)) this.pausedQueues.set(request.queueType, item.goalId)
@@ -631,12 +718,14 @@ export class TaskRuntime {
         delete goal.facts.placementBlocked
         program.stats.actions++
       } catch (err) {
-        this.recovery.trace(program.id, this.recoveryKey(program), snap.tick, { goalId: item.goalId, request, error: String(err) })
+        if (mode === 'script') this.recovery.trace(program.id, this.recoveryKey(program), snap.tick, { goalId: item.goalId, request, error: String(err) })
         if (record) record.state = 'unknown'
+        if (mode === 'native' && phase !== 'submit') { this.nativeFault(goal, err); return false }
         goal.facts.blocked = `提交结果不确定: ${String(err).slice(0, 120)}`
-        return
+        return false
       }
     }
-    if (authorized()) { program.memory = outcome.memory; program.stats.errors = 0 }
+    return true
   }
+
 }

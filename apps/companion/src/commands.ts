@@ -207,7 +207,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       const id = args[1] ?? ''
       if (args[0] === 'list') return [...ctx.runtime.goals.values()].map(g => {
         const records = ctx.runtime.production.filter(r => r.goalId === g.spec.id && r.state !== 'rejected')
-        return `${g.spec.id} [${g.status}] ${g.ownerId} ${g.spec.rawText}${g.activeSpec && JSON.stringify(g.activeSpec) !== JSON.stringify(g.spec) ? '（变更待生效）' : ''}${g.facts.blocked ? `；${g.facts.blocked}` : ''}${records.map(r => `\n  提交 ${r.id} ${r.name}×${r.quantity} [${r.state}] 已观察=${r.observedIds.length}`).join('')}`
+        return `${g.spec.id} [${g.status}] ${g.ownerId}${g.spec.executionMode === 'native' ? ' 本机执行' : ''} ${g.spec.rawText}${g.activeSpec && JSON.stringify(g.activeSpec) !== JSON.stringify(g.spec) ? '（变更待生效）' : ''}${g.facts.nativeError ? `；本机执行出错：${g.facts.nativeError}` : g.facts.blocked ? `；${g.facts.blocked}` : ''}${records.map(r => `\n  提交 ${r.id} ${r.name}×${r.quantity} [${r.state}] 已观察=${r.observedIds.length}`).join('')}`
       }).join('\n') || '（无目标）'
       if (args[0] === 'resolve' && ['sent', 'not-sent'].includes(args[2] ?? '')) {
         ctx.runtime.resolveProduction(id, args[2] as 'sent' | 'not-sent')

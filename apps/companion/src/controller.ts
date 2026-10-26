@@ -1,5 +1,5 @@
 import { compileCommand, CompileError, loadPrompts, type PromptLibrary, type PromptLoader } from '@ra2c/command'
-import type { GoalSpec } from '@ra2c/contracts'
+import { goalExecutionMode, type GoalSpec } from '@ra2c/contracts'
 import type { OpenAICompatibleProvider } from '@ra2c/model-providers'
 import type { StepExecutor } from '@ra2c/js-worker'
 import type { CompileLease, TaskRuntime } from '@ra2c/runtime'
@@ -10,6 +10,7 @@ export interface CompilationEvent {
   owner: string
   sessionKey: string
   goalIds: string[]
+  executionMode?: 'script' | 'native'
   version?: number
   error?: string
 }
@@ -70,16 +71,33 @@ export class ProgramController {
   async submit(goal: GoalSpec): Promise<string> {
     const id = this.deps.runtime.upsertGoal(goal)
     this.repairs.delete(id)
-    return `目标 ${goal.id}：${await this.refresh(id)}`
+    return `目标 ${goal.id}：${goalExecutionMode(goal) === 'native' ? this.activateNative(id) : await this.refresh(id)}`
+  }
+
+  activateNative(id: string): string {
+    const goalIds = this.deps.runtime.activateNativeGoals(id)
+    if (goalIds.length) {
+      this.publish({ stage: 'effective', owner: id, sessionKey: this.deps.runtime.battleKey, goalIds, executionMode: 'native' })
+      this.deps.log?.(`[companion] ${id} 本机执行：${goalIds.join(', ')}`)
+    }
+    return `${id} 本机执行已生效`
+  }
+
+  useBuildingScripts(): void {
+    const runtime = this.deps.runtime
+    for (const goalId of runtime.useBuildingScripts()) {
+      this.publish({ stage: 'merged', owner: runtime.goals.get(goalId)!.ownerId, sessionKey: runtime.battleKey, goalIds: [goalId], executionMode: 'script', error: '已关闭建筑本机执行，保留进度并等待脚本接管' })
+    }
   }
 
   async refresh(id: string, repair = false, promptOptions: PromptRequestOptions = {}): Promise<string> {
     const { runtime } = this.deps
-    if (!repair) this.repairs.delete(id)
+    if (!repair) { this.repairs.delete(id); this.activateNative(id) }
     const loader = this.deps.prompts ?? { load: loadPrompts }
     let prompts = promptOptions.prompts
     for (;;) {
       const lease = runtime.beginCompile(id, repair)
+      if (!lease.goals.length) { runtime.releaseCommand(lease); return `${id} 无待生成的脚本目标` }
       const compilationId = randomUUID()
       const record = (event: Record<string, unknown>) => {
         try { this.deps.recordCompilation?.({ id: compilationId, sessionKey: lease.sessionKey, owner: id, goalIds: lease.goals.map(goal => goal.id), ...(promptOptions.commandId ? { commandId: promptOptions.commandId } : {}), repair, ...event }) }
@@ -111,7 +129,7 @@ export class ProgramController {
           const program = runtime.programs.get(id)!
           const version = program.script!.version
           record({ stage: 'effective', version, code: output.code, promptVersion: output.promptVersion })
-          this.publish({ stage: 'effective', owner: id, sessionKey: lease.sessionKey, goalIds: [...program.activeGoalIds], version })
+          this.publish({ stage: 'effective', owner: id, sessionKey: lease.sessionKey, goalIds: lease.goals.map(goal => goal.id), version, executionMode: 'script' })
           return `${id} v${version} 已生效`
         }
         record({ stage: 'discarded', reason: '目标或成员变化，候选未生效' })
@@ -136,7 +154,7 @@ export class ProgramController {
   fault(id: string, reason?: string): void {
     if (this.deps.runtime.hasPendingCommand(id)) return
     const runtime = this.deps.runtime, program = runtime.programs.get(id)
-    if (!program || !['active', 'paused'].includes(program.status)) return
+    if (!program?.script || !['active', 'paused'].includes(program.status) || !program.activeGoalIds.some(goalId => { const goal = runtime.goals.get(goalId); return goal?.status === 'active' && goal.activeSpec && goalExecutionMode(goal.activeSpec) === 'script' })) return
     const previous = this.repairs.get(id)
     const count = (previous?.sessionKey === runtime.battleKey && previous.revision === program.revision ? previous.count : 0) + 1
     if (count > 2) {

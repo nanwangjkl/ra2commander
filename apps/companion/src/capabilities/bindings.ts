@@ -77,7 +77,9 @@ async function control(params: CapabilityParameters['control.stop'], context: Bi
     if (!program) continue
     const goals = program.goalIds.map(id => ctx.runtime.goals.get(id)).filter(goal => goal && !['cancelled', 'completed', 'partial', 'failed'].includes(goal.status))
     if (!goals.length) continue
-    if (!program.script || program.compileError || goals.some(goal => JSON.stringify(goal!.spec) !== JSON.stringify(goal!.activeSpec))) refreshOwners.push(owner)
+    if (goals.some(goal => goal!.spec.executionMode === 'native' && JSON.stringify(goal!.spec) !== JSON.stringify(goal!.activeSpec))) ctx.controller.activateNative(owner)
+    const scripted = goals.filter(goal => goal!.spec.executionMode !== 'native')
+    if (scripted.length && (!program.script || program.compileError || scripted.some(goal => JSON.stringify(goal!.spec) !== JSON.stringify(goal!.activeSpec)))) refreshOwners.push(owner)
     else ctx.runtime.resume(owner)
   }
   return { choices: [`${owners.join('、') || '全部脚本'} 已恢复保留的目标`], refreshOwners }
@@ -287,7 +289,7 @@ export const bindings: Binders = {
     const goal = findGoal(context, params.goalId)
     if (goal.status === 'completed') return done(`目标 ${goal.spec.id} 已完成，无需取消`)
     await context.ctx.runtime.cancelGoal(goal.spec.id)
-    return { choices: [`目标 ${goal.spec.id} 已取消，其余目标继续`], refreshOwners: [goal.ownerId] }
+    return { choices: [`目标 ${goal.spec.id} 已取消，其余目标继续`], ...(goal.spec.executionMode === 'native' ? {} : { refreshOwners: [goal.ownerId] }) }
   },
   'goal.edit': async (params, context) => {
     const goal = findGoal(context, params.goalId)

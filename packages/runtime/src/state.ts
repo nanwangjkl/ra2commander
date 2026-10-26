@@ -8,6 +8,7 @@ export interface CommonGoalFacts {
   blocked?: string
   cancelReason?: string
   outcomeDetail?: string
+  nativeError?: string
 }
 /** 保持 v4 字段兼容，按目标类型列明进度归属。 */
 export interface GoalProgress {
@@ -50,6 +51,7 @@ export interface ProgramState {
   owner: ScriptOwner
   goalIds: string[]
   activeGoalIds: string[]
+  /** 脚本目标修订；本机目标增改不使无关编译失效。 */
   revision: number
   generation: number
   status: 'idle' | 'active' | 'paused' | 'stopped'

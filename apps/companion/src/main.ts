@@ -1,5 +1,6 @@
 import { ExplorationObserver } from './exploration.ts'
 import { MiningObserver } from './mining.ts'
+import { buildingExecutionMode } from './building-operations.ts'
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -103,6 +104,7 @@ async function main(): Promise<void> {
     console.log(`[companion] .env 未加载（${String(err).slice(0, 120)}）；仅桥命令可用`)
   }
 
+  const buildingExecutor = buildingExecutionMode()
   const providers = new Map<string, OpenAICompatibleProvider>()
   for (const name of configuredProviderNames(process.env)) {
     try {
@@ -232,12 +234,16 @@ async function main(): Promise<void> {
       if (commandContext) void miningObserver.poll(commandContext).catch(error => {
         if (Date.now() - lastMiningWarning > 10000) { lastMiningWarning = Date.now(); console.log(`[companion] 矿格观察暂不可用：${String(error).slice(0, 160)}`) }
       })
-      if (restored) commandLog.restoreCurrent(ROOT, runtime)
+      if (restored) {
+        commandLog.restoreCurrent(ROOT, runtime)
+        if (buildingExecutor === 'script') controller.useBuildingScripts()
+      }
       commandLog.syncRuntime(runtime)
       records.observe(runtime)
       if (restored) {
         for (const program of runtime.programs.values()) {
-          const waiting = program.goalIds.some(id => { const goal = runtime.goals.get(id); return goal && !['cancelled', 'completed', 'partial', 'failed'].includes(goal.status) && JSON.stringify(goal.spec) !== JSON.stringify(goal.activeSpec) })
+          if (program.status !== 'stopped') controller.activateNative(program.id)
+          const waiting = program.goalIds.some(id => { const goal = runtime.goals.get(id); return goal && goal.spec.executionMode !== 'native' && !['cancelled', 'completed', 'partial', 'failed'].includes(goal.status) && JSON.stringify(goal.spec) !== JSON.stringify(goal.activeSpec) })
           if (waiting && program.status !== 'paused' && program.status !== 'stopped') void controller.refresh(program.id).catch(err => console.log(`[companion] 恢复待生效目标失败：${String(err)}`))
         }
       }

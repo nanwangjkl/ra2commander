@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { CommandEvent, CommandSource, GoalExecution, GoalSpec } from '@ra2c/contracts'
+import { goalExecutionMode, type CommandEvent, type CommandSource, type GoalExecution, type GoalSpec } from '@ra2c/contracts'
 import type { TaskRuntime } from '@ra2c/runtime'
 import { applyCommandEvent, type CardData } from '../ui/command-card.ts'
 import { BattleRecords } from './battle-records.ts'
@@ -38,6 +38,7 @@ export class CommandLog {
         const binding = this.bindings.get(goalId)
         if (!binding || binding.sessionKey !== event.sessionKey) continue
         this.emit({ ...binding, goalId, owner: event.owner, stage: event.stage,
+          ...(event.executionMode ? { executionMode: event.executionMode } : {}),
           ...(event.version !== undefined ? { version: event.version } : {}),
           ...(event.error ? { error: event.error } : {}),
         })
@@ -54,10 +55,12 @@ export class CommandLog {
         : previous?.state === 'completed' ? previous : { state: 'cancelled' as const, detail: '对局已结束或切换' }
       if (!execution || JSON.stringify(previous) === JSON.stringify(execution)) continue
       this.execution.set(goalId, execution)
-      const program = runtime.programs.get(runtime.goals.get(goalId)?.ownerId ?? '')
-      this.emit({ ...binding, goalId, stage: 'execution', execution,
+      const goal = runtime.goals.get(goalId)
+      const executionMode = goal ? goalExecutionMode(goal.activeSpec ?? goal.spec) : undefined
+      const program = runtime.programs.get(goal?.ownerId ?? '')
+      this.emit({ ...binding, goalId, stage: 'execution', execution, ...(executionMode ? { executionMode } : {}),
         ...(program ? { owner: program.id } : {}),
-        ...(program?.script && !['completed', 'cancelled'].includes(execution.state) ? { version: program.script.version } : {}),
+        ...(executionMode === 'script' && program?.script && !['completed', 'cancelled'].includes(execution.state) ? { version: program.script.version } : {}),
       })
     }
   }
@@ -79,7 +82,7 @@ export class CommandLog {
       }
       for (const goal of goals) {
         const state = runtime.goals.get(goal.id)!
-        this.accept({ ...base, seq: this.nextSeq++, stage: 'bound', goalId: goal.id, owner: state.ownerId, choice: goal.rawText }, false)
+        this.accept({ ...base, seq: this.nextSeq++, stage: 'bound', goalId: goal.id, owner: state.ownerId, choice: goal.rawText, executionMode: goalExecutionMode(state.activeSpec ?? state.spec) }, false)
         const program = runtime.programs.get(state.ownerId)
         if (!state.activeSpec && program?.compileError) this.accept({ ...base, seq: this.nextSeq++, stage: 'failed', goalId: goal.id, owner: state.ownerId, error: program.compileError }, false)
       }

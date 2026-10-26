@@ -25,6 +25,7 @@ export function handlerFor(spec: GoalSpec): GoalHandler {
 export function validateGoalSpec(spec: GoalSpec, map: MapSize): void {
   if (!spec || typeof spec.id !== 'string' || !spec.id || typeof spec.rawText !== 'string' || !spec.rawText) throw new Error('目标缺少 ID 或命令')
   handlerFor(spec).validateSpec(spec, map)
+  if (spec.executionMode !== undefined && !['script', 'native'].includes(spec.executionMode) || spec.executionMode === 'native' && !handlerFor(spec).nativeActions) throw new Error('目标执行方式不受支持')
   if ((spec.kind === 'attack' || spec.kind === 'combat') && spec.objective && (!validAttackObjective(spec.objective) || spec.objective.search.destination && (spec.objective.search.destination.x < 0 || spec.objective.search.destination.y < 0 || spec.objective.search.destination.x >= map.mapWidth || spec.objective.search.destination.y >= map.mapHeight))) throw new Error('攻击要求非法')
 }
 export function validateGoalFacts(goal: GoalState, map: MapSize): void {
@@ -33,5 +34,6 @@ export function validateGoalFacts(goal: GoalState, map: MapSize): void {
   const kinds = { repair: 'repair', relocation: 'relocate', mining: 'mining', attack: 'attack', building: 'building', routeIndex: 'combat', completedQuantity: 'production', placementBlocked: 'production' } as const
   for (const [field, kind] of Object.entries(kinds)) if (facts[field as keyof typeof kinds] !== undefined && goal.spec.kind !== kind) throw new Error(`${field} 进度与目标不符`)
   if (facts.routeIndex !== undefined && (!Number.isSafeInteger(facts.routeIndex) || facts.routeIndex < 0) || facts.completedQuantity !== undefined && (!Number.isSafeInteger(facts.completedQuantity) || facts.completedQuantity < 0) || facts.placementBlocked !== undefined && typeof facts.placementBlocked !== 'boolean') throw new Error('目标进度非法')
+  if (facts.nativeError !== undefined && (goal.spec.executionMode !== 'native' || typeof facts.nativeError !== 'string')) throw new Error('本机执行错误记录非法')
   handlerFor(goal.spec).validateFacts?.(goal, map)
 }

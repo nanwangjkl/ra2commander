@@ -1,6 +1,6 @@
 import { closeSync, constants, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { ownerId, goalOwner, normalizeAttackGoal, validBuildingPlacement, validTargetRegion } from '@ra2c/contracts'
+import { ownerId, goalOwner, goalExecutionMode, normalizeAttackGoal, validBuildingPlacement, validTargetRegion } from '@ra2c/contracts'
 import { validateAttackSources } from './attack-selection.ts'
 import { validateGoalSpec, validateGoalFacts } from './goals/index.ts'
 import type { TaskRuntime } from './index.ts'
@@ -41,7 +41,7 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
     if (p.id !== ownerId(p.owner) || !['idle', 'active', 'paused', 'stopped'].includes(p.status) || !Number.isSafeInteger(p.revision) || !Number.isSafeInteger(p.generation) || !Array.isArray(p.goalIds) || !Array.isArray(p.activeGoalIds) || [...p.goalIds, ...p.activeGoalIds].some(id => !ids.has(id))) throw new Error('控制对象状态非法')
   }
   for (const [id, goal] of state.goals) {
-    if (id !== goal.spec.id || !programIds.has(goal.ownerId) || goal.ownerId !== ownerId(goalOwner(goal.spec)) || (goal.activeSpec && (goal.activeSpec.id !== id || goal.activeSpec.kind !== goal.spec.kind || ownerId(goalOwner(goal.activeSpec)) !== goal.ownerId)) || !goal.facts || !Array.isArray(goal.facts.members) || !['pending', 'active', 'completed', 'partial', 'failed', 'cancelled'].includes(goal.status)) throw new Error('目标状态非法')
+    if (id !== goal.spec.id || !programIds.has(goal.ownerId) || goal.ownerId !== ownerId(goalOwner(goal.spec)) || (goal.activeSpec && (goal.activeSpec.id !== id || goal.activeSpec.kind !== goal.spec.kind || goalExecutionMode(goal.activeSpec) !== goalExecutionMode(goal.spec) || ownerId(goalOwner(goal.activeSpec)) !== goal.ownerId)) || !goal.facts || !Array.isArray(goal.facts.members) || !['pending', 'active', 'completed', 'partial', 'failed', 'cancelled'].includes(goal.status)) throw new Error('目标状态非法')
     for (const spec of [goal.spec, goal.activeSpec]) if (spec) {
       validateGoalSpec(spec, runtime.snapshot)
       if (spec.kind === 'attack') validateAttackSources(spec, new Map(state.goals))
@@ -104,8 +104,8 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
   for (const p of state.programs) runtime.programs.set(p.id, structuredClone(p))
   for (const [id, goal] of state.goals) {
     const restored = structuredClone(goal)
-    restored.spec = normalizeAttackGoal(restored.spec)
-    if (restored.activeSpec) restored.activeSpec = normalizeAttackGoal(restored.activeSpec)
+    restored.spec = { ...normalizeAttackGoal(restored.spec), executionMode: goalExecutionMode(restored.spec) }
+    if (restored.activeSpec) restored.activeSpec = { ...normalizeAttackGoal(restored.activeSpec), executionMode: goalExecutionMode(restored.activeSpec) }
     // 旧 v3/v4 的 done 从未参与判断；只保留 status 与实际进度。
     delete (restored.facts as typeof restored.facts & { done?: boolean }).done
     runtime.goals.set(id, restored)
