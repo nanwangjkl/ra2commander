@@ -9,24 +9,12 @@
 // 且带性能护栏（超预算自动降频）。
 (() => {
   'use strict';
-  var BRIDGE_VERSION = 5;
+  var BRIDGE_VERSION = 6;
   if (window.__ra2cInstalled && window.__ra2cVersion === BRIDGE_VERSION) return;
-  // v4 只调整攻击策略，保留其采样闭包、对局 UUID 与序号，避免升级打断现有任务。
-  // 旧提交器已经检查了对局、快照、己方成员及敌方可见性；仅接管其射程拒绝。
-  if (window.__ra2cInstalled && window.__ra2cVersion === 4 && typeof window.__ra2cSubmit === 'function') {
-    var previousSubmit = window.__ra2cSubmit;
-    window.__ra2cSubmit = function (session, action, expectedSeq, sessionKey) {
-      var result = previousSubmit(session, action, expectedSeq, sessionKey);
-      if (action.kind !== 'attack' || result.ok || result.reason !== 'out-of-range' || result.submitted !== 0) return result;
-      var api = window.werhd;
-      var own = api.units('self') || [];
-      var ids = action.unitIds.filter(function (id) { return own.some(function (unit) { return unit.id === id }); });
-      if (!ids.length) return { ok: false, reason: 'invalid-units', submitted: 0, session: session };
-      try { api.attack(ids, action.targetId); return { ok: true, submitted: ids.length, session: session }; }
-      catch (error) { return { ok: false, reason: 'api-error: ' + error.message, submitted: 0, session: session }; }
-    };
-    window.__ra2cVersion = BRIDGE_VERSION;
-    return;
+  var upgrading = false;
+  if (window.__ra2cInstalled && window.__ra2cSessionKey && typeof window.__ra2cSubmit === 'function') {
+    // 空成员探测只读取旧桥的身份检查，不向游戏发令；换局/API变化不能沿用旧 UUID。
+    try { upgrading = window.__ra2cSubmit(window.__ra2cSession, { kind: 'stop', unitIds: [] }, 0, window.__ra2cSessionKey).reason === 'invalid-units'; } catch (e) {}
   }
   if (window.__ra2cInterval) { try { clearInterval(window.__ra2cInterval) } catch (e) {} }
   window.__ra2cInstalled = true;
@@ -34,7 +22,7 @@
 
   var SAMPLE_EVERY = 15;      // 每 N 个模拟 tick 采样一次
   var SAMPLE_MAX_EVERY = 120; // 降频上限
-  var seq = 0;
+  var seq = upgrading ? Math.max(window.__ra2cLastSeq || 0, Date.now()) : 0;
   var lastSampleTick = -1;
   var lastTickAt = 0;         // Date.now()，宿主用来判断对局是否活跃
   var hookedSession = -1;     // 当前 onTick 挂接的会话代次
@@ -51,6 +39,8 @@
     window.__ra2cSessionKey = crypto.randomUUID();
     lastSampleTick = -1;
     placeTried = {};
+    identities = {};
+    window.__ra2cUnitIdentities = identities;
   }
 
   // place 自动选址记忆（name -> 已尝试格），跳过引擎静默拒绝过的位置。
@@ -82,6 +72,9 @@
   var ENEMY_CAP = 200; // 敌方采集上限护栏
 
 
+  var identities = upgrading && window.__ra2cUnitIdentities || {};
+  window.__ra2cUnitIdentities = identities;
+
   function mapUnit(u) {
     var t = u.tile || {};
     return {
@@ -98,12 +91,18 @@
       veteranLevel: u.veteranLevel,
       primaryWeapon: u.primaryWeapon,
       secondaryWeapon: u.secondaryWeapon,
+      transport: u.transport ? { occupied: u.transport.occupied, capacity: u.transport.capacity, unitIds: u.transport.unitIds.slice(), passengers: u.transport.unitIds.map(function (id) { return identities[id] }).filter(Boolean) } : undefined,
     };
   }
 
   function collect(w) {
     var t0 = performance.now();
     var units = w.units('self') || [];
+    for (var k = 0; k < units.length; k++) identities[units[k].id] = { id: units[k].id, name: units[k].name, type: units[k].type };
+    for (var v = 0; v < units.length; v++) if (units[v].transport) for (var p = 0; p < units[v].transport.unitIds.length; p++) {
+      var passengerId = units[v].transport.unitIds[p];
+      if (!(passengerId in identities) && w.unit) { var passenger = w.unit(passengerId); identities[passengerId] = passenger ? { id: passenger.id, name: passenger.name, type: passenger.type } : null; }
+    }
     var self = new Array(units.length);
     for (var i = 0; i < units.length; i++) self[i] = mapUnit(units[i]);
     var hostile = w.units('hostile') || [];
@@ -138,6 +137,7 @@
         available: (w.production.available() || []).map(function (a) { return a.name; }),
       };
     } catch (e) { /* 进局前的过渡期没有生产 API */ }
+    window.__ra2cLastSeq = seq;
     var cost = performance.now() - t0;
     stats.samples++;
     if (cost > stats.collectMsMax) stats.collectMsMax = cost;
@@ -237,6 +237,16 @@
         case 'move': w.move(ids, action.x, action.y); break;
         case 'attackMove': w.attackMove(ids, action.x, action.y); break;
         case 'gather': w.gather(ids, action.x, action.y); break;
+        case 'enterTransport':
+        case 'repair': {
+          var target = own.find(function (unit) { return unit.id === action.targetId });
+          if (!target) return { ok: false, reason: 'invalid-friendly-target', submitted: 0, session: session };
+          if (action.kind === 'enterTransport' && (!target.transport || target.transport.occupied >= target.transport.capacity)) return { ok: false, reason: 'transport-full', submitted: 0, session: session };
+          if (action.kind === 'repair' && (target.type !== 7 || !(target.hitPoints > 0 && target.hitPoints < target.maxHitPoints))) return { ok: false, reason: 'target-not-damaged', submitted: 0, session: session };
+          // IFV 的负伤害武器走普通 Attack；Repair 是工程师修建筑的消耗动作。
+          if (!w.order(ids, { type: action.kind === 'enterTransport' ? 17 : 2, target: { objectId: action.targetId } })) return { ok: false, reason: 'order-rejected', submitted: 0, session: session };
+          break;
+        }
         case 'attack': {
           var visible = w.units('hostile') || [];
           if (!visible.some(function (u) { return u.id === action.targetId })) return { ok: false, reason: 'invisible-target', submitted: 0, session: session };
@@ -258,7 +268,7 @@
 
   // 主循环：发现新对局 → 递增代次并挂接；发现 API 消失 → 递增代次；
   // 发现挂接丢失（onTick 被替换后不再更新 lastTickAt）→ 重挂同代次。
-  var previousApi;
+  var previousApi = upgrading ? window.werhd : undefined;
   window.__ra2cInterval = setInterval(function () {
     var hasApi = !!window.werhd;
     if (hasApi && window.werhd !== previousApi) bumpSession('api-appeared');

@@ -3,7 +3,7 @@ import { dirname } from 'node:path'
 import { ownerId, goalOwner } from '@ra2c/contracts'
 import type { TaskRuntime } from './index.ts'
 import type { Formation } from './formation.ts'
-import type { ExplorationMap, ExplorationProgress, SkillRun } from './exploration.ts'
+import { skillGoalIds, type ExplorationMap, type ExplorationProgress, type SkillRun } from './exploration.ts'
 import type { GoalState, ProgramState, ProductionRecord, Handoff } from './state.ts'
 
 export interface PersistedState {
@@ -77,7 +77,12 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
     for (const [id, goal] of state.goals) if (goal.spec.kind === 'explore' && (goal.spec.explorationId !== id || !runs.has(id))) throw new Error('探索目标缺少进度')
     const skillIds = new Set<string>()
     for (const run of state.skillRuns) {
-      if (!run.id || skillIds.has(run.id) || run.sessionKey !== state.sessionKey || !ids.has(run.preparationGoalId) || !ids.has(run.exploreGoalId) || !['preparing', 'exploring', 'completed', 'partial', 'failed', 'cancelled', 'superseded'].includes(run.status)) throw new Error('Skill 运行记录非法')
+      if (!run.id || skillIds.has(run.id) || run.sessionKey !== state.sessionKey || skillGoalIds(run).some(id => !ids.has(id)) || !['preparing', 'exploring', 'repairing', 'completed', 'partial', 'failed', 'cancelled', 'superseded'].includes(run.status)) throw new Error('Skill 运行记录非法')
+      if (run.kind === 'repair-vehicle') {
+        const goal = state.goals.find(([id]) => id === run.repairGoalId)![1].spec
+        if (goal.kind !== 'repair' || goal.skill?.runId !== run.id || goal.skill.hash !== run.hash || goal.formationId !== run.formationId || JSON.stringify(goal.preparationGoalIds) !== JSON.stringify(run.preparationGoalIds)) throw new Error('维修 Skill 来源关联非法')
+        skillIds.add(run.id); continue
+      }
       const goal = state.goals.find(([id]) => id === run.exploreGoalId)![1].spec
       if (goal.kind !== 'explore' || goal.skill?.runId !== run.id || goal.skill.hash !== run.hash || goal.formationId !== run.formationId || !run.map || state.exploration.progress.find(progress => progress.goalId === run.exploreGoalId)?.mapId !== run.map.geometryHash) throw new Error('Skill 来源或地图关联非法')
       skillIds.add(run.id)

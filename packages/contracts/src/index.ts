@@ -31,6 +31,7 @@ export interface SnapshotUnit {
   veteranLevel?: number;
   primaryWeapon?: { maxRange: number; minRange: number; aa: boolean; ag: boolean };
   secondaryWeapon?: { maxRange: number; minRange: number; aa: boolean; ag: boolean };
+  transport?: { occupied: number; capacity: number; unitIds: number[]; passengers?: Array<{ id: number; name: string; type: number }> };
 }
 
 /** 生产队列状态（werhd production.queues() 的映射）。 */
@@ -79,6 +80,9 @@ export type ActionRequest =
   | { kind: 'attackMove'; unitIds: number[]; x: number; y: number }
   | { kind: 'gather'; unitIds: number[]; x: number; y: number }
   | { kind: 'attack'; unitIds: number[]; targetId: number }
+  | { kind: 'enterTransport'; unitIds: number[]; targetId: number }
+  /** 对友方车辆使用当前维修武器；页面桥提交普通 Attack，不能强制攻击。 */
+  | { kind: 'repair'; unitIds: number[]; targetId: number }
   | { kind: 'stop'; unitIds: number[] }
   | { kind: 'deploy'; unitIds: number[] }
   | { kind: 'scatter'; unitIds: number[] }
@@ -116,6 +120,7 @@ export interface StepConstraints {
   /** 只能恢复本任务实际暂停且未被后续操作改变的队列。 */
   resumableQueueTypes?: number[];
   allowedActions?: ActionRequest['kind'][];
+  friendlyTargetIds?: number[];
   region?: Region;
   targetRegion?: import('./spatial.ts').TargetRegion;
   retreat?: { x: number; y: number; active: boolean };

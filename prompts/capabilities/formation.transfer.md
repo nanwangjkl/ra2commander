@@ -15,7 +15,7 @@
     },
     "selector": {
       "type": "string",
-      "description": "兵种原生名称/显示名，或 combat（战斗单位，排除矿车等辅助单位）、tanks、infantry、vehicles、aircraft、all",
+      "description": "兵种原生名称/显示名，或 repairVehicles（已组装维修车）、combat（战斗单位，排除矿车等辅助单位）、tanks、infantry、vehicles、aircraft、all",
       "default": "all"
     },
     "quantity": {
@@ -40,3 +40,5 @@
 ```
 
 把现有单位转入已存在的目标编队，不生产。可按来源编队、兵种或明确单位选择；例如“2队的3个步兵转入1队”。原队剩余成员继续原任务。完成以交接确认。
+
+选择现有维修车可用 selector=repairVehicles（实际载有工程师的 IFV），不要用 FV 把未组装或搭载其他步兵的车混入。已在其他队的维修车转入新队用 formation.transfer；原队为空后不再控制这些成员。

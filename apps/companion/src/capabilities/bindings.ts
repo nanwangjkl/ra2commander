@@ -5,6 +5,7 @@ import type { CombatGoal, FormationGoal, GoalSpec, ProductionGoal } from '@ra2c/
 import type { CommandContext } from '../commands.ts'
 import { checkPoint, destination, formationName, fullMap, rectangle, regionDestination, resolveOwner, selectUnits, type GameCatalog } from './selectors.ts'
 import { prepareExploration } from '../exploration.ts'
+import { bindRepairSkill, repairGoal } from './repair-vehicle.ts'
 
 export interface BindingContext {
   ctx: CommandContext
@@ -88,6 +89,7 @@ export const bindings: Binders = {
     const { ctx, prompts } = context
     const skill = prompts.skills.get(params.skillId)
     if (!skill) throw new Error(`尚不支持这个 Skill：${params.skillId}`)
+    if ('repair' in skill.definition) return bindRepairSkill(params, context, { ...skill, definition: skill.definition })
     const values = prompts.skills.parameters(skill.definition.id, params)
     const runId = `skill-${randomUUID()}`
     const formationId = params.formationId ? formationName(ctx, params.formationId, true) : `侦察-${runId.slice(6, 12)}`
@@ -120,10 +122,10 @@ export const bindings: Binders = {
       skillRun: { id: runId, skillId: skill.definition.id, version: skill.definition.version, hash: skill.hash, source: skill.source, promptVersion: prompts.version, gameId: prompts.game.id, commandId: context.commandId, rawText: context.text, sessionKey: ctx.runtime.battleKey, createdAt: Date.now(), ...values, useExisting, formationId, preparationGoalId: preparation.id, exploreGoalId: explore.id, map: { id: map.mapId, schemeId: map.schemeId, schemeVersion: map.schemeVersion, geometryHash: map.id }, status: 'preparing' } }
   },
   'skill.cancel': async (params, context) => {
-    const runs = [...context.ctx.runtime.skillRuns.values()].filter(run => ['preparing', 'exploring'].includes(run.status) && (!params.runId || run.id === params.runId) && (!params.skillId || run.skillId === (context.prompts.skills.get(params.skillId)?.definition.id ?? params.skillId)))
+    const runs = [...context.ctx.runtime.skillRuns.values()].filter(run => ['preparing', 'exploring', 'repairing'].includes(run.status) && (!params.runId || run.id === params.runId) && (!params.skillId || run.skillId === (context.prompts.skills.get(params.skillId)?.definition.id ?? params.skillId)))
     const selected = params.all || params.runId ? runs : runs.slice(-1)
     await Promise.all(selected.map(run => context.ctx.runtime.cancelSkillRun(run.id)))
-    return { choices: [selected.length ? `已取消${selected.length}次探路及其后续步骤，其余目标继续` : '没有正在执行的匹配 Skill'], refreshOwners: selected.length ? ['global'] : [], suppressOwners: selected.map(run => `formation:${run.formationId}`) }
+    return { choices: [selected.length ? `已取消${selected.length}次 Skill 及其后续步骤，其余目标继续` : '没有正在执行的匹配 Skill'], refreshOwners: selected.length ? ['global'] : [], suppressOwners: selected.map(run => `formation:${run.formationId}`) }
   },
   'map.explore': async (params, context) => {
     const formationId = formationName(context.ctx, params.formationId, false, true), goalId = id()
@@ -131,6 +133,19 @@ export const bindings: Binders = {
     const policy = context.prompts.skills.get('scout')!.definition.exploration
     const preparation = [...context.ctx.runtime.goals.values()].reverse().find(goal => !['completed', 'partial', 'failed', 'cancelled'].includes(goal.status) && (goal.spec.kind === 'production' && goal.spec.formationId === formationId || goal.spec.kind === 'formation' && goal.spec.request.kind === 'createFormation' && goal.spec.request.formationId === formationId))
     return bound({ id: goalId, kind: 'explore', rawText: context.text, formationId, explorationId: goalId, policy, ...(preparation ? { preparationGoalId: preparation.spec.id } : {}) }, `${formationId} 探索${params.regionName ?? '全部分区'}，每个目标分区实际覆盖达到${Math.round(policy.coverageRatio * 100)}%完成（不新增生产）`)
+  },
+  'transport.enter': async (params, context) => {
+    const snap = context.ctx.runtime.snapshot!
+    const units = snap.self.filter(unit => params.unitIds.includes(unit.id) && unit.type === 3 && !context.ctx.formations.ownerOf(unit.id))
+    if (!units.length) throw new Error('没有可上车的未编队步兵')
+    return bound({ id: id(), kind: 'transport', rawText: context.text, unitIds: units.map(unit => unit.id), transportId: params.transportId }, `让${units.length}名现有步兵进入载具#${params.transportId}`)
+  },
+  'vehicle.repair': async (params, context) => {
+    const formationId = formationName(context.ctx, params.formationId, false, true)
+    const catalog = await context.catalog(); context.check()
+    const followFormationId = params.followFormationId ? formationName(context.ctx, params.followFormationId) : undefined
+    const spec = repairGoal(context, catalog, formationId, [], { ...(params.targetId !== undefined ? { targetId: params.targetId } : {}), ...(followFormationId ? { followFormationId } : {}) })
+    return bound(spec, `${formationId} 分头维修${params.targetId ? `坦克#${params.targetId}` : followFormationId ? `${followFormationId}的受损坦克并跟随` : '己方全部受损坦克'}（不新增生产）`)
   },
   'base.deploy': async (_params, context) => {
     const catalog = await context.catalog()

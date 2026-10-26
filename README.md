@@ -23,6 +23,7 @@ M1（公共 API 桥）与 M2 单队循环已实测：文本命令经云模型（
 | [六句模拟语音测试](doc/roadmap/voice-six-commands.md) | 展开、建设、造兵编队、地名移动、补电和进攻的实机效果如何？ |
 | [工作台、侧栏与语音开发计划](doc/roadmap/browser-workbench-and-voice.md) | 如何分阶段加入游戏右侧命令栏和真实语音，逐阶段由玩家验收？ |
 | [探路 Skill](doc/spec/scouting-skills.md) | 如何配置、调用、取消和恢复探路，以及如何确认真实探索覆盖？ |
+| [维修车 Skill](doc/spec/repair-vehicle-skill.md) | 如何生产、组装维修车，按坦克血量选择目标并让多车并行维修？ |
 | [基础能力、提示词与 Skill 改造方案](doc/roadmap/capabilities-prompts-and-skills.md) | 如何统一能力入口、将提示词外置为 Markdown，并组合“探路”等常规操作？（A～C 已验收，D 已实现待实机验收） |
 | [玩家基础能力](doc/spec/player-capabilities.md) | 已接通哪些能力，Markdown 参数如何连接模型、类型与宿主，如何新增能力？ |
 | [游戏规则与战术约定](doc/spec/game-rules-and-tactics.md) | 如何按真实规则选择阵营项目、复用前置，并按目标组合战术提示？ |

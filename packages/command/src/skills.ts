@@ -3,21 +3,36 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { parameterValue, type ParameterDefinition } from './capability-definitions.ts'
 
-export interface SkillDefinition {
+interface SkillBase {
   id: string; version: string; name: string; aliases: string[]; games: string[]; description: string
   parameters: Record<string, ParameterDefinition>
   requires: string[]
+}
+export interface ScoutSkillDefinition extends SkillBase {
   steps: [
     { id: string; capability: 'production.produce'; existingCapability: 'formation.assign'; role: string },
     { id: string; capability: 'map.explore'; after: { step: string; milestone: 'first-member-ready' } },
   ]
   exploration: { pointSpacing: number; stallTicks: number; maxStallsPerRegion: number; coverageRatio: number; interiorMargin?: number; retryPasses?: number; centerFirst?: boolean }
 }
-export interface SkillDocument { definition: SkillDefinition; instructions: string; source: string; hash: string; file: string }
+export interface RepairSkillDefinition extends SkillBase {
+  steps: [
+    { id: string; capability: 'production.produce'; role: string },
+    { id: string; capability: 'production.produce'; role: string },
+    { id: string; capability: 'transport.enter' },
+    { id: string; capability: 'vehicle.repair' },
+  ]
+  repair: { retryTicks: number; stallTicks: number }
+}
+export type SkillDefinition = ScoutSkillDefinition | RepairSkillDefinition
+export interface SkillDocument<D extends SkillDefinition = SkillDefinition> { definition: D; instructions: string; source: string; hash: string; file: string }
 export class SkillCatalog {
   private readonly documents: SkillDocument[]
   constructor(documents: SkillDocument[]) { this.documents = structuredClone(documents) }
   ids(): string[] { return this.documents.map(doc => doc.definition.id) }
+  get(id: 'scout'): SkillDocument<ScoutSkillDefinition> | undefined
+  get(id: 'repair-vehicle'): SkillDocument<RepairSkillDefinition> | undefined
+  get(id: string): SkillDocument | undefined
   get(id: string): SkillDocument | undefined {
     const normalized = id.normalize('NFKC').trim().toLowerCase()
     const doc = this.documents.find(doc => [doc.definition.id, doc.definition.name, ...doc.definition.aliases].some(name => name.toLowerCase() === normalized))
@@ -53,14 +68,21 @@ export function readSkills(directory: URL, capabilityIds: readonly string[], gam
         if (aliases.has(key)) throw new Error(`Skill 名称重复：${alias}`)
         aliases.add(key)
       }
-      if (!['production.produce', 'formation.assign', 'map.explore'].every(id => d.requires.includes(id))) throw new Error('Skill 缺少依赖能力声明')
+      const repair = 'repair' in d
+      if ((d.id === 'scout' && repair) || (d.id === 'repair-vehicle' && !repair)) throw new Error('内置 Skill ID 与流程类型不符')
+      if (!(repair ? ['production.produce', 'formation.assign', 'transport.enter', 'vehicle.repair'] : ['production.produce', 'formation.assign', 'map.explore']).every(id => d.requires.includes(id))) throw new Error('Skill 缺少依赖能力声明')
       if (!d.parameters || Object.keys(d.parameters).sort().join(',') !== 'memberSource,quantity' || d.parameters.quantity?.type !== 'integer' || d.parameters.memberSource?.type !== 'string' || d.parameters.memberSource.enum?.join(',') !== 'auto,existing,new') throw new Error('首版参数须声明 quantity 与 memberSource（auto/existing/new）')
       for (const [key, rule] of Object.entries(d.parameters)) parameterValue(rule.default, rule, `${d.id}.${key}`)
-      if (!Array.isArray(d.steps) || d.steps.length !== 2 || typeof d.steps[0]?.id !== 'string' || !d.steps[0].id.trim() || typeof d.steps[1]?.id !== 'string' || !d.steps[1].id.trim() || d.steps[0].capability !== 'production.produce' || d.steps[0].existingCapability !== 'formation.assign' || !d.steps[0].role || d.steps[1]?.id === d.steps[0].id || d.steps[1]?.capability !== 'map.explore' || d.steps[1].after?.step !== d.steps[0].id || d.steps[1].after.milestone !== 'first-member-ready') throw new Error('首版只支持准备成员后按实际交接里程碑探索')
-      if (!d.exploration || !Number.isSafeInteger(d.exploration.pointSpacing) || d.exploration.pointSpacing < 1 || !Number.isSafeInteger(d.exploration.stallTicks) || d.exploration.stallTicks < 1 || !Number.isSafeInteger(d.exploration.maxStallsPerRegion) || d.exploration.maxStallsPerRegion < 1) throw new Error('探索策略参数非法')
-      if (!Number.isFinite(d.exploration.coverageRatio) || d.exploration.coverageRatio <= 0 || d.exploration.coverageRatio > 1) throw new Error('探索分区覆盖阈值须大于 0 且不超过 1')
-      for (const value of [d.exploration.interiorMargin, d.exploration.retryPasses]) if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new Error('探索内缩与重试轮数须为非负整数')
-      if (d.exploration.centerFirst !== undefined && typeof d.exploration.centerFirst !== 'boolean') throw new Error('探索中心优先开关须为 boolean')
+      if (repair) {
+        if (!Array.isArray(d.steps) || d.steps.length !== 4 || d.steps.some(step => !step.id?.trim()) || new Set(d.steps.map(step => step.id)).size !== 4 || d.steps[0].capability !== 'production.produce' || !d.steps[0].role || d.steps[1].capability !== 'production.produce' || !d.steps[1].role || d.steps[2].capability !== 'transport.enter' || d.steps[3].capability !== 'vehicle.repair') throw new Error('维修车流程须包含车辆与工程师准备、上车及维修')
+        if (!Number.isSafeInteger(d.repair.retryTicks) || d.repair.retryTicks < 1 || !Number.isSafeInteger(d.repair.stallTicks) || d.repair.stallTicks <= d.repair.retryTicks) throw new Error('维修重试与停滞参数非法')
+      } else {
+        if (!Array.isArray(d.steps) || d.steps.length !== 2 || typeof d.steps[0]?.id !== 'string' || !d.steps[0].id.trim() || typeof d.steps[1]?.id !== 'string' || !d.steps[1].id.trim() || d.steps[0].capability !== 'production.produce' || d.steps[0].existingCapability !== 'formation.assign' || !d.steps[0].role || d.steps[1]?.id === d.steps[0].id || d.steps[1]?.capability !== 'map.explore' || d.steps[1].after?.step !== d.steps[0].id || d.steps[1].after.milestone !== 'first-member-ready') throw new Error('首版只支持准备成员后按实际交接里程碑探索')
+        if (!d.exploration || !Number.isSafeInteger(d.exploration.pointSpacing) || d.exploration.pointSpacing < 1 || !Number.isSafeInteger(d.exploration.stallTicks) || d.exploration.stallTicks < 1 || !Number.isSafeInteger(d.exploration.maxStallsPerRegion) || d.exploration.maxStallsPerRegion < 1) throw new Error('探索策略参数非法')
+        if (!Number.isFinite(d.exploration.coverageRatio) || d.exploration.coverageRatio <= 0 || d.exploration.coverageRatio > 1) throw new Error('探索分区覆盖阈值须大于 0 且不超过 1')
+        for (const value of [d.exploration.interiorMargin, d.exploration.retryPasses]) if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new Error('探索内缩与重试轮数须为非负整数')
+        if (d.exploration.centerFirst !== undefined && typeof d.exploration.centerFirst !== 'boolean') throw new Error('探索中心优先开关须为 boolean')
+      }
       const instructions = source.replace(blocks[0]![0], '').trim()
       if (!instructions) throw new Error('缺少 Skill 正文')
       return { definition: d, source, instructions, hash: createHash('sha256').update(source).digest('hex'), file: `${name}/SKILL.md` }

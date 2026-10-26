@@ -38,6 +38,12 @@ export function isCombatUnit(unit: SnapshotUnit, catalog?: GameCatalog, profile?
   if (![1, 3, 7].includes(unit.type) || (!unit.primaryWeapon && !unit.secondaryWeapon)) return false
   return !['harvester', 'constructionVehicle', 'engineer'].some(role => catalog ? catalog.isRole(unit.name, role, unit.type) : profile?.rolesFor(unit.name, unit.type).includes(role))
 }
+export function isRepairVehicle(unit: SnapshotUnit, ctx: Pick<CommandContext, 'runtime'>, catalog?: GameCatalog, profile?: GameProfile): boolean {
+  if (!(catalog ? catalog.isRole(unit.name, 'infantryFightingVehicle', unit.type) : profile?.rolesFor(unit.name, unit.type).includes('infantryFightingVehicle'))) return false
+  if (unit.transport?.passengers?.some(passenger => catalog ? catalog.isRole(passenger.name, 'engineer', passenger.type) : profile?.rolesFor(passenger.name, passenger.type).includes('engineer'))) return true
+  const engineers = new Set([...ctx.runtime.goals.values()].flatMap(goal => goal.facts.repair?.engineerIds ?? []))
+  return !!unit.transport?.unitIds.some(id => engineers.has(id))
+}
 export function selectUnits(ctx: CommandContext, params: { selector?: string; unitIds?: number[]; sourceFormationId?: string }, catalog?: GameCatalog, profile?: GameProfile): SnapshotUnit[] {
   const snap = ctx.runtime.snapshot!
   const source = params.sourceFormationId ? formationName(ctx, params.sourceFormationId) : undefined
@@ -51,6 +57,7 @@ export function selectUnits(ctx: CommandContext, params: { selector?: string; un
     if (['vehicles', '车辆', '所有车辆'].includes(selector)) return unit.type === 7
     if (['aircraft', '空军', '飞机'].includes(selector)) return unit.type === 1
     if (['combat', '战斗单位', '作战单位', '所有战斗单位'].includes(selector)) return isCombatUnit(unit, catalog, profile)
+    if (['repairvehicles', '维修车', '修理车', '维修车辆'].includes(selector)) return isRepairVehicle(unit, ctx, catalog, profile)
     if (catalog) return catalog.matchesUnit(unit, selector)
     const role = profile?.roleForAlias(selector)
     return role ? !!profile?.rolesFor(unit.name, unit.type).includes(role) : unit.name.toLowerCase() === selector

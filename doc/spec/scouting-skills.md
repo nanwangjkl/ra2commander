@@ -1,6 +1,6 @@
 # 探路 Skill 与探索事实
 
-阶段 D 探路流程已于 2026-10-26 获用户认可，当前按逐区 60% 微调并复核对局记录。当前首个游戏 Skill 是 `scout`，定义位于 [`skills/scout/SKILL.md`](../../skills/scout/SKILL.md)。它与开发 Agent 使用的 Codex Skill 无关。
+阶段 D 探路流程已于 2026-10-26 获用户认可，当前按逐区 60% 微调并复核对局记录。首个游戏 Skill 是 `scout`，定义位于 [`skills/scout/SKILL.md`](../../skills/scout/SKILL.md)。它与开发 Agent 使用的 Codex Skill 无关。
 
 ## 玩家入口
 
@@ -64,3 +64,5 @@ cap map.explore {"formationId":"1队","regionName":"三楼右下"}
 2026-10-26 最新反馈修订：`scout@1.3.0` 默认逐区 55%、中心优先，成员来源明确分为 `memberSource=auto/existing/new`；auto 优先现有未编队成员，没有才新造，不足按可用部分执行，旧 useExisting 布尔参数继续兼容。对本局“只有一条狗在动”已定位到生成脚本漏掉 transferUnits；探路编译增加隔离的后续入队检查，验证首个成员建队后仍会把新产出成员转入，错误脚本进入原有模型校验修正流程，不向游戏发测试动作。
 
 2026-10-26 用户认可探路流程后微调：`scout@1.3.1` 将默认逐区下限提高到 60%，中心优先、来源选择与其他执行策略沿用 1.3.0。新命令自动加载，已有运行保留捕获阈值，历史成果不重算。
+
+第二个游戏 Skill 为[维修车](repair-vehicle-skill.md)，共用版本捕获、目标展开与运行持久化；维修车不依赖地图探索进度。

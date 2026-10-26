@@ -15,7 +15,7 @@
     },
     "selector": {
       "type": "string",
-      "description": "兵种原生名称/显示名，或 combat（战斗单位，排除矿车等辅助单位）、tanks、infantry、vehicles、aircraft、all",
+      "description": "兵种原生名称/显示名，或 repairVehicles（已组装维修车）、combat（战斗单位，排除矿车等辅助单位）、tanks、infantry、vehicles、aircraft、all",
       "default": "all"
     },
     "quantity": {
@@ -40,3 +40,5 @@
 摘要来自实际选中成员，明确这是现有单位。完成以成员归属与停车交接确认。
 
 “所有战斗单位编入1队”只用一个 selector=combat 调用，不拆成 tanks 和 vehicles。combat 按当前武器与辅助角色识别，包含灰熊和多功能步兵车，排除矿车、基地车、工程师和建筑。同句话对同一队的多个选择会合并并去重，再统一交接；同句后续移动可等待该队建立。
+
+选择现有维修车可用 selector=repairVehicles（实际载有工程师的 IFV），不要用 FV 把未组装或搭载其他步兵的车混入。已在其他队的维修车转入新队用 formation.transfer；原队为空后不再控制这些成员。

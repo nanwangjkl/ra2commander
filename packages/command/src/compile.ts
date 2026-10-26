@@ -3,6 +3,7 @@ import type { Snapshot, StepConstraints, StepOutcome } from '@ra2c/contracts'
 import { compileChecks, extractCode } from './script-contract.ts'
 import { loadPrompts, type PromptLibrary } from './prompt-loader.ts'
 import { checkScoutHandoffs } from './scout-checks.ts'
+import { checkRepairStages } from './repair-checks.ts'
 
 export interface CompileInput {
   snapshot: Snapshot
@@ -69,6 +70,11 @@ export async function compileCommand(
         const handoffError = await checkScoutHandoffs(code, input, executor)
         signal?.throwIfAborted()
         if (handoffError) errors = [handoffError]
+        if (!errors.length) {
+          const repairError = await checkRepairStages(code, input, executor)
+          signal?.throwIfAborted()
+          if (repairError) errors = [repairError]
+        }
       }
     }
     log.push({ attempt, errors, model: result.model, durationMs: result.durationMs, promptVersion: promptLibrary.version, promptTopics: promptLibrary.tactics.select('compile', goals, recovery).map(tactic => tactic.id), ...(result.usage?.completionTokens ? { tokens: result.usage.completionTokens } : {}) })

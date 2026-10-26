@@ -56,8 +56,14 @@ export interface ReinforceGoal extends GoalBase {
   source: string | null
 }
 export interface RallyGoal extends GoalBase { kind: 'rally'; unitIds: number[]; x: number; y: number }
-export type GoalSpec = CombatGoal | ExploreGoal | DeployGoal | ProductionGoal | FormationGoal | ReinforceGoal | RallyGoal
-export const goalOwner = (goal: GoalSpec): ScriptOwner => goal.kind === 'combat' || goal.kind === 'explore' ? { kind: 'formation', formationId: goal.formationId } : { kind: 'global' }
+export interface TransportGoal extends GoalBase { kind: 'transport'; unitIds: number[]; transportId: number }
+export interface RepairGoal extends GoalBase {
+  kind: 'repair'; formationId: string; vehicleNames: string[]; engineerNames: string[]; tankNames: string[]
+  preparationGoalIds: string[]; quantity?: number; targetId?: number; followFormationId?: string
+  policy: { retryTicks: number; stallTicks: number }
+}
+export type GoalSpec = CombatGoal | ExploreGoal | DeployGoal | ProductionGoal | FormationGoal | ReinforceGoal | RallyGoal | TransportGoal | RepairGoal
+export const goalOwner = (goal: GoalSpec): ScriptOwner => goal.kind === 'combat' || goal.kind === 'explore' || goal.kind === 'repair' ? { kind: 'formation', formationId: goal.formationId } : { kind: 'global' }
 
 export interface ScriptAction { goalId: string; request: ActionRequest | FormationRequest }
 /** 本步部队主体是否抵达目的地；宿主与脚本共用，不要求全队挤到同一点。 */
@@ -82,6 +88,11 @@ export interface GoalView {
   maxUnits?: number
   arrival?: ArrivalState
   exploration?: { seen: number; total: number; coverageRatio: number; regions: Array<{ id: string; name: string; seen: number; total: number; satisfied: boolean; deferred: boolean }>; targets: Array<{ unitId: number; x: number; y: number; regionId: string }> }
+  repair?: {
+    readyIds: number[]; assembling: Array<{ engineerId: number; vehicleId: number }>
+    targets: Array<{ unitId: number; targetId: number }>; damaged: Array<{ id: number; hitPoints: number; maxHitPoints: number }>
+    follow?: { x: number; y: number }; waiting: boolean
+  }
   productionPlan?: {
     missingPrerequisites: string[]
     pendingPrerequisites: string[]

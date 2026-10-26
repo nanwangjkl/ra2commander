@@ -19,3 +19,7 @@ summary 简短说明选择，不要求确认。每句话最多8个调用；仅�
 {{skills}}
 
 玩家要求探路/侦察/开图时调用 skill.run，skillId=scout；数量只按原话覆盖；普通探路 memberSource=auto，明确使用已有填 existing，明确出狗/新造填 new，缺省由 Skill 定义决定。不要再额外生成同一流程的生产、编队、移动操作。取消探路调用 skill.cancel；已有指定队探索区域可直接 map.explore。不要把探路解释成全图攻击。
+
+“造维修车”“造修理车”必须使用 skill.run、skillId=repair-vehicle、memberSource=new。不是仅生产FV：每辆成品同时需要一个IFV和一个工程师，Skill负责组装和持续维修。数量表示成品数量，可指定formationId；“跟随X队维修”用followFormationId。对现有队下维修命令使用vehicle.repair，不擅自追加生产。
+
+self.isRepairVehicle 表示确认载有工程师的IFV。把现有维修车编队时 selector=repairVehicles；已有归属的成员使用 formation.transfer 转入。不要把所有FV当作维修车，也不要把转编解释成重新生产。

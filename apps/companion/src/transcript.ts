@@ -8,7 +8,7 @@ import { newCommandId, type CommandEvent, type TraceOptions } from './command-lo
 import { bindDefaultMap } from './map-binding.ts'
 import { normalizeOperations } from './transcript-plan.ts'
 import { executeCapabilities, executionText, loadCommandPrompts, type CapabilityExecution } from './capabilities/index.ts'
-import { isCombatUnit, loadGameCatalog } from './capabilities/selectors.ts'
+import { isRepairVehicle, isCombatUnit, loadGameCatalog } from './capabilities/selectors.ts'
 
 export async function runTranscript(text: string, ctx: CommandContext, root: string, trace?: TraceOptions): Promise<string> {
   const active = trace ?? (ctx.commandLog ? { commandId: newCommandId(), source: 'cli' as const, log: ctx.commandLog } : undefined)
@@ -64,9 +64,9 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
       { role: 'system', content: prompts.render('interpret') },
       { role: 'user', content: JSON.stringify({ text, faction: prompts.game.factions().find(faction => faction.id === catalog.faction)?.label ?? null,
         game: { id: prompts.game.id, version: prompts.game.version }, roles: prompts.game.roles().map(role => ({ id: role.id, aliases: role.aliases })),
-        self: snap.self.map(unit => ({ id: unit.id, name: unit.name, type: unit.type, formationId: ctx.formations.ownerOf(unit.id) ?? null, canDeploy: unit.canDeploy, isCombat: isCombatUnit(unit, catalog) })),
+        self: snap.self.map(unit => ({ id: unit.id, name: unit.name, type: unit.type, formationId: ctx.formations.ownerOf(unit.id) ?? null, hitPoints: unit.hitPoints, maxHitPoints: unit.maxHitPoints, transport: unit.transport, isRepairVehicle: isRepairVehicle(unit, ctx, catalog), canDeploy: unit.canDeploy, isCombat: isCombatUnit(unit, catalog) })),
         formations: ctx.formations.list(), catalog: catalog.items,
-        skillRuns: [...ctx.runtime.skillRuns.values()].filter(run => ['preparing', 'exploring'].includes(run.status)).map(run => ({ id: run.id, skillId: run.skillId, version: run.version, formationId: run.formationId, status: run.status })),
+        skillRuns: [...ctx.runtime.skillRuns.values()].filter(run => ['preparing', 'exploring', 'repairing'].includes(run.status)).map(run => ({ id: run.id, skillId: run.skillId, version: run.version, formationId: run.formationId, status: run.status })),
         goals: [...ctx.runtime.goals.values()].filter(goal => goal.status !== 'cancelled').slice(-30).map(goal => ({ id: goal.spec.id, kind: goal.spec.kind, text: goal.spec.rawText, label: goal.spec.label, status: goal.status, owner: goal.ownerId, ...(goal.spec.kind === 'production' ? { target: goal.spec.target, quantity: goal.spec.quantity } : {}) })),
         map: ctx.mapRegions && ctx.mapSessionKey === key ? { name: ctx.mapRegions.scheme.map.name, regions: ctx.mapRegions.scheme.regions.map(region => region.name) } : null }) },
     ]

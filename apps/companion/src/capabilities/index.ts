@@ -3,6 +3,7 @@ import type { CommandEvent, GoalSpec } from '@ra2c/contracts'
 import type { CommandContext } from '../commands.ts'
 import { bindings, type BindingContext } from './bindings.ts'
 import { loadGameCatalog, type GameCatalog } from './selectors.ts'
+import { skillGoalIds } from '@ra2c/runtime'
 import { randomUUID } from 'node:crypto'
 
 export function validateBindings(prompts: PromptLibrary): void { prompts.capabilities.assertBindings(Object.keys(bindings)) }
@@ -90,10 +91,10 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
       }
       if (result.skillRun) {
         const run = result.skillRun
-        if (ctx.runtime.goals.has(run.preparationGoalId) && ctx.runtime.goals.has(run.exploreGoalId)) ctx.runtime.skillRuns.set(run.id, run)
+        if (skillGoalIds(run).every(id => ctx.runtime.goals.has(id))) ctx.runtime.skillRuns.set(run.id, run)
         else {
-          await Promise.all([run.preparationGoalId, run.exploreGoalId].map(id => ctx.runtime.cancelGoal(id, 'Skill 目标绑定不完整，已撤销')))
-          skip('Skill 目标绑定不完整，已撤销本次探路')
+          await Promise.all(skillGoalIds(run).map(id => ctx.runtime.cancelGoal(id, 'Skill 目标绑定不完整，已撤销')))
+          skip('Skill 目标绑定不完整，已撤销本次 Skill')
         }
       }
       for (const owner of result.refreshOwners ?? []) { owners.add(owner); suppressed.delete(owner) }

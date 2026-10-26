@@ -229,12 +229,18 @@ export class ExplorationStore {
   }
 }
 
-export interface SkillRun {
+interface SkillRunBase {
   id: string; skillId: string; version: string; hash: string; source: string; promptVersion: string; gameId: string
   commandId: string; rawText: string; sessionKey: string; createdAt: number
-  quantity: number; useExisting: boolean; formationId: string; preparationGoalId: string; exploreGoalId: string
+  quantity: number; useExisting: boolean; formationId: string
   memberSource?: 'auto' | 'existing' | 'new'
-  map: { id: string; schemeId: string; schemeVersion: string; geometryHash: string }
-  status: 'preparing' | 'exploring' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'superseded'
+  status: 'preparing' | 'exploring' | 'repairing' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'superseded'
   detail?: string
 }
+export interface ScoutSkillRun extends SkillRunBase {
+  kind?: 'scout'; preparationGoalId: string; exploreGoalId: string
+  map: { id: string; schemeId: string; schemeVersion: string; geometryHash: string }
+}
+export interface RepairSkillRun extends SkillRunBase { kind: 'repair-vehicle'; preparationGoalIds: string[]; repairGoalId: string }
+export type SkillRun = ScoutSkillRun | RepairSkillRun
+export const skillGoalIds = (run: SkillRun): string[] => run.kind === 'repair-vehicle' ? [...run.preparationGoalIds, run.repairGoalId] : [run.preparationGoalId, run.exploreGoalId]

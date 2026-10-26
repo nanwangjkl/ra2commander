@@ -90,7 +90,7 @@ export function readPrompts(directory = TEMPLATE_DIRECTORY): PromptLibrary {
   const tactics = readTactics(new URL('../tactics/', directory))
   const skills = readSkills(new URL('../../skills/', directory), capabilities.definitions().map(item => item.id), game.profile.id)
   if (!skills.catalog.get('scout')) throw new Error('缺少首版 scout Skill')
-  for (const skill of skills.sources) if (!game.profile.roles().some(role => role.id === skill.definition.steps[0].role)) throw new Error(`Skill ${skill.definition.id} 引用了未知游戏角色`)
+  for (const skill of skills.sources) for (const step of skill.definition.steps) if ('role' in step && !game.profile.roles().some(role => role.id === step.role)) throw new Error(`Skill ${skill.definition.id} 引用了未知游戏角色`)
   hash.update('games/current-mod.md').update('\0').update(game.source).update('\0')
   for (const document of tactics.sources) hash.update(`tactics/${document.file}`).update('\0').update(document.source).update('\0')
   for (const document of skills.sources) hash.update(`skills/${document.file}`).update('\0').update(document.source).update('\0')

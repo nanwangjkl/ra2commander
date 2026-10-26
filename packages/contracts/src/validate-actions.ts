@@ -13,11 +13,15 @@ export function liveScriptActions(value: ScriptAction[], c: StepConstraints, sna
     const action = item.request
     if (action.kind === 'produce' && typeof action.name === 'string' && Number.isSafeInteger(action.quantity) && action.quantity > 0 && goal.produceRemaining?.[action.name] === 0) return []
     if (action.kind === 'attack' && Number.isSafeInteger(action.targetId) && !goal.enemyIds.includes(action.targetId)) return []
+    if ((action.kind === 'repair' || action.kind === 'enterTransport') && Number.isSafeInteger(action.targetId) && !goal.friendlyTargetIds?.includes(action.targetId)) return []
     if ('unitIds' in action && Array.isArray(action.unitIds) && action.unitIds.length && action.unitIds.every(id => Number.isSafeInteger(id))) {
       if (['createFormation', 'transferUnits'].includes(action.kind)) {
         const management = goal.management
         if (management?.exact && management.allowedUnitIds.length !== management.maxUnits) return []
-        return action.unitIds.every(id => management?.allowedUnitIds.includes(id)) ? [item] : []
+        if (!action.unitIds.every(id => management?.allowedUnitIds.includes(id))) return []
+        // 同步脚本中的另一个生产目标可能刚刚建好同名队；本目标的剩余组件改为转入。
+        if (action.kind === 'createFormation' && management?.kind === 'transferUnits' && action.formationId === management.formationId) return [{ ...item, request: { kind: 'transferUnits' as const, formationId: action.formationId, unitIds: action.unitIds } }]
+        return [item]
       }
       const unitIds = action.unitIds.filter(id => goal.allowedUnitIds.includes(id))
       if (!unitIds.length) return []
@@ -133,9 +137,18 @@ export function validateActions(value: unknown, c: StepConstraints, snapshot?: S
       if (snapshot && !snapshot.production?.queues.some(q => q.type === a.queueType)) return '队列状态不可观测，无法安全操作'
       continue
     }
-    if (!['move', 'attackMove', 'gather', 'attack', 'stop', 'deploy', 'scatter', 'guard'].includes(a.kind)) return '未知动作类型'
+    if (!['move', 'attackMove', 'gather', 'attack', 'stop', 'deploy', 'scatter', 'guard', 'repair', 'enterTransport'].includes(a.kind)) return '未知动作类型'
     if (a.kind !== 'stop' && !c.allowedActions?.includes(a.kind)) return `未授权动作: ${a.kind}`
     if (!Array.isArray(a.unitIds) || !a.unitIds.length || a.unitIds.some(id => !Number.isSafeInteger(id) || !allowed.has(id))) return '引用未授权或失效单位'
+    if (a.kind === 'repair' || a.kind === 'enterTransport') {
+      if (!Number.isSafeInteger(a.targetId) || !c.friendlyTargetIds?.includes(a.targetId)) return '友方目标已失效'
+      const target = snapshot?.self.find(unit => unit.id === a.targetId)
+      if (snapshot && !target) return '友方目标已消失'
+      if (a.unitIds.includes(a.targetId)) return '单位不能以自身为目标'
+      if (a.kind === 'repair' && target && (target.type !== 7 || !(target.hitPoints! > 0 && target.hitPoints! < target.maxHitPoints!))) return '维修目标不是受损车辆'
+      if (a.kind === 'enterTransport' && target && (!target.transport || target.transport.occupied >= target.transport.capacity)) return '载具没有可用座位'
+      continue
+    }
     if (a.kind === 'deploy') {
       if (snapshot && a.unitIds.some(id => !snapshot.self.find(u => u.id === id)?.canDeploy)) return '单位当前不能展开'
       continue

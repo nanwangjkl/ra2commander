@@ -20,16 +20,19 @@ function pageBridge() {
     me: () => ({ credits: 1000 }), map: { size: () => ({ width: 100, height: 100 }) },
     move: (...args: unknown[]) => { submitted.push(args) }, attack: (...args: unknown[]) => { submitted.push(args) },
     produce: (...args: unknown[]) => { submitted.push(args) },
+    order: (...args: unknown[]) => { submitted.push(args); return true },
+    unit: (id: number) => own.find(unit => unit.id === id),
     stop: (...args: unknown[]) => { submitted.push(args) }, inRange: () => true,
   }
   const window: Record<string, any> = { werhd: api, __ra2cSnapshot: (s: ReturnType<typeof snapshot>) => snapshots.push(s) }
-  runInNewContext(readFileSync(new URL('../packages/game-werhd/src/bridge.js', import.meta.url), 'utf8'), {
+  const install = () => runInNewContext(readFileSync(new URL('../packages/game-werhd/src/bridge.js', import.meta.url), 'utf8'), {
     window, crypto: { randomUUID }, performance, setInterval: (fn: () => void) => { poll = fn; return 1 }, clearInterval: () => {},
   })
+  install()
   poll()
   const sample = () => { onTick({ tick }); return snapshots.at(-1)! }
   const next = () => { tick += 15; return sample() }
-  return { window, api, submitted, sample, next, poll, own, enemy, setTick: (value: number) => { tick = value } }
+  return { window, api, submitted, sample, next, poll: () => poll(), install, own, enemy, setTick: (value: number) => { tick = value } }
 }
 
 test('页面桥可以提交正常动作，并丢弃过期、跨局或目标已消失的动作', () => {
@@ -68,21 +71,33 @@ test('换局后重新采样，兼容游戏 API 对象被复用', () => {
   }
 })
 
-test('v4 攻击策略升级保留对局身份，只接管射程拒绝，不跳过旧桥的会话检查', () => {
+test('桥升级保留对局身份并递增序号，上车和维修使用原生对象指令且不预判射程', () => {
   const page = pageBridge()
-  const current = page.sample()
-  const submit = page.window.__ra2cSubmit
-  page.window.__ra2cSubmit = (session: number, action: { kind: string }, seq: number, key: string) => {
-    if (action.kind === 'attack' && session === current.session && seq === current.seq && key === current.sessionKey) return { ok: false, reason: 'out-of-range', submitted: 0, session }
-    return submit(session, action, seq, key)
-  }
-  page.window.__ra2cVersion = 4
-  runInNewContext(readFileSync(new URL('../packages/game-werhd/src/bridge.js', import.meta.url), 'utf8'), { window: page.window })
-  assert.equal(page.window.__ra2cState().sessionKey, current.sessionKey)
-  const attack = { kind: 'attack', unitIds: [1], targetId: 99 }
-  assert.equal(page.window.__ra2cSubmit(current.session, attack, current.seq, current.sessionKey).ok, true)
-  assert.equal(page.window.__ra2cSubmit(current.session, attack, current.seq, 'old-battle').ok, false)
-  assert.equal(page.submitted.length, 1)
+  page.own[0]!.name = 'FV'; page.own[0]!.transport = { occupied: 0, capacity: 1, unitIds: [] }
+  page.own[1]!.name = 'ENGINEER'; page.own[1]!.type = 3
+  page.own[2]!.hitPoints = 50; page.own[2]!.maxHitPoints = 100
+  const first = page.sample()
+  const submit = (context: typeof first, action: unknown) => page.window.__ra2cSubmit(context.session, action, context.seq, context.sessionKey)
+  assert.equal(submit(first, { kind: 'enterTransport', unitIds: [2], targetId: 1 }).ok, true)
+  assert.deepEqual(JSON.parse(JSON.stringify(page.submitted[0])), [[2], { type: 17, target: { objectId: 1 } }])
+  page.own[0]!.transport = { occupied: 1, capacity: 1, unitIds: [2] }
+  page.own.splice(1, 1)
+  const loaded = page.next()
+  assert.equal(loaded.self[0]!.transport!.passengers![0]!.name, 'ENGINEER')
+  assert.equal(submit(loaded, { kind: 'repair', unitIds: [1], targetId: 3 }).ok, true)
+  assert.deepEqual(JSON.parse(JSON.stringify(page.submitted[1])), [[1], { type: 2, target: { objectId: 3 } }]) // 普通 Attack，不是 Repair 或 ForceAttack。
+  page.window.__ra2cVersion = 5
+  page.install(); page.poll()
+  const upgraded = page.next()
+  assert.equal(upgraded.sessionKey, first.sessionKey)
+  assert.equal(upgraded.session, first.session)
+  assert.ok(upgraded.seq > loaded.seq)
+  assert.equal(submit(loaded, { kind: 'repair', unitIds: [1], targetId: 3 }).ok, false)
+  assert.equal(submit(upgraded, { kind: 'repair', unitIds: [1], targetId: 3 }).ok, true)
+  assert.equal(page.window.__ra2cSubmit(upgraded.session, { kind: 'repair', unitIds: [1], targetId: 3 }, upgraded.seq, 'old-battle').ok, false)
+  page.setTick(1); page.window.__ra2cVersion = 5
+  page.install(); page.poll()
+  assert.notEqual(page.sample().sessionKey, upgraded.sessionKey) // 升级期间实际换局仍必须撤销旧身份。
 })
 test('宿主桥保留动作来源对局，不查询当前会话替换它；撤权后不排入 evaluate', async () => {
   const calls: unknown[] = []

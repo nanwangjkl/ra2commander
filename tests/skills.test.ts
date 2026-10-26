@@ -299,6 +299,7 @@ test('探路展开固定生产与独立编队；首条狗交接后即可出发�
     const execution = await f.run()
     assert.ok(execution.results.every(result => result.includes('已生效')), execution.results.join('\n'))
     const run = [...f.runtime.skillRuns.values()][0]!
+    assert.ok(run.kind !== 'repair-vehicle')
     assert.equal(run.quantity, 3)
     assert.equal(run.commandId, 'test-command')
     assert.equal(f.generations(), 2) // 全局与该队各一次，不逐分区请求模型。
@@ -353,6 +354,7 @@ test('普通探路优先现有未编队狗，明确新造才新增；中心策�
   try {
     await f.run({ quantity: 2 })
     const run = [...f.runtime.skillRuns.values()][0]!
+    assert.ok(run.kind !== 'repair-vehicle')
     assert.equal(run.useExisting, true)
     const goal = f.runtime.goals.get(run.exploreGoalId)!.spec as ExploreGoal
     assert.equal(goal.policy.coverageRatio, 0.6)
@@ -362,6 +364,7 @@ test('普通探路优先现有未编队狗，明确新造才新增；中心策�
     assert.ok(f.submitted.every(action => action.kind !== 'produce'))
     await f.run({ useExisting: false })
     const fresh = [...f.runtime.skillRuns.values()].at(-1)!
+    assert.ok(fresh.kind !== 'repair-vehicle')
     assert.equal(f.runtime.goals.get(fresh.preparationGoalId)!.spec.kind, 'production')
   } finally { await f.executor.dispose() }
 })
@@ -372,6 +375,7 @@ test('使用现有狗不生产，数量可覆盖；取消只结束自身目标�
     const execution = await f.run({ useExisting: true, quantity: 5 })
     assert.match(execution.skipped.join(' '), /仅2条/)
     const first = [...f.runtime.skillRuns.values()][0]!
+    assert.ok(first.kind !== 'repair-vehicle')
     assert.equal(first.quantity, 5)
     await f.tick(); await f.tick()
     assert.deepEqual(f.formations.membersOf(first.formationId), [11, 12])
@@ -383,6 +387,7 @@ test('使用现有狗不生产，数量可覆盖；取消只结束自身目标�
     assert.equal(f.runtime.goals.get(other.id)!.status, 'active')
     await f.run({ quantity: 5 })
     const second = [...f.runtime.skillRuns.values()].at(-1)!
+    assert.ok(second.kind !== 'repair-vehicle')
     assert.equal((f.runtime.goals.get(second.preparationGoalId)!.spec as { quantity: number }).quantity, 5)
     activate(f.runtime, spec({ id: 'new-order', formationId: second.formationId, rawText: '新命令', destination: { x: 8, y: 8 } }), code)
     await f.tick()
@@ -411,7 +416,9 @@ test('取消探路后丢弃迟到的地图观察，不再安排探索或追加�
   const f = await fixture(true)
   try {
     await f.run({ useExisting: true }); await f.tick(); await f.tick()
-    const run = [...f.runtime.skillRuns.values()][0]!, progress = f.runtime.exploration.progress.get(run.exploreGoalId)!
+    const run = [...f.runtime.skillRuns.values()][0]!
+    assert.ok(run.kind !== 'repair-vehicle')
+    const progress = f.runtime.exploration.progress.get(run.exploreGoalId)!
     const map = f.runtime.exploration.maps.get(progress.mapId)!, pending = deferred<{ seen: number[]; impassable: number[] }>()
     f.ctx.bridge.readMapBatch = () => pending.promise
     const polling = new ExplorationObserver().poll(f.ctx)

@@ -12,6 +12,7 @@ export interface GoalFacts {
   cancelReason?: string
   routeIndex?: number
   outcomeDetail?: string
+  repair?: import('./repair.ts').RepairState
 }
 export interface GoalState {
   ownerId: string
