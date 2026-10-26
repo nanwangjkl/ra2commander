@@ -54,7 +54,11 @@ function inspectProgress(goal: GoalView, constraints: GoalConstraints, snap: Sna
   const units = members.map(unit => [unit.id, Math.round(unit.rx * 2), Math.round(unit.ry * 2), unit.hitPoints, unit.transport?.unitIds])
   let actionable = false, reason = '等待条件变化'
   let facts: unknown = units
-  if (spec.kind === 'production') {
+  if (spec.kind === 'building') {
+    actionable = !!goal.building?.actions.length && !goal.building.pending
+    reason = '建筑操作可执行但没有推进'
+    facts = [goal.building?.completed, goal.building?.failed, snap.self.filter(unit => spec.unitIds.includes(unit.id)).map(unit => [unit.id, unit.hitPoints, unit.hasWrenchRepair])]
+  } else if (spec.kind === 'production') {
     const plan = goal.productionPlan
     const queues = snap.production?.queues ?? []
     const candidates = plan?.availableToProduce.filter(name => queues.find(queue => queue.type === constraints.productionQueueTypes?.[name])?.status !== 2) ?? []

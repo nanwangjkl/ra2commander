@@ -15,6 +15,7 @@ import { RecoveryMonitor } from './recovery.ts'
 import { initialRelocation, observeRelocation, relocationView, recordRelocationResult } from './relocation.ts'
 import { initialMining, planMining, recordMiningResult } from './mining.ts'
 import { initialAttack, planAttack, recordAttack } from './attack.ts'
+import { initialBuilding, planBuilding, reserveBuilding, recordBuilding } from './building.ts'
 export { initialMining, miningBatch, observeOre } from './mining.ts'
 export { skillGoalIds } from './exploration.ts'
 export { ExplorationStore } from './exploration.ts'
@@ -88,6 +89,10 @@ export class TaskRuntime {
   goalExecution(id: string): GoalExecution | undefined {
     const goal = this.goals.get(id)
     if (!goal) return undefined
+    if (goal.spec.kind === 'building' && this.latest && ['completed', 'partial', 'failed'].includes(goal.status)) {
+      const view = this.buildingPlan(goal.spec, this.latest).view
+      return { state: goal.status as 'completed' | 'partial' | 'failed', detail: view.detail, progress: { completed: view.completed, total: view.total, label: goal.spec.operation === 'repair' ? '已修复建筑' : '建筑已离场' } }
+    }
     if (goal.spec.kind === 'attack' && ['completed', 'partial', 'failed'].includes(goal.status)) {
       const members = goal.facts.attack?.members ?? [], aircraft = members.filter(member => member.aircraft)
       return { state: goal.status as 'completed' | 'partial' | 'failed', detail: goal.facts.outcomeDetail ?? '本次飞机已实际发射，返航与装弹交给游戏',
@@ -107,6 +112,7 @@ export class TaskRuntime {
       ? { state: 'faulted', detail: `脚本运行出错，已暂停：${program.stats.lastError}` } : { state: 'paused', detail: '脚本已暂停' }
     if (program.status === 'stopped') return { state: 'cancelled', detail: '脚本已停止' }
     const view = this.frame(program, [spec], this.latest).snapshot.control!.goals[0]!
+    if (spec.kind === 'building' && view.building) return { state: view.building.pending ? 'pending' : 'running', detail: view.building.detail, progress: { completed: view.building.completed, total: view.building.total, label: spec.operation === 'repair' ? '已修复建筑' : '建筑已离场' } }
     if (spec.kind === 'attack' && view.attack) {
       const attack = view.attack
       const waiting = !attack.readyIds.length && !attack.attackingIds.length && (attack.pendingIds.length > 0 || attack.preparing)
@@ -216,7 +222,11 @@ export class TaskRuntime {
     if (!goal.id || !goal.rawText || !this.latest) throw new Error('目标缺少 ID、命令或当前对局')
     const snap = this.latest
     const point = (x: number, y: number) => Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < snap.mapWidth && y < snap.mapHeight
-    if (goal.kind === 'attack') {
+    if (goal.kind === 'building') {
+      const existing = this.goals.get(goal.id)
+      const tracked = existing?.spec.kind === 'building' && existing.spec.operation === goal.operation ? existing.facts.building?.jobs ?? [] : []
+      if (!['repair', 'sell'].includes(goal.operation) || !goal.unitIds.length || new Set(goal.unitIds).size !== goal.unitIds.length || goal.unitIds.some(id => !Number.isSafeInteger(id) || !snap.self.some(unit => unit.id === id && unit.type === 2) && !tracked.some(job => job.unitId === id))) throw new Error('建筑操作只能选择现有己方建筑')
+    } else if (goal.kind === 'attack') {
       if ((!goal.unitIds.length && !goal.dynamicNames?.length) || goal.unitIds.some(id => !Number.isSafeInteger(id)) || new Set(goal.unitIds).size !== goal.unitIds.length || goal.aircraftIds.some(id => !goal.unitIds.includes(id)) || !['enemies', 'base', 'units', 'buildings'].includes(goal.targetKind) || goal.targetRegion && !validTargetRegion(goal.targetRegion)) throw new Error('攻击对象或目标范围非法')
       if (goal.formationId && !this.formations.list().some(formation => formation.id === goal.formationId) && !this.hasPlannedFormation(goal.formationId)) throw new Error('攻击编队不存在或尚无准备目标')
     } else if (goal.kind === 'mining') {
@@ -362,6 +372,7 @@ export class TaskRuntime {
       if (spec.kind === 'relocate') goal.facts.relocation ??= initialRelocation(spec, this.latest!)
       if (spec.kind === 'mining') goal.facts.mining ??= initialMining()
       if (spec.kind === 'attack') goal.facts.attack ??= initialAttack()
+      if (spec.kind === 'building') goal.facts.building ??= initialBuilding()
       if (!goal.facts.initialized && (spec.kind === 'combat' || spec.kind === 'deploy')) {
         const ids = spec.kind === 'combat' ? this.formations.membersOf(spec.formationId) : spec.unitIds
         goal.facts.members = this.latest!.self.filter(u => ids.includes(u.id)).map(u => ({ id: u.id, name: u.name, rx: u.rx, ry: u.ry }))
@@ -449,7 +460,7 @@ export class TaskRuntime {
     for (const goal of this.goals.values()) {
       const spec = goal.activeSpec ?? goal.spec
       if (['cancelled', 'completed', 'partial', 'failed'].includes(goal.status)) continue
-      const members = spec.kind === 'relocate' ? [goal.facts.relocation?.unitId ?? spec.unitId] : spec.kind === 'attack' ? this.latest ? this.attackMembers(spec, this.latest) : spec.unitIds : spec.kind === 'rally' || spec.kind === 'transport' || spec.kind === 'mining' ? spec.unitIds : spec.kind === 'formation' ? spec.request.kind === 'dissolveFormation' ? this.formations.membersOf(spec.request.formationId) : spec.request.unitIds : spec.kind === 'reinforce' ? this.latest?.self.filter(u => u.name === spec.name && ((this.formations.ownerOf(u.id) ?? null) === spec.source || this.formations.ownerOf(u.id) === spec.formationId)).map(u => u.id) ?? [] : []
+      const members = spec.kind === 'relocate' ? [goal.facts.relocation?.unitId ?? spec.unitId] : spec.kind === 'attack' ? this.latest ? this.attackMembers(spec, this.latest) : spec.unitIds : spec.kind === 'rally' || spec.kind === 'transport' || spec.kind === 'mining' || spec.kind === 'building' ? spec.unitIds : spec.kind === 'formation' ? spec.request.kind === 'dissolveFormation' ? this.formations.membersOf(spec.request.formationId) : spec.request.unitIds : spec.kind === 'reinforce' ? this.latest?.self.filter(u => u.name === spec.name && ((this.formations.ownerOf(u.id) ?? null) === spec.source || this.formations.ownerOf(u.id) === spec.formationId)).map(u => u.id) ?? [] : []
       if (members.some(id => ids.includes(id))) cancel.push(spec.id)
     }
     await Promise.all([...owners].map(id => this.stop(id)).concat(cancel.map(id => this.cancelGoal(id))))
@@ -471,6 +482,10 @@ export class TaskRuntime {
   private goalConstraints(spec: GoalSpec, snap: Snapshot): GoalConstraints {
     const base: GoalConstraints = { allowedUnitIds: [], enemyIds: snap.enemies.map(u => u.id), mapWidth: snap.mapWidth, mapHeight: snap.mapHeight, allowedActions: [] }
     const alive = (ids: number[]) => ids.filter(id => snap.self.some(u => u.id === id) && !this.locked(id))
+    if (spec.kind === 'building') {
+      const view = this.buildingPlan(spec, snap).view
+      return { ...base, allowedUnitIds: view.actions.flatMap(action => 'unitIds' in action ? action.unitIds : []), allowedActions: [spec.operation === 'repair' ? 'repairBuilding' : 'sellBuilding'], buildingActions: view.actions }
+    }
     if (spec.kind === 'attack') {
       const planned = this.attackPlan(spec, snap)
       return { ...base, allowedUnitIds: planned.view.readyIds, allowedActions: ['attack', 'move', 'attackMove', 'stop'], aircraftIds: planned.state.members.filter(member => member.aircraft).map(member => member.unitId), enemyIds: planned.view.targets.map(unit => unit.id), region: { name: '攻击与返航路径', x1: 0, y1: 0, x2: snap.mapWidth - 1, y2: snap.mapHeight - 1 } }
@@ -571,6 +586,11 @@ export class TaskRuntime {
     return planAttack(spec, snap, this.attackMembers(spec, snap), this.goals.get(spec.id)?.facts.attack ?? initialAttack(), preparing, retained)
   }
 
+  private buildingPlan(spec: import('@ra2c/contracts').BuildingGoal, snap: Snapshot) {
+    const desired = this.goals.get(spec.id)?.spec
+    return planBuilding(spec, snap, this.goals.get(spec.id)?.facts.building ?? initialBuilding(), desired?.kind === 'building' ? desired.unitIds : spec.unitIds)
+  }
+
   private movementArrival(spec: GoalSpec, snap: Snapshot) {
     const destination = spec.kind === 'combat' ? spec.route?.[this.goals.get(spec.id)?.facts.routeIndex ?? 0] ?? spec.destination
       : spec.kind === 'rally' ? { x: spec.x, y: spec.y } : undefined
@@ -595,6 +615,7 @@ export class TaskRuntime {
       if (arrival) view.arrival = arrival
       if (spec.kind === 'repair') view.repair = this.repairPlan(spec, snap).view
       if (spec.kind === 'attack') view.attack = this.attackPlan(spec, snap).view
+      if (spec.kind === 'building') view.building = this.buildingPlan(spec, snap).view
       if (spec.kind === 'mining') {
         view.mining = this.miningPlan(spec, snap).view
         if (!view.mining.knownOre && !view.mining.actions.length && !view.mining.assigned && snap.self.filter(unit => view.unitIds.includes(unit.id)).every(unit => unit.isIdle)) view.blocked = view.mining.detail
@@ -615,7 +636,7 @@ export class TaskRuntime {
         }
         if (spec.unlockConditions !== undefined && !snap.production?.available.includes(spec.target) && !missingPrerequisites.length && !view.productionPlan.unmetConditions?.length && (constraints.produceRemaining?.[spec.target] ?? 0) > 0 && !view.productionPlan.availableToProduce.length && !view.productionPlan.readyToPlace.length) view.productionPlan.unmetConditions = [{ name: spec.target, reason: `${spec.target} 前置建筑已齐，但游戏当前未开放生产，等待生产设施或科技条件变化` }]
       }
-      const blocked = progress?.blocked ?? (facts.placementBlocked || spec.kind === 'mining' || spec.kind === 'attack' ? undefined : facts.blocked)
+      const blocked = progress?.blocked ?? (facts.placementBlocked || spec.kind === 'mining' || spec.kind === 'attack' || spec.kind === 'building' ? undefined : facts.blocked)
       if (blocked) view.blocked = blocked
       if (constraints.blocked) view.blocked = constraints.blocked
       if (spec.kind === 'combat' && !this.formations.list().some(formation => formation.id === spec.formationId)) view.blocked = `等待 ${spec.formationId} 编队完成`
@@ -663,7 +684,16 @@ export class TaskRuntime {
     for (const goal of this.goals.values()) {
       if (goal.status !== 'active' || !goal.activeSpec) continue
       const spec = goal.activeSpec
-      if (spec.kind === 'attack') {
+      if (spec.kind === 'building') {
+        const planned = this.buildingPlan(spec, snap)
+        goal.facts.building = planned.state
+        if (this.programs.get(goal.ownerId)?.status === 'paused') for (const job of planned.state.jobs) if (job.sentAt !== undefined) job.sentAt = snap.tick
+        if (planned.finished) {
+          goal.facts.outcomeDetail = planned.view.detail
+          if (planned.outcome === 'completed') this.complete(goal)
+          else { goal.status = planned.outcome; goal.facts.done = true }
+        }
+      } else if (spec.kind === 'attack') {
         const planned = this.attackPlan(spec, snap)
         goal.facts.attack = planned.state
         if (this.programs.get(goal.ownerId)?.status === 'paused') for (const member of planned.state.members) if (member.acceptedAt !== undefined) member.acceptedAt = snap.tick
@@ -898,8 +928,10 @@ export class TaskRuntime {
       }
       const guard = () => valid() && goal.status === 'active' && goal.activeSpec === this.goals.get(item.goalId)?.activeSpec
       try {
+        if (goal.activeSpec.kind === 'building') reserveBuilding(goal.facts.building ??= initialBuilding(), request, snap.tick)
         const results = await this.deps.submit([request], snap, guard)
         if (goal.activeSpec.kind === 'attack') recordAttack(goal.facts.attack ??= initialAttack(), request, results, snap)
+        if (goal.activeSpec.kind === 'building') recordBuilding(goal.facts.building ??= initialBuilding(), request, results)
         if (goal.activeSpec.kind === 'mining') recordMiningResult(goal.facts.mining ??= initialMining(), request, results, snap)
         if (goal.activeSpec.kind === 'relocate' && goal.facts.relocation) {
           recordRelocationResult(goal.activeSpec, goal.facts.relocation, request, results, snap.tick)

@@ -17,6 +17,7 @@ export interface GoalFacts {
   relocation?: import('./relocation.ts').RelocationState
   mining?: import('./mining.ts').MiningState
   attack?: import('./attack.ts').AttackState
+  building?: import('./building.ts').BuildingState
 }
 export interface GoalState {
   ownerId: string

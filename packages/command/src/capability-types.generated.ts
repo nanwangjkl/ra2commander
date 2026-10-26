@@ -1,8 +1,10 @@
 // 由 prompts/capabilities/*.md 生成；修改定义后运行 pnpm capabilities:generate。
-export const CAPABILITY_CONTRACT_VERSION = '53df1f8e8b4ff987c9c4e9ffed4f7b3790af683b293cc40fe2d94a97ac8617a4'
+export const CAPABILITY_CONTRACT_VERSION = '838539fa731560722f059f0266257ee6acddbb71a19813758b01ed959f32dc41'
 export interface CapabilityParameters {
   "base.deploy": Record<string, never>
   "base.relocate": { regionName?: string; x?: number; y?: number; unitId?: number }
+  "building.repair": { selector?: string; unitIds?: number[]; quantity?: number | 'all' }
+  "building.sell": { selector?: string; unitIds?: number[]; quantity?: number | 'all' }
   "combat.attack-all": { selector?: string; unitIds?: number[]; formationId?: string }
   "combat.attack": { selector?: string; unitIds?: number[]; formationId?: string; quantity?: number | 'all'; target?: "enemies" | "base" | "units" | "buildings"; targetId?: number; regionName?: string }
   "combat.clear-region": { formationId: string; regionName: string }
@@ -31,6 +33,8 @@ export interface CapabilityParameters {
 export interface ResolvedCapabilityParameters {
   "base.deploy": Record<string, never>
   "base.relocate": { regionName?: string; x?: number; y?: number; unitId?: number }
+  "building.repair": { selector: string; unitIds?: number[]; quantity: number | 'all' }
+  "building.sell": { selector: string; unitIds?: number[]; quantity: number | 'all' }
   "combat.attack-all": { selector?: string; unitIds?: number[]; formationId?: string }
   "combat.attack": { selector: string; unitIds?: number[]; formationId?: string; quantity: number | 'all'; target: "enemies" | "base" | "units" | "buildings"; targetId?: number; regionName?: string }
   "combat.clear-region": { formationId: string; regionName: string }

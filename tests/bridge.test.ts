@@ -26,6 +26,9 @@ function pageBridge() {
     order: (...args: unknown[]) => { submitted.push(args); return true },
     unit: (id: number) => own.find(unit => unit.id === id),
     stop: (...args: unknown[]) => { submitted.push(args) }, inRange: () => true,
+    repair: (id: number) => { const unit = own.find(unit => unit.id === id)!; unit.hasWrenchRepair = !unit.hasWrenchRepair; submitted.push({ kind: 'repair', id }) },
+    sell: (id: number) => { submitted.push({ kind: 'sell', id }) },
+    rules: (_name: string, _type: number) => ({ unsellable: false }),
   }
   const window: Record<string, any> = { werhd: api, __ra2cSnapshot: (s: ReturnType<typeof snapshot>) => snapshots.push(s) }
   const install = () => runInNewContext(readFileSync(new URL('../packages/game-werhd/src/bridge.js', import.meta.url), 'utf8'), {
@@ -53,6 +56,24 @@ test('分区内建造遵守异形边界和孔洞，无落点时不退回基地�
   assert.equal(submit().reason, 'no-spot', '基地原点和孔洞中的合法引擎格都不能代替分区落点')
   assert.equal(submit(50, 50).reason, 'wrong-placement-region')
   assert.equal(page.submitted.length, before)
+})
+
+test('建筑维修原语幂等开启扳手，出售不接受车辆、敌人或禁止出售建筑', () => {
+  const page = pageBridge()
+  page.own[0] = { ...page.own[0]!, name: 'GAREFN', type: 2, hitPoints: 850, maxHitPoints: 1000, hasWrenchRepair: false }
+  const first = page.sample()
+  const submit = (kind: string, id: number, snap = first) => page.window.__ra2cSubmit(snap.session, { kind, unitIds: [id] }, snap.seq, snap.sessionKey)
+  assert.equal(submit('repairBuilding', 1).submitted, 1)
+  assert.equal(submit('repairBuilding', 1).submitted, 0, '原生 repair 是 toggle，再发同一开启指令不能关闭扳手')
+  const next = page.next()
+  assert.equal(next.self[0]!.hasWrenchRepair, true)
+  assert.equal(submit('sellBuilding', 1, next).ok, true)
+  assert.deepEqual(page.submitted, [{ kind: 'repair', id: 1 }, { kind: 'sell', id: 1 }])
+  assert.equal(submit('sellBuilding', 2, next).reason, 'invalid-building')
+  assert.equal(submit('sellBuilding', 99, next).reason, 'invalid-units')
+  page.api.rules = () => ({ unsellable: true })
+  assert.equal(submit('sellBuilding', 1, next).reason, 'unsellable-building')
+  assert.equal(page.submitted.length, 2)
 })
 
 test('页面桥转发飞机弹药及武器冷却，供宿主识别装弹与真实发射', () => {
@@ -178,7 +199,7 @@ test('工作台中的查询和动作指向已绑定游戏 frame，忽略外层�
   const url = 'https://127.0.0.1:8787/'
   const calls: Array<{ frame: string; args: unknown }> = []
   const frame = (name: string, address: string) => ({ name: () => name, url: () => address, isDetached: () => false,
-    evaluate: async (fn: unknown, args: unknown) => { if (args !== undefined || String(fn).includes('w.rules')) calls.push({ frame: name, args }); return 4 } })
+    evaluate: async (_fn: unknown, args: unknown) => { if (args !== undefined) calls.push({ frame: name, args }); return 4 } })
   const outer = frame('workbench', url + 'commander/')
   const game = frame('ra2c-game', url)
   const other = frame('other-game', url)

@@ -118,7 +118,7 @@ export class BattleRecords {
       if (this.fingerprints.get(snap.sessionKey) === fingerprint) return
       this.append(this.ensure(snap.sessionKey), 'observation', { at: Date.now(), tick: snap.tick, credits: snap.credits,
         map: { width: snap.mapWidth, height: snap.mapHeight }, power: snap.production?.power, queues: snap.production?.queues,
-        self: snap.self.map(unit => ({ id: unit.id, name: unit.name, rx: unit.rx, ry: unit.ry, hitPoints: unit.hitPoints, maxHitPoints: unit.maxHitPoints, ammo: unit.ammo, transport: unit.transport })), visibleEnemies: snap.enemies,
+        self: snap.self.map(unit => ({ id: unit.id, name: unit.name, rx: unit.rx, ry: unit.ry, hitPoints: unit.hitPoints, maxHitPoints: unit.maxHitPoints, ammo: unit.ammo, hasWrenchRepair: unit.hasWrenchRepair, transport: unit.transport })), visibleEnemies: snap.enemies,
         ...facts,
       })
       this.fingerprints.set(snap.sessionKey, fingerprint)

@@ -30,6 +30,7 @@ export interface SnapshotUnit {
   isIdle: boolean;
   canDeploy?: boolean;
   ammo?: number;
+  hasWrenchRepair?: boolean;
   veteranLevel?: number;
   primaryWeapon?: { maxRange: number; minRange: number; aa: boolean; ag: boolean; cooldownTicks?: number };
   secondaryWeapon?: { maxRange: number; minRange: number; aa: boolean; ag: boolean; cooldownTicks?: number };
@@ -86,6 +87,9 @@ export type ActionRequest =
   | { kind: 'enterTransport'; unitIds: number[]; targetId: number }
   /** 对友方车辆使用当前维修武器；页面桥提交普通 Attack，不能强制攻击。 */
   | { kind: 'repair'; unitIds: number[]; targetId: number }
+  /** 原生扳手维修的开启操作，不能重复切成关闭。 */
+  | { kind: 'repairBuilding'; unitIds: number[] }
+  | { kind: 'sellBuilding'; unitIds: number[] }
   | { kind: 'stop'; unitIds: number[] }
   | { kind: 'deploy'; unitIds: number[] }
   | { kind: 'scatter'; unitIds: number[] }

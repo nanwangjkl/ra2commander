@@ -11,9 +11,9 @@ export async function releaseGlobalOrders(ctx: CommandContext, ids: number[]): P
   const edits: NonNullable<BoundCapability['goals']> = []
   for (const goal of ctx.runtime.goals.values()) {
     const spec = goal.spec
-    if (goal.ownerId !== 'global' || !['pending', 'active'].includes(goal.status) || (spec.kind !== 'mining' && spec.kind !== 'rally' && spec.kind !== 'attack') || !spec.unitIds.some(id => ids.includes(id))) continue
+    if (goal.ownerId !== 'global' || !['pending', 'active'].includes(goal.status) || (spec.kind !== 'mining' && spec.kind !== 'rally' && spec.kind !== 'attack' && spec.kind !== 'building') || !spec.unitIds.some(id => ids.includes(id))) continue
     const remaining = spec.unitIds.filter(id => !ids.includes(id))
-    if (remaining.length) edits.push({ goal: { ...spec, unitIds: remaining, ...(spec.kind === 'attack' ? { aircraftIds: spec.aircraftIds.filter(id => remaining.includes(id)) } : {}) }, choice: `保留其余${remaining.length}个单位的原${spec.kind === 'mining' ? '采矿' : spec.kind === 'attack' ? '攻击' : '集结'}目标` })
+    if (remaining.length) edits.push({ goal: { ...spec, unitIds: remaining, ...(spec.kind === 'attack' ? { aircraftIds: spec.aircraftIds.filter(id => remaining.includes(id)) } : {}) }, choice: `保留其余${remaining.length}个对象的原${spec.kind === 'mining' ? '采矿' : spec.kind === 'attack' ? '攻击' : spec.kind === 'building' ? '建筑操作' : '集结'}目标` })
     else await ctx.runtime.cancelGoal(spec.id, '所选单位已由新命令接管')
   }
   return edits

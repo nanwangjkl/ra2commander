@@ -20,6 +20,7 @@ export function liveScriptActions(value: ScriptAction[], c: StepConstraints, sna
     if (!goal) return []
     if (goal.blocked) return []
     const action = item.request
+    if (goal.buildingActions && !goal.buildingActions.some(expected => sameBuildingAction(action, expected))) return []
     if (goal.miningActions && !goal.miningActions.some(expected => sameMiningAction(action, expected))) return []
     if (action.kind === 'produce' && typeof action.name === 'string' && Number.isSafeInteger(action.quantity) && action.quantity > 0 && goal.produceRemaining?.[action.name] === 0) return []
     if (action.kind === 'attack' && Number.isSafeInteger(action.targetId) && !goal.enemyIds.includes(action.targetId)) return []
@@ -91,6 +92,12 @@ export function validateScriptActions(value: unknown, c: StepConstraints, snapsh
     if (!goal) { if (c.ignoreInactiveGoals) continue; return '动作引用未生效目标' }
     const a = item.request
     if (goal.blocked) return `目标尚不可执行：${goal.blocked}`
+    if (goal.buildingActions) {
+      if (!goal.buildingActions.some(expected => sameBuildingAction(a, expected))) return '建筑动作不属于本步选定对象或会重复切换维修'
+      const key = `${item.goalId}:building:${'unitIds' in a ? a.unitIds[0] : ''}`
+      if (spent[key]) return '同一建筑本步不能重复发令'
+      spent[key] = 1
+    }
     if ('unitIds' in a && Array.isArray(a.unitIds) && a.unitIds.some(id => goal.aircraftIds?.includes(id)) && a.kind !== 'attack') return '本次飞机出击只下达攻击，装弹和返航交给游戏处理'
     if (goal.miningActions) {
       if (!goal.miningActions.some(expected => sameMiningAction(a, expected))) return '采矿动作不属于本步矿格分配或正在打断忙碌成员'
@@ -137,6 +144,11 @@ function sameMiningAction(value: ScriptAction['request'], expected: ActionReques
     && Array.isArray(value.unitIds) && value.unitIds.length === 1 && value.unitIds[0] === expected.unitIds[0] && value.x === expected.x && value.y === expected.y
 }
 
+function sameBuildingAction(value: ScriptAction['request'], expected: ActionRequest): boolean {
+  return (value.kind === 'repairBuilding' || value.kind === 'sellBuilding') && value.kind === expected.kind && 'unitIds' in expected
+    && Array.isArray(value.unitIds) && value.unitIds.length === 1 && value.unitIds[0] === expected.unitIds[0]
+}
+
 export function inRegion(x: number, y: number, r: Region): boolean {
   return x >= r.x1 && x <= r.x2 && y >= r.y1 && y <= r.y2
 }
@@ -176,9 +188,13 @@ export function validateActions(value: unknown, c: StepConstraints, snapshot?: S
       if (snapshot && !snapshot.production?.queues.some(q => q.type === a.queueType)) return '队列状态不可观测，无法安全操作'
       continue
     }
-    if (!['move', 'attackMove', 'gather', 'attack', 'stop', 'deploy', 'scatter', 'guard', 'repair', 'enterTransport'].includes(a.kind)) return '未知动作类型'
+    if (!['move', 'attackMove', 'gather', 'attack', 'stop', 'deploy', 'scatter', 'guard', 'repair', 'enterTransport', 'repairBuilding', 'sellBuilding'].includes(a.kind)) return '未知动作类型'
     if (a.kind !== 'stop' && !c.allowedActions?.includes(a.kind)) return `未授权动作: ${a.kind}`
     if (!Array.isArray(a.unitIds) || !a.unitIds.length || a.unitIds.some(id => !Number.isSafeInteger(id) || !allowed.has(id))) return '引用未授权或失效单位'
+    if (a.kind === 'repairBuilding' || a.kind === 'sellBuilding') {
+      if (snapshot && a.unitIds.some(id => !snapshot.self.some(unit => unit.id === id && unit.type === 2))) return '建筑操作只能指向己方建筑'
+      continue
+    }
     if (a.kind === 'repair' || a.kind === 'enterTransport') {
       if (!Number.isSafeInteger(a.targetId) || !c.friendlyTargetIds?.includes(a.targetId)) return '友方目标已失效'
       const target = snapshot?.self.find(unit => unit.id === a.targetId)

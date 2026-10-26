@@ -93,7 +93,7 @@ pnpm companion
 
 `binding-repair.md` 控制语音绑定失败后的单次重决策，成功部分先运行，失败部分单独修正。执行时还会本机检查有条件却连续900游戏 tick 无进展的目标，携带近期动作/结果请求限次修复；缺钱、队列忙、未决生产、交接等待和已确认无合法落点不计时。停滞修复期间旧脚本继续，保留生产进度，停止/取消和新命令使迟到结果失效。详见[自动恢复](doc/spec/automatic-recovery.md)。
 
-26 项玩家能力统一在 `prompts/capabilities/*.md` 声明名称、参数、默认值与说明；`interpret.md` 的 `{{capabilities}}` 由加载器组合该目录。停止、暂停、恢复、转编、解散、守区、补员、集结、目标取消与改总量均可经 `say`/侧栏调用。绑定后的摘要来自共用执行计划；直接控制无需额外生成脚本。`cap list` 查看能力，`cap <能力ID> <JSON参数>` 直接调用，原有玩家 CLI 语法也是同一入口的适配器。开发定义与完整接线表见[玩家基础能力](doc/spec/player-capabilities.md)。
+28 项玩家能力统一在 `prompts/capabilities/*.md` 声明名称、参数、默认值与说明；`interpret.md` 的 `{{capabilities}}` 由加载器组合该目录。停止、暂停、恢复、转编、解散、守区、补员、集结、目标取消与改总量均可经 `say`/侧栏调用。绑定后的摘要来自共用执行计划；直接控制无需额外生成脚本。`cap list` 查看能力，`cap <能力ID> <JSON参数>` 直接调用，原有玩家 CLI 语法也是同一入口的适配器。开发定义与完整接线表见[玩家基础能力](doc/spec/player-capabilities.md)。
 
 修改能力正文或参数说明在下一条命令生效。修改参数结构、默认值、ID 或绑定器时，先运行 `pnpm capabilities:generate`，再运行 `pnpm capabilities:check`、`pnpm typecheck` 和相关测试，并重启 Companion；生成文件 `packages/command/src/capability-types.generated.ts` 不手工编辑。新增能力还须实现绑定器。模板、能力、游戏目录、战术和 Skill 共同参与提示版本，类型不一致或重载出错保留上一套完整定义。检查命令可从其他目录启动；指定自定义模板目录时，其同级须有 `capabilities/`。
 
@@ -112,6 +112,8 @@ pnpm companion
 执行器与宿主共用生产队列调度：多个目标共享本步空位，按脚本动作顺序先推进能放下的数量，其余留到下一步，不因重复使用同一空位而整批暂停；项目、目标额度及实际前置校验继续保留。
 
 建筑命令明确指定方位时，`production.produce` 使用可选 `placementDirections`、`placementAnchor`，宿主按游戏画面的八方向选择合法落点，逐座观察真实位置后确认完成。例如“基地上方、左边、下边各造一座巨炮，补三个电厂”，只有巨炮携带方位要求，电厂沿用默认选址。指定方向无地可放时保留就绪建筑并重试，其他可执行目标继续；不会擅自改方向或额外补造。未提方位的命令不生成位置约束。方位和实际落点随 v4 恢复，详见[建筑方位要求](doc/spec/building-placement.md)。
+
+`building.repair` 直接开启选定受损建筑的原生扳手，无需维修车；缺钱等待、满血完成，重复命令不关闭已开启的维修。`building.sell` 出售当前选定的己方可售建筑，跳过禁售项目并以实际离场确认；不包含车辆或后续新建筑。发令与完成事实随 v4 保存，取消只撤销后续调度。详见[建筑维修与出售](doc/spec/building-operations.md)。
 
 `base.relocate` 支持建造厂收起、基地车移至分区/坐标并重新展开，不需要作战编队。实际变形后的 ID、阶段与候选落点由宿主持久化；生成前校验移动和重新展开阶段。`production.produce.placementRegion` 指定异形分区内建造，`afterRelocation` 及同区目标关联搬迁完成依赖；搬迁失败或取消时不在旧址继续。详见[基地搬迁与区域建造](doc/spec/base-relocation.md)。
 

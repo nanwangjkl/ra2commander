@@ -9,7 +9,7 @@
 // 且带性能护栏（超预算自动降频）。
 (() => {
   'use strict';
-  var BRIDGE_VERSION = 11;
+  var BRIDGE_VERSION = 12;
   if (window.__ra2cInstalled && window.__ra2cVersion === BRIDGE_VERSION) return;
   var upgrading = false;
   if (window.__ra2cInstalled && window.__ra2cSessionKey && typeof window.__ra2cSubmit === 'function') {
@@ -128,6 +128,7 @@
       isIdle: u.isIdle,
       canDeploy: u.canDeploy,
       ammo: u.ammo,
+      hasWrenchRepair: u.hasWrenchRepair,
       veteranLevel: u.veteranLevel,
       primaryWeapon: u.primaryWeapon,
       secondaryWeapon: u.secondaryWeapon,
@@ -284,6 +285,21 @@
         case 'move': w.move(ids, action.x, action.y); break;
         case 'attackMove': w.attackMove(ids, action.x, action.y); break;
         case 'gather': w.gather(ids, action.x, action.y); break;
+        case 'repairBuilding':
+        case 'sellBuilding': {
+          var buildings = ids.map(function (id) { return own.find(function (unit) { return unit.id === id }); });
+          if (buildings.some(function (unit) { return !unit || unit.type !== 2; })) return { ok: false, reason: 'invalid-building', submitted: 0, session: session };
+          if (action.kind === 'sellBuilding' && w.rules && buildings.some(function (unit) { var rule = w.rules(unit.name, 2); return rule && rule.unsellable; })) return { ok: false, reason: 'unsellable-building', submitted: 0, session: session };
+          var count = 0;
+          buildings.forEach(function (unit) {
+            if (action.kind === 'repairBuilding') {
+              if (unit.hasWrenchRepair || !(unit.hitPoints > 0 && unit.hitPoints < unit.maxHitPoints)) return;
+              w.repair(unit.id);
+            } else w.sell(unit.id);
+            count++;
+          });
+          return { ok: true, submitted: count, session: session };
+        }
         case 'enterTransport':
         case 'repair': {
           var target = own.find(function (unit) { return unit.id === action.targetId });

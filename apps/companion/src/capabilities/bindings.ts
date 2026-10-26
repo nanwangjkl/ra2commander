@@ -11,6 +11,7 @@ import { normalizeName } from './selectors.ts'
 import { bindRelocation } from '../base-relocation.ts'
 import { bindMining, releaseGlobalOrders } from '../mining.ts'
 import { bindAttack } from '../attack.ts'
+import { bindBuildingOperation } from '../building-operations.ts'
 
 export interface BindingContext {
   ctx: CommandContext
@@ -98,6 +99,8 @@ function findGoal(context: BindingContext, token: string) {
 }
 
 export const bindings: Binders = {
+  'building.repair': (params, context) => bindBuildingOperation('repair', params, context),
+  'building.sell': (params, context) => bindBuildingOperation('sell', params, context),
   'base.relocate': bindRelocation,
   'economy.gather': bindMining,
   'combat.attack': bindAttack,

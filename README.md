@@ -29,6 +29,7 @@ M1（公共 API 桥）与 M2 单队循环已实测：文本命令经云模型（
 | [基础能力、提示词与 Skill 改造方案](doc/roadmap/capabilities-prompts-and-skills.md) | 如何统一能力入口、将提示词外置为 Markdown，并组合“探路”等常规操作？（A～C 已验收，D 已实现待实机验收） |
 | [玩家基础能力](doc/spec/player-capabilities.md) | 已接通哪些能力，Markdown 参数如何连接模型、类型与宿主，如何新增能力？ |
 | [建筑方位要求](doc/spec/building-placement.md) | 如何保留明确的上、下、左、右要求，选择合法落点并确认实际位置？ |
+| [建筑维修与出售](doc/spec/building-operations.md) | 如何直接使用原生扳手维修，或出售指定己方建筑，并确认实际效果？ |
 | [基地搬迁与区域建造](doc/spec/base-relocation.md) | 如何收起基地、搬至分区重新展开，并等待搬迁后在区域内建造？ |
 | [指定分区采矿](doc/spec/regional-mining.md) | 如何指挥现有矿车采区内矿石，并保留正常采集、返厂与卸货？ |
 | [现有单位攻击与飞机出击](doc/spec/selected-attacks-and-sorties.md) | 如何不建队直接攻击，并让飞机等待装弹、投弹一次后完成？ |

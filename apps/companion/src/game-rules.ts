@@ -10,6 +10,7 @@ export interface GameRule extends RuleFacts {
   techLevel?: number
   factory?: number | string
   ammo?: number
+  unsellable?: boolean
 }
 export type RuleQuery = (name: string, type: number) => Promise<unknown>
 

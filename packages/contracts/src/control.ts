@@ -98,7 +98,12 @@ export interface RepairGoal extends GoalBase {
   preparationGoalIds: string[]; quantity?: number; targetId?: number; followFormationId?: string
   policy: { retryTicks: number; stallTicks: number }
 }
-export type GoalSpec = CombatGoal | AttackGoal | ExploreGoal | DeployGoal | RelocateGoal | ProductionGoal | FormationGoal | ReinforceGoal | RallyGoal | TransportGoal | MiningGoal | RepairGoal
+export interface BuildingGoal extends GoalBase {
+  kind: 'building'
+  operation: 'repair' | 'sell'
+  unitIds: number[]
+}
+export type GoalSpec = CombatGoal | AttackGoal | ExploreGoal | DeployGoal | RelocateGoal | ProductionGoal | FormationGoal | ReinforceGoal | RallyGoal | TransportGoal | MiningGoal | RepairGoal | BuildingGoal
 export const goalOwner = (goal: GoalSpec): ScriptOwner => goal.kind === 'combat' || goal.kind === 'explore' || goal.kind === 'repair' || (goal.kind === 'mining' || goal.kind === 'attack') && goal.formationId ? { kind: 'formation', formationId: goal.formationId! } : { kind: 'global' }
 
 export interface ScriptAction { goalId: string; request: ActionRequest | FormationRequest }
@@ -125,6 +130,7 @@ export interface GoalView {
   arrival?: ArrivalState
   relocation?: { phase: 'packing' | 'moving' | 'deploying' | 'confirming' | 'completed' | 'failed'; unitId: number; destination: { x: number; y: number }; action?: ActionRequest; detail: string }
   mining?: { actions: ActionRequest[]; knownOre: number; assigned: number; total: number; detail: string }
+  building?: { actions: ActionRequest[]; completed: number; total: number; failed: number; pending: boolean; detail: string }
   attack?: { readyIds: number[]; pendingIds: number[]; attackingIds: number[]; firedIds: number[]; lostIds: number[]; totalAircraft: number; groundIds: number[]; targets: import('./index.ts').SnapshotUnit[]; preparing: boolean; detail: string }
   exploration?: { seen: number; total: number; coverageRatio: number; regions: Array<{ id: string; name: string; seen: number; total: number; satisfied: boolean; deferred: boolean }>; targets: Array<{ unitId: number; x: number; y: number; regionId: string }> }
   repair?: {
@@ -155,6 +161,7 @@ export interface ManagementConstraints {
   exact?: boolean
 }
 export interface GoalConstraints extends Omit<StepConstraints, 'goals'> {
+  buildingActions?: ActionRequest[]
   blocked?: string
   relocationAction?: ActionRequest
   miningActions?: ActionRequest[]
