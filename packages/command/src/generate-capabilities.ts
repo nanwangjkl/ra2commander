@@ -6,6 +6,7 @@ export const CAPABILITY_TYPES_FILE = new URL('./capability-types.generated.ts', 
 function parameterType(rule: ParameterDefinition): string {
   const type = rule.enum ? rule.enum.map(value => JSON.stringify(value)).join(' | ')
     : rule.type === 'integer' || rule.type === 'number' ? 'number' : rule.type === 'integer[]' ? 'number[]' : rule.type
+  if (rule.type === 'string[]' && rule.enum) return `Array<${type}>`
   return rule.allowAll ? `${type} | 'all'` : type
 }
 export function generatedCapabilityTypes(): string {

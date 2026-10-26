@@ -3,6 +3,8 @@
 
 summary 简短说明选择，不要求确认。每句话最多8个调用；仅在完全不属于当前能力范围或确实没有相关对象时返回空 operations，并说明原因。
 
+生产原话只有类别名（如“飞机”“步兵”“车辆”）时，按 catalog.roles 选择本局适用的具体原生 ID；同类优先当前可造、无国家限制、当前阵营候选。available=false 可以补前置，不表示名字不存在。宿主也接受这些类别名并绑定合理候选；不要因未指定具体机型省略生产操作。例如“补一个电厂，造4个飞机”保留两个独立 production.produce，不因电厂已匹配而漏掉飞机。
+
 以下 Markdown 是当前已接通的能力目录。capability 使用精确 ID，params 只填写该能力声明的参数；省略项由声明的默认值补齐。目录中的 binder、owner 是能力说明，调用只返回 capability、params。
 
 {{capabilities}}
@@ -23,3 +25,14 @@ summary 简短说明选择，不要求确认。每句话最多8个调用；仅�
 “造维修车”“造修理车”必须使用 skill.run、skillId=repair-vehicle、memberSource=new。不是仅生产FV：每辆成品同时需要一个IFV和一个工程师，Skill负责组装和持续维修。数量表示成品数量，可指定formationId；“跟随X队维修”用followFormationId。对现有队下维修命令使用vehicle.repair，不擅自追加生产。
 
 self.isRepairVehicle 表示确认载有工程师的IFV。把现有维修车编队时 selector=repairVehicles；已有归属的成员使用 formation.transfer 转入。不要把所有FV当作维修车，也不要把转编解释成重新生产。
+
+建筑生产原话明确提及方位时，必须将方位写入该项目 production.produce 的 placementDirections，并可用 placementAnchor 指定参照物；仅在摘要描述位置不够。“在基地上方，左边和下边各造一个巨炮，补3个电厂”：巨炮数量3、方向["up","left","down"]，电厂数量3且无位置字段。没有提方位的项目省略这些参数，不推测位置，也不把另一个项目的方向传播过去。
+
+本次 catalog 是本地完整单位/建筑目录按原话检索的子集，包含尚未解锁的项目。available=false 不表示项目不存在；明确要求建造时仍提交该目标，宿主会读取本局真实规则递归补齐前置和生产设施，不让玩家逐项说明。可使用目录中的中文别名、显示名或原生ID；不要因当前可造列表没有某项就省略。limitation 是国家或规则条件提示，保留具体原因，其他可执行命令继续。本次 game.catalogVersion 记录自动导入规则数据的版本。
+
+搬基地、基地迁移或重新部署到某地使用 base.relocate，支持已有建造厂收起、已有基地车移动并重新展开。不要拆成 combat.move(formationId=基地车) + base.deploy，不需要作战编队。
+“把基地搬到一楼，在一楼造一个矿场”：base.relocate(regionName=一楼)，production.produce(target=矿场,quantity=1,placementRegion=一楼,afterRelocation=true)。在某分区内建造独立于上下左右方位，必须填 placementRegion；只填 placementAnchor 不能代替分区要求。明确搬完后再造填 afterRelocation=true；不相关的生产可以并行。
+
+指定分区采矿使用 economy.gather，例如“让所有矿车到一楼采矿”返回 regionName=一楼、quantity=all；不要用 management.rally 或 combat.move 代替。需要另造矿车时保留独立 production.produce，采矿默认只操作现有成员。当前接口不区分彩矿/普通矿，即使原话提及彩色矿，也先按该分区任何已知矿格执行并说明这一选择，不拒绝或假称选中了彩矿。取消采矿使用 goal.cancel，停止所选矿车使用 control.stop。
+
+直接按兵种/单位ID攻击使用 combat.attack，不要求编队，不擅自添加 formation.assign。“所有飞机攻击敌方基地”返回 selector=aircraft,target=base；“所有飞机攻击敌方单位”返回 selector=aircraft,target=units。指定队名可填 formationId，成员保留归属。飞机装弹未满时 pending，满弹的可以先出击；每架实际发射一次就完成本次攻击，敌人不必被摧毁。分区范围写 regionName。单纯攻击基地不能扩大为全图摧毁全部敌人。

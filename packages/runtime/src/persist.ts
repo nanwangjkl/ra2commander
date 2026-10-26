@@ -1,6 +1,6 @@
 import { closeSync, constants, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { ownerId, goalOwner } from '@ra2c/contracts'
+import { ownerId, goalOwner, validBuildingPlacement, validTargetRegion, inTargetRegion } from '@ra2c/contracts'
 import type { TaskRuntime } from './index.ts'
 import type { Formation } from './formation.ts'
 import { skillGoalIds, type ExplorationMap, type ExplorationProgress, type SkillRun } from './exploration.ts'
@@ -40,12 +40,40 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
   }
   for (const [id, goal] of state.goals) {
     if (id !== goal.spec.id || !programIds.has(goal.ownerId) || goal.ownerId !== ownerId(goalOwner(goal.spec)) || (goal.activeSpec && (goal.activeSpec.id !== id || ownerId(goalOwner(goal.activeSpec)) !== goal.ownerId)) || !goal.facts || !Array.isArray(goal.facts.members) || !['pending', 'active', 'completed', 'partial', 'failed', 'cancelled'].includes(goal.status)) throw new Error('目标状态非法')
+    for (const spec of [goal.spec, goal.activeSpec]) if (spec?.kind === 'production' && spec.placement && !validBuildingPlacement(spec.placement, runtime.snapshot.mapWidth, runtime.snapshot.mapHeight)) throw new Error('建筑方位数据非法')
+    for (const spec of [goal.spec, goal.activeSpec]) {
+      if (spec?.kind === 'attack' && (!Array.isArray(spec.unitIds) || !Array.isArray(spec.aircraftIds) || !spec.unitIds.length && !spec.dynamicNames?.length || spec.unitIds.some(id => !Number.isSafeInteger(id)) || spec.aircraftIds.some(id => !spec.unitIds.includes(id)) || !Array.isArray(spec.preparationGoalIds) || !Array.isArray(spec.targetNames) || !['enemies', 'base', 'units', 'buildings'].includes(spec.targetKind) || !spec.ammoCapacity || Object.values(spec.ammoCapacity).some(value => !Number.isFinite(value)) || spec.targetRegion && !validTargetRegion(spec.targetRegion))) throw new Error('攻击对象或目标范围数据非法')
+      if (spec?.kind === 'mining' && (!Array.isArray(spec.unitIds) || !spec.unitIds.length || new Set(spec.unitIds).size !== spec.unitIds.length || spec.unitIds.some(id => !Number.isSafeInteger(id)) || !validTargetRegion(spec.targetRegion) || !Number.isSafeInteger(spec.destination?.x) || !Number.isSafeInteger(spec.destination?.y) || !inTargetRegion(spec.destination.x, spec.destination.y, spec.targetRegion))) throw new Error('采矿目标数据非法')
+      if (spec?.kind === 'production' && spec.placementRegion && !validTargetRegion(spec.placementRegion)) throw new Error('建筑分区数据非法')
+      if (spec?.kind === 'production' && spec.afterGoalId && (spec.afterGoalId === spec.id || state.goals.some(([id, goal]) => id === spec.afterGoalId && goal.spec.kind !== 'relocate'))) throw new Error('建筑搬迁依赖非法')
+      if (spec?.kind === 'relocate' && (!Number.isSafeInteger(spec.unitId) || !spec.vehicleName || !spec.yardName || !Array.isArray(spec.candidates) || !spec.candidates.length || spec.candidates.some(point => !Number.isSafeInteger(point.x) || !Number.isSafeInteger(point.y) || point.x < 0 || point.y < 0 || point.x >= runtime.snapshot!.mapWidth || point.y >= runtime.snapshot!.mapHeight) || spec.targetRegion && (!validTargetRegion(spec.targetRegion) || spec.candidates.some(point => !inTargetRegion(point.x, point.y, spec.targetRegion!))))) throw new Error('基地搬迁目标非法')
+    }
+    const relocation = goal.facts.relocation
+    if (relocation && (goal.spec.kind !== 'relocate' || !Number.isSafeInteger(relocation.unitId) || !['yard', 'vehicle'].includes(relocation.form) || !['packing', 'moving', 'deploying', 'confirming', 'completed', 'failed'].includes(relocation.phase) || !Array.isArray(relocation.knownIds) || relocation.knownIds.some(id => !Number.isSafeInteger(id)) || !Number.isFinite(relocation.position?.x) || !Number.isFinite(relocation.position?.y) || !Number.isSafeInteger(relocation.candidate) || relocation.candidate < 0 || relocation.candidate >= goal.spec.candidates.length || !Number.isFinite(relocation.progressTick))) throw new Error('基地搬迁进度非法')
+    if (goal.activeSpec?.kind === 'relocate' && !relocation) throw new Error('基地搬迁缺少实际进度')
+    const mining = goal.facts.mining
+    const validCell = (cell: number) => Number.isSafeInteger(cell) && cell >= 0 && cell < runtime.snapshot!.mapWidth * runtime.snapshot!.mapHeight
+    if (mining) {
+      if (goal.spec.kind !== 'mining') throw new Error('采矿进度与目标不符')
+      const region = goal.spec.targetRegion
+      if (!Number.isSafeInteger(mining.cursor) || mining.cursor < 0 || !Number.isSafeInteger(mining.passes) || mining.passes < 0 || !Array.isArray(mining.oreCells)
+        || mining.oreCells.some(cell => !validCell(cell) || !inTargetRegion(cell % runtime.snapshot!.mapWidth, Math.floor(cell / runtime.snapshot!.mapWidth), region))
+        || !Array.isArray(mining.jobs) || mining.jobs.some(job => !Number.isSafeInteger(job.unitId) || job.target !== undefined && !validCell(job.target)
+          || job.lastSentTick !== undefined && !Number.isFinite(job.lastSentTick) || job.idleSince !== undefined && !Number.isFinite(job.idleSince)
+          || job.lastKind !== undefined && !['move', 'gather'].includes(job.lastKind))) throw new Error('采矿观察或发令进度非法')
+    }
+    if (goal.activeSpec?.kind === 'mining' && !mining) throw new Error('采矿缺少观察与发令进度')
+    const attack = goal.facts.attack
+    if (attack && (goal.spec.kind !== 'attack' || !Array.isArray(attack.members) || new Set(attack.members.map(member => member.unitId)).size !== attack.members.length || attack.members.some(member => !Number.isSafeInteger(member.unitId) || typeof member.aircraft !== 'boolean' || !['pending', 'ready', 'attacking', 'fired', 'lost', 'released'].includes(member.phase) || [member.lastAmmo, member.lastCooldown, member.acceptedAt, member.firedAt].some(value => value !== undefined && !Number.isFinite(value))))) throw new Error('攻击与投弹进度非法')
+    if (goal.activeSpec?.kind === 'attack' && !attack) throw new Error('攻击缺少执行进度')
     for (const spec of [goal.spec, goal.activeSpec]) if (spec?.kind === 'explore' && spec.policy.coverageRatio !== undefined && (!Number.isFinite(spec.policy.coverageRatio) || spec.policy.coverageRatio <= 0 || spec.policy.coverageRatio > 1)) throw new Error('探索分区覆盖阈值非法')
     for (const spec of [goal.spec, goal.activeSpec]) if (spec?.kind === 'explore' && [spec.policy.interiorMargin, spec.policy.retryPasses].some(value => value !== undefined && (!Number.isSafeInteger(value) || value < 0))) throw new Error('探索内缩与重试参数非法')
     for (const spec of [goal.spec, goal.activeSpec]) if (spec?.kind === 'explore' && spec.policy.centerFirst !== undefined && typeof spec.policy.centerFirst !== 'boolean') throw new Error('探索中心优先参数非法')
   }
   for (const p of state.programs) if ([...p.goalIds, ...p.activeGoalIds].some(id => state.goals.find(([key]) => key === id)![1].ownerId !== p.id)) throw new Error('目标归属非法')
   for (const r of state.production) if (!ids.has(r.goalId) || !Number.isSafeInteger(r.quantity) || r.quantity < 1 || !Array.isArray(r.observedIds) || !['reserved', 'submitted', 'unknown', 'rejected'].includes(r.state)) throw new Error('生产记录非法')
+  for (const record of state.production) if (record.placement && (!record.building || !validBuildingPlacement(record.placement, runtime.snapshot.mapWidth, runtime.snapshot.mapHeight) || record.placement.directions.length !== record.quantity || record.placementResults?.some(result => !record.observedIds.includes(result.unitId) || !Number.isFinite(result.x) || !Number.isFinite(result.y) || typeof result.matched !== 'boolean'))) throw new Error('建筑放置记录非法')
+  for (const record of state.production) if (record.placementRegion && (!record.building || !validTargetRegion(record.placementRegion) || record.placementResults?.some(result => !record.observedIds.includes(result.unitId) || !Number.isFinite(result.x) || !Number.isFinite(result.y) || typeof result.matched !== 'boolean'))) throw new Error('建筑分区记录非法')
   const unitOwners = new Set<number>()
   const formationIds = new Set<string>()
   for (const f of state.formations) {

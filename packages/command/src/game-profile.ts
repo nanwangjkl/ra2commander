@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import type { SnapshotUnit } from '@ra2c/contracts'
+import { readGameData, type GameData, type GameDataEntry } from './game-data.ts'
 
 interface Member { name: string; type: number; factions?: string[]; aliases?: string[] }
 interface Role {
@@ -12,6 +13,7 @@ interface Role {
 }
 interface Definition {
   id: string; name: string; version: string
+  catalogFile?: string
   factions: Array<{ id: string; label: string; anchors: string[] }>
   roles: Role[]
 }
@@ -27,10 +29,57 @@ const FLAGS = ['harvester', 'naval', 'refinery', 'constructionYard', 'engineer']
 /** 只保存当前游戏的目录和角色提示；实时规则由引擎查询提供。 */
 export class GameProfile {
   private readonly definition: Definition
-  constructor(definition: Definition, readonly instructions: string) { this.definition = structuredClone(definition) }
+  private readonly data?: GameData
+  private readonly entriesByName: Map<string, GameDataEntry>
+  constructor(definition: Definition, readonly instructions: string, data?: GameData) { this.definition = structuredClone(definition); if (data) this.data = structuredClone(data); this.entriesByName = new Map(this.data?.entries.map(item => [item.name, item]) ?? []) }
   get id() { return this.definition.id }
   get version() { return this.definition.version }
   get name() { return this.definition.name }
+  get catalogVersion() { return this.data?.version }
+  entries(): GameDataEntry[] { return structuredClone(this.data?.entries ?? []) }
+  entry(name: string): GameDataEntry | undefined { const item = this.entriesByName.get(name); return item && structuredClone(item) }
+  productionFactories(units: readonly SnapshotUnit[]): Record<string, string[]> {
+    const faction = this.inferFaction(units), groups: Record<string, string[]> = {}
+    for (const [type, factory] of [[2, 'BuildingType'], [3, 'InfantryType'], [7, 'UnitType'], [1, 'AircraftType']] as const) {
+      for (const naval of type === 7 ? [false, true] : [false]) {
+        const entries = [...this.entriesByName.values()].filter(item => item.defined && item.type === 2 && item.factory === factory && (type !== 7 || item.naval === naval))
+        groups[`PRODUCTION_FACTORY_${type}${naval ? '_NAVAL' : ''}`] = entries.sort((a, b) => Number(this.factionsFor(b.name).includes(faction ?? '')) - Number(this.factionsFor(a.name).includes(faction ?? ''))).map(item => item.name)
+      }
+    }
+    return groups
+  }
+  country(value?: string): string | undefined { return this.data?.countries.find(country => normalize(country.id) === normalize(value ?? '') || normalize(country.label) === normalize(value ?? ''))?.id }
+  private readonly factionCache = new Map<string, string[]>()
+  factionsFor(name: string): string[] {
+    const visit = (name: string, path: Set<string>): string[] => {
+      const cached = this.factionCache.get(name)
+      if (cached) return cached
+      const member = this.member(name)
+      if (member?.factions?.length) return member.factions
+      if (path.has(name)) return []
+      const next = new Set([...path, name]), item = this.entriesByName.get(name)
+      const anchor = this.definition.factions.filter(faction => faction.anchors.includes(name)).map(faction => faction.id)
+      if (anchor.length) return anchor
+      const constraints = (item?.prerequisite ?? []).map(dep => [...new Set((this.data?.categories[dep.toUpperCase()] ?? [dep]).flatMap(concrete => visit(concrete, next)))]).filter(set => set.length)
+      let result = constraints.length ? constraints.reduce((left, right) => left.filter(faction => right.includes(faction))) : []
+      if (!constraints.length && item?.owner.length) result = this.definition.factions.filter(faction => faction.anchors.some(anchor => this.entriesByName.get(anchor)?.owner.some(country => item.owner.includes(country)))).map(faction => faction.id)
+      this.factionCache.set(name, result)
+      return result
+    }
+    return [...visit(name, new Set())]
+  }
+  limitation(name: string, country?: string, techLevel?: number, liveTechLevel?: number): string | undefined {
+    const item = this.entriesByName.get(name)
+    if (!item) return undefined
+    if (!item.defined || (liveTechLevel ?? item.techLevel) < 0) return `${item.label}不能直接生产，需已有、展开或取得该设施`
+    if (techLevel !== undefined && item.techLevel > techLevel) return `${item.label}需要科技等级${item.techLevel}，本局为${techLevel}`
+    const house = this.country(country)
+    if (!house) return undefined
+    if (item.requiredHouses.length && !item.requiredHouses.includes(house)) return `${item.label}限定国家：${item.requiredHouses.map(id => this.data?.countries.find(country => country.id === id)?.label ?? id).join('、')}`
+    if (item.forbiddenHouses.includes(house)) return `${item.label}不适用于当前国家${country}`
+    if (item.owner.length && !item.owner.includes(house)) return `${item.label}不属于当前国家的生产项目`
+    return undefined
+  }
   factions() { return structuredClone(this.definition.factions) }
   roles() { return structuredClone(this.definition.roles) }
   members(): Member[] { return [...new Map(this.definition.roles.flatMap(role => role.members).map(member => [member.name, structuredClone(member)])).values()] }
@@ -59,17 +108,19 @@ export class GameProfile {
         ...(match.positivePower ? [(facts.power ?? 0) > 0] : []),
         ...(match.labelIncludes ? [match.labelIncludes.some(part => normalize(facts.label ?? '').includes(normalize(part)))] : []),
       ]
-      return predicates.length > 0 && predicates.every(Boolean)
+      return predicates.every(Boolean)
     }).map(role => role.id)
   }
   memberAliases(name: string): string[] { return this.definition.roles.flatMap(role => role.members.filter(member => member.name === name).flatMap(member => member.aliases ?? [])) }
   categories(units: readonly SnapshotUnit[]): Record<string, string[]> {
     const faction = this.inferFaction(units)
-    return Object.fromEntries(this.definition.roles.flatMap(role => (role.prerequisiteCategories ?? []).map(category => [category.toUpperCase(), role.members.slice().sort((a, b) => Number(!!b.factions?.includes(faction ?? '')) - Number(!!a.factions?.includes(faction ?? ''))).map(member => member.name)])))
+    const declared = Object.fromEntries(this.definition.roles.flatMap(role => (role.prerequisiteCategories ?? []).map(category => [category.toUpperCase(), role.members.map(member => member.name)])))
+    const categories = { ...this.data?.categories, ...declared }
+    return Object.fromEntries(Object.entries(categories).map(([category, names]) => [category, [...new Set([...names, ...(this.data?.categories[category] ?? [])])].sort((a, b) => Number(this.factionsFor(b).includes(faction ?? '')) - Number(this.factionsFor(a).includes(faction ?? '')))]))
   }
 }
 
-export function readGameProfile(file = new URL('../../../prompts/games/current-mod.md', import.meta.url)): { profile: GameProfile; source: string } {
+export function readGameProfile(file = new URL('../../../prompts/games/current-mod.md', import.meta.url)): { profile: GameProfile; source: string; catalogSource: string } {
   const location = fileURLToPath(file)
   try {
     const source = readFileSync(file, 'utf8').trim()
@@ -83,7 +134,7 @@ export function readGameProfile(file = new URL('../../../prompts/games/current-m
       factions.add(faction.id)
     }
     for (const role of value.roles) {
-      if (typeof role?.id !== 'string' || !role.id || roles.has(role.id) || !strings(role.aliases) || !Array.isArray(role.members) || !role.members.length) throw new Error('角色声明非法或重复')
+      if (typeof role?.id !== 'string' || !role.id || roles.has(role.id) || !strings(role.aliases) || !Array.isArray(role.members) || !role.members.length && !role.match) throw new Error('角色声明非法或重复')
       roles.add(role.id)
       const names = new Set<string>()
       for (const member of role.members) {
@@ -101,6 +152,9 @@ export function readGameProfile(file = new URL('../../../prompts/games/current-m
     for (const required of ['constructionYard', 'powerPlant', 'tank']) if (!roles.has(required)) throw new Error(`缺少核心角色：${required}`)
     const instructions = source.replace(blocks[0]![0], '').trim()
     if (!instructions) throw new Error('缺少游戏适用及规则说明')
-    return { profile: new GameProfile(value, instructions), source }
+    if (value.catalogFile !== undefined && (typeof value.catalogFile !== 'string' || !/^catalogs\/[a-z0-9-]+\.json$/.test(value.catalogFile))) throw new Error('完整目录文件路径非法')
+    const catalog = value.catalogFile ? readGameData(new URL(value.catalogFile, file)) : undefined
+    if (catalog && catalog.data.gameId !== value.id) throw new Error('完整目录与游戏 ID 不符')
+    return { profile: new GameProfile(value, instructions, catalog?.data), source, catalogSource: catalog?.source ?? '' }
   } catch (error) { throw new Error(`游戏目录错误 ${location}：${error instanceof Error ? error.message : String(error)}`) }
 }

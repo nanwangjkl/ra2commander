@@ -9,7 +9,7 @@
 // 且带性能护栏（超预算自动降频）。
 (() => {
   'use strict';
-  var BRIDGE_VERSION = 6;
+  var BRIDGE_VERSION = 11;
   if (window.__ra2cInstalled && window.__ra2cVersion === BRIDGE_VERSION) return;
   var upgrading = false;
   if (window.__ra2cInstalled && window.__ra2cSessionKey && typeof window.__ra2cSubmit === 'function') {
@@ -45,28 +45,66 @@
 
   // place 自动选址记忆（name -> 已尝试格），跳过引擎静默拒绝过的位置。
   var placeTried = {};
+  var placeNoSpots = {};
 
   /** 以建造厂为圆心环形搜 canPlace 可用格（跳过已试）。 */
-  function findPlacementSpot(w, name) {
+  function findPlacementSpot(w, name, placement, region) {
     var self = w.units('self') || [];
     var base = null;
+    var points = region && region.polygons.reduce(function (all, polygon) { return all.concat(polygon.outer) }, []);
+    var center = points && { x: points.reduce(function (n, p) { return n + p[0] }, 0) / points.length, y: points.reduce(function (n, p) { return n + p[1] }, 0) / points.length };
     for (var i = 0; i < self.length; i++) {
-      if (self[i].type === 2 && /CNST/i.test(self[i].name)) { base = self[i]; break }
+      if (self[i].type === 2 && /CNST/i.test(self[i].name) && (!base || center && Math.hypot(self[i].tile.rx - center.x, self[i].tile.ry - center.y) < Math.hypot(base.tile.rx - center.x, base.tile.ry - center.y))) base = self[i];
     }
-    if (!base) return null;
-    var tried = placeTried[name] || (placeTried[name] = []);
-    for (var r = 2; r <= 20; r++) {
+    if (!base && !placement && !center) return null;
+    var anchor = placement ? placement.anchor : base ? { x: base.tile.rx, y: base.tile.ry } : center;
+    var keyName = (placement ? name + ':' + placement.id : name) + (region ? ':' + region.id : '');
+    var tick = w.tick ? w.tick() : 0;
+    var failed = region && placeNoSpots[keyName];
+    if (failed && failed.count === self.length && tick >= failed.tick && tick - failed.tick < 30) return null;
+    var tried = placeTried[keyName] || (placeTried[keyName] = []);
+    var size = region ? w.map.size() : null;
+    var maxRadius = region ? Math.max(size.width, size.height) : 20;
+    for (var r = region ? 0 : 2; r <= maxRadius; r++) {
       for (var dx = -r; dx <= r; dx++) {
-        for (var dy = -r; dy <= r; dy++) {
+        for (var dy = -r; dy <= r; dy += Math.abs(dx) === r || r === 0 ? 1 : 2 * r) {
           if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
-          var x = base.tile.rx + dx, y = base.tile.ry + dy;
+          var x = Math.round(anchor.x) + dx, y = Math.round(anchor.y) + dy;
+          if (region && (x < 0 || y < 0 || x >= size.width || y >= size.height || !inPlacementRegion(x, y, region))) continue;
           var key = x + ',' + y;
           if (tried.indexOf(key) >= 0) continue;
-          if (w.canPlace(name, x, y)) { tried.push(key); if (tried.length > 24) tried.shift(); return { x: x, y: y } }
+          var tile = placement && w.map.tile ? w.map.tile(x, y) : null;
+          var elevation = tile && Number.isFinite(tile.z) ? tile.z : anchor.elevation || 0;
+          if (placement && placementDirection(anchor, x, y, elevation) !== placement.direction) continue;
+          if (w.canPlace(name, x, y)) { delete placeNoSpots[keyName]; tried.push(key); if (tried.length > (placement || region ? 128 : 24)) tried.shift(); return { x: x, y: y, elevation: elevation } }
         }
       }
     }
+    if (region) placeNoSpots[keyName] = { tick: tick, count: self.length };
     return null;
+  }
+
+  // 与 contracts/spatial.ts 一致：边界计入，孔洞内部排除。
+  function inPlacementRegion(x, y, region) {
+    function ring(points) {
+      var inside = false;
+      for (var i = 1; i < points.length; i++) {
+        var ax = points[i - 1][0], ay = points[i - 1][1], bx = points[i][0], by = points[i][1];
+        var cross = (x - ax) * (by - ay) - (y - ay) * (bx - ax);
+        if (Math.abs(cross) <= 1e-7 * Math.max(1, Math.hypot(bx - ax, by - ay)) && x >= Math.min(ax, bx) - 1e-7 && x <= Math.max(ax, bx) + 1e-7 && y >= Math.min(ay, by) - 1e-7 && y <= Math.max(ay, by) + 1e-7) return 0;
+        if ((ay > y) !== (by > y) && x < (bx - ax) * (y - ay) / (by - ay) + ax) inside = !inside;
+      }
+      return inside ? 1 : -1;
+    }
+    return region.polygons.some(function (polygon) { return ring(polygon.outer) !== -1 && !polygon.holes.some(function (hole) { return ring(hole) === 1 }) });
+  }
+
+  // 与 contracts/placement.ts 的画面投影一致；不能把地图 y 轴当作屏幕上下。
+  function placementDirection(anchor, x, y, elevation) {
+    var dx = x - anchor.x, dy = y - anchor.y;
+    var sx = dx - dy, sy = (dx + dy) / 2 - (elevation - (anchor.elevation || 0));
+    if (!sx && !sy) return undefined;
+    return ['right', 'down-right', 'down', 'down-left', 'left', 'up-left', 'up', 'up-right'][(Math.round(Math.atan2(sy, sx) / (Math.PI / 4)) + 8) % 8];
   }
 
   var ENEMY_CAP = 200; // 敌方采集上限护栏
@@ -86,8 +124,10 @@
       ry: t.ry,
       hitPoints: u.hitPoints,
       maxHitPoints: u.maxHitPoints,
+      elevation: u.elevation,
       isIdle: u.isIdle,
       canDeploy: u.canDeploy,
+      ammo: u.ammo,
       veteranLevel: u.veteranLevel,
       primaryWeapon: u.primaryWeapon,
       secondaryWeapon: u.secondaryWeapon,
@@ -117,6 +157,7 @@
       tick: w.tick(),
       time: w.time(),
       credits: me && me.credits,
+      country: me && me.country,
       mapWidth: size.width,
       mapHeight: size.height,
       self: self,
@@ -209,16 +250,22 @@
         case 'produce': w.produce(action.name, action.quantity || 1); return { ok: true, submitted: 1, session: session };
         case 'cancel': w.cancel(action.name, action.quantity || 1); return { ok: true, submitted: 1, session: session };
         case 'place': {
-          var px = action.x, py = action.y;
+          var px = action.x, py = action.y, elevation;
           if (!Number.isFinite(px) || !Number.isFinite(py)) {
             // 宿主自动选址（几何与选位是宿主原语；引擎对非法格静默丢弃，脚本无法感知）。
-            var spot = findPlacementSpot(w, action.name);
+            var spot = findPlacementSpot(w, action.name, action.placement, action.placementRegion);
             if (!spot) return { ok: false, reason: 'no-spot', submitted: 0, session: session };
-            px = spot.x; py = spot.y;
+            px = spot.x; py = spot.y; elevation = spot.elevation;
           } else if (w.canPlace && !w.canPlace(action.name, px, py)) {
             return { ok: false, reason: 'cannot-place', submitted: 0, session: session };
           }
-          w.place(action.name, px, py); return { ok: true, submitted: 1, session: session };
+          if (action.placementRegion && !inPlacementRegion(px, py, action.placementRegion)) return { ok: false, reason: 'wrong-placement-region', submitted: 0, session: session };
+          if (action.placement) {
+            var targetTile = w.map.tile ? w.map.tile(px, py) : null;
+            elevation = targetTile && Number.isFinite(targetTile.z) ? targetTile.z : action.placement.anchor.elevation || 0;
+            if (placementDirection(action.placement.anchor, px, py, elevation) !== action.placement.direction) return { ok: false, reason: 'wrong-placement', submitted: 0, session: session };
+          }
+          w.place(action.name, px, py); return { ok: true, submitted: 1, session: session, placement: { x: px, y: py, elevation: elevation || 0 } };
         }
         case 'pauseQueue': w.pause(action.queueType); return { ok: true, submitted: 1, session: session };
         case 'resumeQueue': w.resume(action.queueType); return { ok: true, submitted: 1, session: session };

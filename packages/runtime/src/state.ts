@@ -13,6 +13,10 @@ export interface GoalFacts {
   routeIndex?: number
   outcomeDetail?: string
   repair?: import('./repair.ts').RepairState
+  placementBlocked?: boolean
+  relocation?: import('./relocation.ts').RelocationState
+  mining?: import('./mining.ts').MiningState
+  attack?: import('./attack.ts').AttackState
 }
 export interface GoalState {
   ownerId: string
@@ -44,6 +48,9 @@ export interface ProductionRecord {
   state: 'reserved' | 'submitted' | 'unknown' | 'rejected'
   observedIds: number[]
   placed: boolean
+  placement?: import('@ra2c/contracts').BuildingPlacement
+  placementRegion?: import('@ra2c/contracts').TargetRegion
+  placementResults?: Array<{ unitId: number; x: number; y: number; elevation?: number; matched: boolean }>
 }
 export interface Handoff {
   goalId: string

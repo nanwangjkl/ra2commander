@@ -5,7 +5,7 @@ export type CommandSource = 'sidebar' | 'cli' | 'restored'
 
 /** 由宿主运行时事实生成；脚本提交成功不等于目标完成。 */
 export interface GoalExecution {
-  state: 'running' | 'continuous' | 'completed' | 'partial' | 'failed' | 'blocked' | 'paused' | 'faulted' | 'cancelled'
+  state: 'pending' | 'running' | 'continuous' | 'completed' | 'partial' | 'failed' | 'blocked' | 'paused' | 'faulted' | 'cancelled'
   detail?: string
   progress?: { completed: number; total: number; label?: string }
 }

@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { runInNewContext } from 'node:vm'
 import { WerhdBridge } from '../packages/game-werhd/src/page-bridge.ts'
 import { snapshot } from './helpers.ts'
+import { placementDirection, inTargetRegion, type TargetRegion, type PlacementDirection } from '../packages/contracts/src/index.ts'
 
 function pageBridge() {
   let poll!: () => void
@@ -17,9 +18,11 @@ function pageBridge() {
   const api = {
     onTick: (cb: typeof onTick) => { onTick = cb }, tick: () => tick, time: () => tick,
     units: (relation: string) => relation === 'self' ? own : enemy,
-    me: () => ({ credits: 1000 }), map: { size: () => ({ width: 100, height: 100 }) },
+    me: () => ({ credits: 1000 }), map: { size: () => ({ width: 100, height: 100 }), tile: (x: number, y: number) => ({ rx: x, ry: y, z: 0 }) },
     move: (...args: unknown[]) => { submitted.push(args) }, attack: (...args: unknown[]) => { submitted.push(args) },
     produce: (...args: unknown[]) => { submitted.push(args) },
+    canPlace: (_name: string, _x: number, _y: number) => true,
+    place: (...args: unknown[]) => { submitted.push(args) },
     order: (...args: unknown[]) => { submitted.push(args); return true },
     unit: (id: number) => own.find(unit => unit.id === id),
     stop: (...args: unknown[]) => { submitted.push(args) }, inRange: () => true,
@@ -34,6 +37,32 @@ function pageBridge() {
   const next = () => { tick += 15; return sample() }
   return { window, api, submitted, sample, next, poll: () => poll(), install, own, enemy, setTick: (value: number) => { tick = value } }
 }
+
+test('分区内建造遵守异形边界和孔洞，无落点时不退回基地默认位置', () => {
+  const page = pageBridge()
+  page.own.push({ ...page.own[0]!, id: 500, name: 'GACNST', type: 2, tile: { rx: 50, ry: 50 } })
+  const region: TargetRegion = { id: 'floor', name: '一楼', polygons: [{ outer: [[40, 40], [60, 40], [60, 44], [44, 44], [44, 60], [40, 60], [40, 40]], holes: [[[41, 41], [43, 41], [43, 43], [41, 43], [41, 41]]] }] }
+  const snap = page.sample()
+  const submit = (x?: number, y?: number) => page.window.__ra2cSubmit(snap.session, { kind: 'place', name: 'GAREFN', placementRegion: region, x, y }, snap.seq, snap.sessionKey)
+  page.api.canPlace = (_name, x, y) => { assert.ok(inTargetRegion(x, y, region)); return true }
+  const result = submit()
+  assert.equal(result.ok, true)
+  assert.ok(inTargetRegion(result.placement.x, result.placement.y, region))
+  const before = page.submitted.length
+  page.api.canPlace = (_name, x, y) => x === 50 && y === 50 || x === 42 && y === 42
+  assert.equal(submit().reason, 'no-spot', '基地原点和孔洞中的合法引擎格都不能代替分区落点')
+  assert.equal(submit(50, 50).reason, 'wrong-placement-region')
+  assert.equal(page.submitted.length, before)
+})
+
+test('页面桥转发飞机弹药及武器冷却，供宿主识别装弹与真实发射', () => {
+  const page = pageBridge()
+  page.own[0] = { ...page.own[0]!, type: 1, ammo: 0, primaryWeapon: { ...page.own[0]!.primaryWeapon!, cooldownTicks: 7 } }
+  assert.equal(page.sample().self[0]!.ammo, 0)
+  assert.equal(page.sample().self[0]!.primaryWeapon!.cooldownTicks, 7)
+  page.own[0].ammo = 1
+  assert.equal(page.next().self[0]!.ammo, 1)
+})
 
 test('页面桥可以提交正常动作，并丢弃过期、跨局或目标已消失的动作', () => {
   const page = pageBridge()
@@ -99,6 +128,23 @@ test('桥升级保留对局身份并递增序号，上车和维修使用原生�
   page.install(); page.poll()
   assert.notEqual(page.sample().sessionKey, upgraded.sessionKey) // 升级期间实际换局仍必须撤销旧身份。
 })
+test('建筑按画面上左下找合法位置；指定方向无地可放时保留建筑，普通放置仍可执行', () => {
+  const page = pageBridge(), anchor = { x: 50, y: 50, elevation: 0 }
+  page.own[0]!.name = 'GACNST'; page.own[0]!.type = 2; page.own[0]!.tile = { rx: 50, ry: 50 }
+  const snap = page.sample()
+  const submit = (name: string, direction?: PlacementDirection) => page.window.__ra2cSubmit(snap.session, { kind: 'place', name, ...(direction ? { placement: { id: `${name}:${direction}`, anchor, direction } } : {}) }, snap.seq, snap.sessionKey)
+  for (const direction of ['up', 'left', 'down'] as const) {
+    const result = submit('GTGCAN', direction)
+    assert.equal(result.ok, true)
+    assert.equal(placementDirection(anchor, result.placement), direction)
+  }
+  page.api.canPlace = (_name, x, y) => placementDirection(anchor, { x, y }) === 'down'
+  const before = page.submitted.length
+  assert.equal(submit('GTGCAN', 'up').reason, 'no-spot')
+  assert.equal(page.submitted.length, before)
+  assert.equal(submit('GAPOWR').ok, true)
+})
+
 test('宿主桥保留动作来源对局，不查询当前会话替换它；撤权后不排入 evaluate', async () => {
   const calls: unknown[] = []
   const page = { evaluate: async (_fn: unknown, args: unknown) => { calls.push(args); return { ok: true } } }
@@ -109,6 +155,23 @@ test('宿主桥保留动作来源对局，不查询当前会话替换它；撤�
   assert.deepEqual(calls[0], [context, { kind: 'stop', unitIds: [1] }])
   await bridge.submit({ kind: 'stop', unitIds: [1] }, context, () => false)
   assert.equal(calls.length, 1)
+})
+
+test('完整目录批量读取公开规则，同局缓存、换局失效，不读取或改变游戏动作', async () => {
+  let reads = 0, evaluations = 0
+  const state = { __ra2cSessionKey: 'first', werhd: { rules: (name: string, type: number) => { reads++; return { name, type, prerequisite: [] } } } }
+  const bridge = new WerhdBridge({} as never)
+  bridge.bindGameFrame({ isDetached: () => false, evaluate: async (fn: Function, arg: unknown) => { evaluations++; return runInNewContext(`(${fn.toString()})(args)`, { window: state, args: arg }) } } as never)
+  const requests = Array.from({ length: 65 }, (_, n) => ({ name: `UNIT_${n}`, type: 7 }))
+  assert.equal((await bridge.rulesMany(requests, 'first')).length, 65)
+  assert.equal(reads, 65)
+  assert.equal(evaluations, 2)
+  await bridge.rulesMany(requests, 'first')
+  assert.equal(reads, 65)
+  state.__ra2cSessionKey = 'second'
+  await bridge.rulesMany([requests[0]!], 'second')
+  assert.equal(reads, 66)
+  await assert.rejects(bridge.rulesMany([requests[1]!], 'first'), /对局已变化/)
 })
 
 test('工作台中的查询和动作指向已绑定游戏 frame，忽略外层与其他游戏的快照', async () => {

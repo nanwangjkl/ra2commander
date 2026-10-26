@@ -17,7 +17,9 @@
     "capabilities:generate": "node --import tsx packages/command/src/generate-capabilities.ts",
     "capabilities:check": "node --import tsx apps/companion/src/capabilities/check.ts",
     "scenario:voice": "node --import tsx apps/companion/tools/run-voice-scenario.mjs",
-    "playwright-install": "pnpm --filter @ra2c/companion exec playwright install chromium"
+    "playwright-install": "pnpm --filter @ra2c/companion exec playwright install chromium",
+    "game-data:import": "node --import tsx packages/command/src/import-game-data.ts",
+    "game-data:check": "node --import tsx packages/command/src/check-game-data.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

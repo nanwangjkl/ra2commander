@@ -32,7 +32,7 @@ interface PromptRequestOptions {
 
 /** 所有控制对象共用生成与修复流程，目标合并由运行时维护。 */
 export class ProgramController {
-  private repairs = new Map<string, number>()
+  private repairs = new Map<string, { sessionKey: string; revision: number; count: number }>()
   private listeners = new Set<(event: CompilationEvent) => void>()
   constructor(private readonly deps: ControllerDeps) {}
 
@@ -74,6 +74,7 @@ export class ProgramController {
 
   async refresh(id: string, repair = false, promptOptions: PromptRequestOptions = {}): Promise<string> {
     const { runtime } = this.deps
+    if (!repair) this.repairs.delete(id)
     const loader = this.deps.prompts ?? { load: loadPrompts }
     let prompts = promptOptions.prompts
     for (;;) {
@@ -94,7 +95,7 @@ export class ProgramController {
         if (!runtime.prepareCompile(lease, goals)) { record({ stage: 'discarded', reason: '成员变化，重新绑定' }); continue }
         const frame = runtime.compileFrame(lease)
         const program = runtime.programs.get(id)!
-        const diagnostic = repair && program.script ? { code: program.script.code, error: program.stats.lastError ?? '脚本故障' } : undefined
+        const diagnostic = repair && program.script ? { code: program.script.code, error: program.stats.lastError ?? '脚本故障', context: runtime.recoveryContext(id) } : undefined
         const output = goals.length ? await compileCommand(this.deps.provider(), { ...frame, ...(diagnostic ? { diagnostic } : {}) }, this.deps.executor, {
           signal: lease.signal,
           prompts: prompts!,
@@ -131,11 +132,19 @@ export class ProgramController {
     }
   }
 
-  fault(id: string): void {
+  fault(id: string, reason?: string): void {
     if (this.deps.runtime.hasPendingCommand(id)) return
-    const count = (this.repairs.get(id) ?? 0) + 1
-    this.repairs.set(id, count)
-    if (count > 2) { this.deps.log?.(`[companion] ${id} 自动修复已达限额，保持暂停`); return }
+    const runtime = this.deps.runtime, program = runtime.programs.get(id)
+    if (!program || !['active', 'paused'].includes(program.status)) return
+    const previous = this.repairs.get(id)
+    const count = (previous?.sessionKey === runtime.battleKey && previous.revision === program.revision ? previous.count : 0) + 1
+    if (count > 2) {
+      if (previous?.count === 2) this.deps.log?.(`[companion] ${id} 自动修复已达限额，等待新命令`)
+      this.repairs.set(id, { sessionKey: runtime.battleKey, revision: program.revision, count })
+      return
+    }
+    this.repairs.set(id, { sessionKey: runtime.battleKey, revision: program.revision, count })
+    if (reason) { program.stats.lastError = `执行停滞：${reason}`; this.deps.log?.(`[companion] ${id} ${program.stats.lastError}，开始诊断`) }
     void this.refresh(id, true).then(message => this.deps.log?.(`[companion] 修复：${message}`)).catch(err => this.deps.log?.(`[companion] 修复失败：${String(err).slice(0, 160)}`))
   }
 }

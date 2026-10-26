@@ -4,7 +4,8 @@
 {
   "id": "ra2web-gonghui",
   "name": "ra2web 共和国之辉",
-  "version": "1.0.1",
+  "version": "1.0.2",
+  "catalogFile": "catalogs/ra2web-gonghui.json",
   "factions": [
     {
       "id": "allied",
@@ -32,6 +33,36 @@
     }
   ],
   "roles": [
+    {
+      "id": "aircraft",
+      "aliases": ["飞机", "战机", "战斗机", "空军", "aircraft", "plane", "planes"],
+      "members": [],
+      "match": {"type": 1}
+    },
+    {
+      "id": "infantry",
+      "aliases": ["步兵", "infantry"],
+      "members": [],
+      "match": {"type": 3}
+    },
+    {
+      "id": "vehicle",
+      "aliases": ["车辆", "战车", "vehicle", "vehicles"],
+      "members": [],
+      "match": {"type": 7}
+    },
+    {
+      "id": "building",
+      "aliases": ["建筑", "building", "buildings"],
+      "members": [],
+      "match": {"type": 2}
+    },
+    {
+      "id": "naval",
+      "aliases": ["船", "舰艇", "战舰", "海军", "ship", "ships"],
+      "members": [],
+      "match": {"type": 7, "flags": {"naval": true}}
+    },
     {
       "id": "constructionVehicle",
       "aliases": [
@@ -549,3 +580,5 @@
 当前引擎 rules()、production.available() 和实际单位观测优先。建造前置、队列类别、电力与可造性使用宿主查询结果；不把“电厂、矿场、重工”写成所有阵营固定的科技顺序。宿主会解析真实 prerequisite，包括 POWER、PROC 等类别，并复用已有或已提交的前置。
 
 catalog 中角色用于理解“坦克”“侦察犬”等名称。同类有多个候选时，按当前可造项目、当前阵营和已有设施合理选择，简短反馈选择；精确可用的项目可跨阵营。角色映射不自动建立额外生产或扩张目标。
+
+完整项目、中文名称和基础规则事实从 catalogFile 指向的自动导入数据加载。上方角色成员只用于常用语义与阵营提示，不是项目白名单；尚未解锁的巨炮等项目也可接受建造目标。依赖和生产设施由宿主查询本局规则并统一规划；当前可造性由引擎确认，国家限制与未知条件分开反馈。

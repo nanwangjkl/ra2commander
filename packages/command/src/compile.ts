@@ -4,11 +4,14 @@ import { compileChecks, extractCode } from './script-contract.ts'
 import { loadPrompts, type PromptLibrary } from './prompt-loader.ts'
 import { checkScoutHandoffs } from './scout-checks.ts'
 import { checkRepairStages } from './repair-checks.ts'
+import { checkRelocationStages } from './relocation-checks.ts'
+import { checkMiningStages } from './mining-checks.ts'
+import { checkAttackStages } from './attack-checks.ts'
 
 export interface CompileInput {
   snapshot: Snapshot
   constraints: StepConstraints
-  diagnostic?: { code: string; error: string }
+  diagnostic?: { code: string; error: string; context?: unknown }
 }
 export interface CompileAttemptLog { attempt: number; errors: string[]; model: string; durationMs: number; promptVersion: string; promptTopics: string[]; tokens?: number }
 export interface CompileOutcome { code: string; attempts: number; log: CompileAttemptLog[]; promptVersion: string }
@@ -41,10 +44,15 @@ export async function compileCommand(
   const promptLibrary = prompts ?? loadPrompts(onPromptFallback ? { onFallback: onPromptFallback } : {})
   const log: CompileAttemptLog[] = []
   const goals = snap.control.goals.map(goal => goal.spec)
+  const memberIds = new Set(snap.control.goals.flatMap(goal => goal.unitIds))
+  const productionNames = new Set(goals.flatMap(goal => goal.kind === 'production' ? [goal.target, ...goal.prerequisites] : []))
+  const friendlyIds = new Set(Object.values(input.constraints.goals ?? {}).flatMap(goal => goal.friendlyTargetIds ?? []))
+  const relevant = snap.self.filter(unit => memberIds.has(unit.id) || productionNames.has(unit.name) || friendlyIds.has(unit.id))
+  const self = [...new Map([...relevant, ...snap.self.slice(0, 5)].map(unit => [unit.id, unit])).values()].slice(0, 80)
   const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
     { role: 'system', content: promptLibrary.compileFor(goals, !!input.diagnostic) },
     // 分区几何留在宿主校验；模型只需分区名称、目的地和已筛选的目标，避免重复传输轮廓。
-    { role: 'user', content: JSON.stringify({ control: snap.control, constraints: input.constraints, production: snap.production, tick: snap.tick, credits: snap.credits, mapWidth: snap.mapWidth, mapHeight: snap.mapHeight, self: snap.self.slice(0, 5), enemies: snap.enemies.slice(0, 5) }, (key, value) => ['polygons', 'instructions'].includes(key) ? undefined : value) },
+    { role: 'user', content: JSON.stringify({ control: snap.control, constraints: input.constraints, production: snap.production, tick: snap.tick, credits: snap.credits, mapWidth: snap.mapWidth, mapHeight: snap.mapHeight, self, enemies: snap.enemies.slice(0, 40), unitCounts: { self: snap.self.length, enemies: snap.enemies.length }, ...(input.diagnostic?.context ? { recoveryEvidence: input.diagnostic.context } : {}) }, (key, value) => ['polygons', 'instructions'].includes(key) ? undefined : value) },
   ]
   if (input.diagnostic) {
     messages.push({ role: 'assistant', content: input.diagnostic.code })
@@ -74,6 +82,21 @@ export async function compileCommand(
           const repairError = await checkRepairStages(code, input, executor)
           signal?.throwIfAborted()
           if (repairError) errors = [repairError]
+        }
+        if (!errors.length) {
+          const relocationError = await checkRelocationStages(code, input, executor)
+          signal?.throwIfAborted()
+          if (relocationError) errors = [relocationError]
+        }
+        if (!errors.length) {
+          const miningError = await checkMiningStages(code, input, executor)
+          signal?.throwIfAborted()
+          if (miningError) errors = [miningError]
+        }
+        if (!errors.length) {
+          const attackError = await checkAttackStages(code, input, executor)
+          signal?.throwIfAborted()
+          if (attackError) errors = [attackError]
         }
       }
     }

@@ -24,7 +24,7 @@ export function usage(): string {
     '  units [n]              列出最近快照中的己方单位（默认前 20）',
     '  move <ids|all> <x> <y> 移动',
     '  amove <ids|all> <x> <y> 攻击移动',
-    '  gather <ids|all> <x> <y> 集结',
+    '  gather <ids|all> <x> <y> 指定矿格采矿（调试）',
     '  attack <ids|all> <targetId> 攻击目标',
     '  stop <ids|all>         停止',
     '  enemy [n]              列出当前可见敌人（默认前 20）',
@@ -89,7 +89,7 @@ function debugBusy(ids: number[], ctx: CommandContext): boolean {
     const formationId = ctx.formations.ownerOf(id)
     const key = formationId ? ownerId({ kind: 'formation', formationId }) : 'global'
     const p = ctx.runtime.programs.get(key)
-    return !!p && (ctx.runtime.hasPendingCommand(key) || (p.status === 'active' && (formationId || p.activeGoalIds.some(g => { const spec = ctx.runtime.goals.get(g)?.activeSpec; return spec?.kind === 'rally' && spec.unitIds.includes(id) }))))
+    return !!p && (ctx.runtime.hasPendingCommand(key) || (p.status === 'active' && (formationId || p.activeGoalIds.some(g => { const goal = ctx.runtime.goals.get(g), spec = goal?.activeSpec; return (spec?.kind === 'rally' || spec?.kind === 'mining') && spec.unitIds.includes(id) || spec?.kind === 'relocate' && (goal?.facts.relocation?.unitId ?? spec.unitId) === id }))))
   })
 }
 

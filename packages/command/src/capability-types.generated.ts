@@ -1,14 +1,17 @@
 // 由 prompts/capabilities/*.md 生成；修改定义后运行 pnpm capabilities:generate。
-export const CAPABILITY_CONTRACT_VERSION = '447e1009e2e3c0ffada1c72906b7791e372b2807307ebc65642a004883a0b1ea'
+export const CAPABILITY_CONTRACT_VERSION = '53df1f8e8b4ff987c9c4e9ffed4f7b3790af683b293cc40fe2d94a97ac8617a4'
 export interface CapabilityParameters {
   "base.deploy": Record<string, never>
-  "combat.attack-all": { formationId?: string }
+  "base.relocate": { regionName?: string; x?: number; y?: number; unitId?: number }
+  "combat.attack-all": { selector?: string; unitIds?: number[]; formationId?: string }
+  "combat.attack": { selector?: string; unitIds?: number[]; formationId?: string; quantity?: number | 'all'; target?: "enemies" | "base" | "units" | "buildings"; targetId?: number; regionName?: string }
   "combat.clear-region": { formationId: string; regionName: string }
   "combat.hold": { formationId: string; regionName?: string; bounds?: number[]; mode?: "hold" | "assault" | "move"; retreatLoss?: number; retreatX?: number; retreatY?: number; label?: string }
   "combat.move": { formationId: string; regionName?: string; x?: number; y?: number; bounds?: number[]; label?: string; patrol?: boolean }
   "control.pause": { scope?: "formation" | "global" | "all" | "units"; formationId?: string; selector?: string; unitIds?: number[] }
   "control.resume": { scope?: "formation" | "global" | "all" | "units"; formationId?: string; selector?: string; unitIds?: number[] }
   "control.stop": { scope?: "formation" | "global" | "all" | "units"; formationId?: string; selector?: string; unitIds?: number[] }
+  "economy.gather": { regionName: string; quantity?: number | 'all'; unitIds?: number[]; formationId?: string }
   "formation.assign": { formationId: string; selector?: string; quantity?: number | 'all'; unitIds?: number[] }
   "formation.create": { formationId: string; selector?: string; unitIds?: number[]; force?: boolean }
   "formation.dissolve": { formationId: string }
@@ -19,7 +22,7 @@ export interface CapabilityParameters {
   "management.reinforce": { formationId: string; target: string; targetSize: number; sourceFormationId?: string }
   "map.explore": { formationId: string; regionName?: string }
   "production.power": { reserve?: number }
-  "production.produce": { target: string; quantity?: number; formationId?: string; queues?: number[] }
+  "production.produce": { target: string; quantity?: number; formationId?: string; placementDirections?: Array<"up" | "down" | "left" | "right" | "up-left" | "up-right" | "down-left" | "down-right">; placementAnchor?: string; placementRegion?: string; afterRelocation?: boolean; queues?: number[] }
   "skill.cancel": { runId?: string; skillId?: string; all?: boolean }
   "skill.run": { skillId: string; quantity?: number; memberSource?: "auto" | "existing" | "new"; useExisting?: boolean; formationId?: string; followFormationId?: string; regionName?: string }
   "transport.enter": { unitIds: number[]; transportId: number }
@@ -27,13 +30,16 @@ export interface CapabilityParameters {
 }
 export interface ResolvedCapabilityParameters {
   "base.deploy": Record<string, never>
-  "combat.attack-all": { formationId?: string }
+  "base.relocate": { regionName?: string; x?: number; y?: number; unitId?: number }
+  "combat.attack-all": { selector?: string; unitIds?: number[]; formationId?: string }
+  "combat.attack": { selector: string; unitIds?: number[]; formationId?: string; quantity: number | 'all'; target: "enemies" | "base" | "units" | "buildings"; targetId?: number; regionName?: string }
   "combat.clear-region": { formationId: string; regionName: string }
   "combat.hold": { formationId: string; regionName?: string; bounds?: number[]; mode: "hold" | "assault" | "move"; retreatLoss?: number; retreatX?: number; retreatY?: number; label?: string }
   "combat.move": { formationId: string; regionName?: string; x?: number; y?: number; bounds?: number[]; label?: string; patrol: boolean }
   "control.pause": { scope: "formation" | "global" | "all" | "units"; formationId?: string; selector: string; unitIds?: number[] }
   "control.resume": { scope: "formation" | "global" | "all" | "units"; formationId?: string; selector: string; unitIds?: number[] }
   "control.stop": { scope: "formation" | "global" | "all" | "units"; formationId?: string; selector: string; unitIds?: number[] }
+  "economy.gather": { regionName: string; quantity: number | 'all'; unitIds?: number[]; formationId?: string }
   "formation.assign": { formationId: string; selector: string; quantity: number | 'all'; unitIds?: number[] }
   "formation.create": { formationId: string; selector: string; unitIds?: number[]; force: boolean }
   "formation.dissolve": { formationId: string }
@@ -44,7 +50,7 @@ export interface ResolvedCapabilityParameters {
   "management.reinforce": { formationId: string; target: string; targetSize: number; sourceFormationId?: string }
   "map.explore": { formationId: string; regionName?: string }
   "production.power": { reserve: number }
-  "production.produce": { target: string; quantity: number; formationId?: string; queues: number[] }
+  "production.produce": { target: string; quantity: number; formationId?: string; placementDirections?: Array<"up" | "down" | "left" | "right" | "up-left" | "up-right" | "down-left" | "down-right">; placementAnchor?: string; placementRegion?: string; afterRelocation?: boolean; queues: number[] }
   "skill.cancel": { runId?: string; skillId?: string; all: boolean }
   "skill.run": { skillId: string; quantity?: number; memberSource?: "auto" | "existing" | "new"; useExisting?: boolean; formationId?: string; followFormationId?: string; regionName?: string }
   "transport.enter": { unitIds: number[]; transportId: number }

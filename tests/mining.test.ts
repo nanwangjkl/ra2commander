@@ -1,0 +1,129 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { StepExecutor } from '../packages/js-worker/src/index.ts'
+import { FormationRegistry, persistState, restoreState } from '../packages/runtime/src/index.ts'
+import { inTargetRegion, type MiningGoal, type SnapshotUnit } from '../packages/contracts/src/index.ts'
+import { loadPrompts } from '../packages/command/src/index.ts'
+import { ProgramController } from '../apps/companion/src/controller.ts'
+import { runTranscript } from '../apps/companion/src/transcript.ts'
+import { loadIceMap } from '../apps/companion/src/map-binding.ts'
+import { regionDestination } from '../apps/companion/src/capabilities/selectors.ts'
+import { MiningObserver } from '../apps/companion/src/mining.ts'
+import { executeCapabilities } from '../apps/companion/src/capabilities/index.ts'
+import type { CommandContext } from '../apps/companion/src/commands.ts'
+import { deferred, harness, snapshot } from './helpers.ts'
+
+const source = `function step(s,m){const actions=[];for(const g of s.control.goals){if(g.spec.kind==='mining'){for(const request of g.mining.actions)actions.push({goalId:g.spec.id,request});}else if(g.spec.kind==='rally'&&g.unitIds.length)actions.push({goalId:g.spec.id,request:{kind:'move',unitIds:g.unitIds,x:g.spec.x,y:g.spec.y}});}return {actions,memory:m}}`
+const reply = (text: string) => ({ text, model: 'fixture', durationMs: 0 })
+
+async function fixture(formation = false) {
+  const executor = new StepExecutor(), root = mkdtempSync(join(tmpdir(), 'ra2c-mining-'))
+  const env = await harness(executor, { formations: new FormationRegistry() }), runtime = env.runtime
+  const { regions } = await loadIceMap()
+  const ctx = { runtime, formations: runtime.formations, mapRegions: regions, mapSessionKey: runtime.battleKey } as unknown as CommandContext
+  await runtime.onSnapshot(snapshot({ seq: 2, mapWidth: 200, mapHeight: 200 }))
+  const { destination: point, region } = await regionDestination(ctx, '一楼', () => {})
+  let own: SnapshotUnit[] = [11, 12].map((id, i) => ({ id, name: 'CMIN', type: 7, rx: point.x + (i ? 2 : -2), ry: point.y, isIdle: true }))
+  own.push({ ...own[0]!, id: 13, name: 'MTNK' })
+  const ore = new Set([(point.y * 200 + point.x - 1), (point.y * 200 + point.x + 1)])
+  await runtime.onSnapshot(snapshot({ seq: 3, self: own, mapWidth: 200, mapHeight: 200 }))
+  if (formation) runtime.formations.create('矿队', [11])
+  let requests = 0
+  const provider = { generate: async ({ messages }: { messages: Array<{ content: string }> }) => {
+    requests++
+    return reply('text' in JSON.parse(messages[1]!.content) ? JSON.stringify({ summary: '现有矿车采一楼的矿，不区分矿种', operations: [{ capability: 'economy.gather', params: { regionName: '一楼' } }] }) : source)
+  } }
+  const controller = new ProgramController({ runtime, executor, provider: () => provider as never })
+  Object.assign(ctx, { controller, currentProvider: () => provider, bridge: {
+    rules: async (name: string, type: number) => ['CMIN', 'MTNK'].includes(name) && type === 7 ? { label: name, harvester: name === 'CMIN', prerequisite: [] } : undefined,
+    readMapBatch: async (cells: number[]) => {
+      assert.ok(cells.length <= 256)
+      assert.ok(cells.every(cell => inTargetRegion(cell % 200, Math.floor(cell / 200), region)))
+      return { seen: cells, impassable: [], ore: cells.filter(cell => ore.has(cell)) }
+    },
+  } })
+  const observer = new MiningObserver()
+  return { ctx, runtime, executor, root, ore, point, observer, submitted: env.submitted, requests: () => requests,
+    goals: () => [...runtime.goals.values()].filter(goal => goal.spec.kind === 'mining'),
+    voice: () => runTranscript('让所有矿车到一楼的彩色矿区去采矿', ctx, root),
+    tick: async (delta = 30) => runtime.onSnapshot({ ...runtime.snapshot!, self: own, seq: runtime.snapshot!.seq + 1, tick: runtime.snapshot!.tick + delta }),
+    busy: (value: boolean, returning = false) => { own = own.map(unit => ({ ...unit, isIdle: !value, ...(returning && unit.id === 11 ? { rx: 2, ry: 2 } : {}) })) },
+    dispose: async () => { await executor.dispose(); rmSync(root, { recursive: true, force: true }) },
+  }
+}
+
+test('反馈命令经共同入口发出并行采矿；返厂和卸货不重发，空闲后换矿点，不以抵达完成', async () => {
+  const f = await fixture()
+  try {
+    const result = await f.voice()
+    assert.match(result, /不区分矿种/)
+    assert.ok(f.goals().every(goal => goal.spec.kind === 'mining'))
+    await f.observer.poll(f.ctx)
+    await f.tick()
+    const gathers = f.submitted.filter(action => action.kind === 'gather')
+    assert.equal(gathers.length, 2)
+    assert.ok(gathers.every(action => action.kind === 'gather' && action.unitIds.length === 1 && [11, 12].includes(action.unitIds[0]!)))
+    assert.equal(new Set(gathers.map(action => action.kind === 'gather' ? `${action.x},${action.y}` : '')).size, 2)
+    assert.equal(f.runtime.goalExecution(f.goals()[0]!.spec.id)!.state, 'continuous')
+    const sent = f.submitted.length, requests = f.requests()
+    f.busy(true, true)
+    f.ore.clear()
+    await f.tick(360); await f.observer.poll(f.ctx); await f.tick(60)
+    assert.equal(f.submitted.length, sent, '忙碌矿车不受矿点耗尽影响，继续返厂和卸货')
+    f.ore.add((f.point.y + 1) * 200 + f.point.x)
+    await f.observer.poll(f.ctx)
+    f.busy(false)
+    await f.tick(60); await f.tick(60)
+    assert.equal(f.submitted.filter(action => action.kind === 'gather').length, 4)
+    assert.equal(f.requests(), requests, '搜索和执行不逐步调用云模型')
+    assert.ok(f.submitted.every(action => action.kind !== 'produce'))
+  } finally { await f.dispose() }
+})
+
+test('重编和同局恢复保留采矿发令事实；取消后迟到观察不能接管矿车', async () => {
+  const f = await fixture()
+  try {
+    await f.voice(); await f.observer.poll(f.ctx); await f.tick()
+    f.busy(true)
+    await f.tick()
+    const before = f.submitted.length
+    await f.ctx.controller.refresh('global'); await f.tick(120)
+    assert.equal(f.submitted.length, before)
+    const restored = await harness(f.executor, { formations: new FormationRegistry() })
+    await restored.runtime.onSnapshot(f.runtime.snapshot!)
+    restoreState(restored.runtime, JSON.parse(JSON.stringify(persistState(f.runtime))))
+    await restored.runtime.onSnapshot({ ...f.runtime.snapshot!, seq: f.runtime.snapshot!.seq + 1, tick: f.runtime.snapshot!.tick + 300 })
+    assert.deepEqual(restored.submitted, [])
+    const pending = deferred<{ seen: number[]; impassable: number[]; ore: number[] }>(), started = deferred<void>()
+    f.ctx.bridge.readMapBatch = async () => { started.resolve(); return pending.promise }
+    const goal = f.goals()[0]!, prior = JSON.stringify(goal.facts.mining)
+    const polling = f.observer.poll(f.ctx)
+    await started.promise
+    await f.runtime.cancelGoal(goal.spec.id)
+    pending.resolve({ seen: [f.point.y * 200 + f.point.x], impassable: [], ore: [f.point.y * 200 + f.point.x] })
+    await polling
+    assert.equal(JSON.stringify(goal.facts.mining), prior)
+    assert.ok(f.submitted.some(action => action.kind === 'stop'))
+    await f.tick(120)
+    assert.equal(f.submitted.filter(action => action.kind === 'gather').length, 2)
+  } finally { await f.dispose() }
+})
+
+test('已编队和未编队矿车分别使用独立脚本；单车改令保留其他矿车的任务', async () => {
+  const f = await fixture(true)
+  try {
+    await f.voice()
+    assert.deepEqual(f.goals().map(goal => goal.ownerId).sort(), ['formation:矿队', 'global'])
+    await f.observer.poll(f.ctx); await f.tick(); await f.observer.poll(f.ctx); await f.tick()
+    assert.equal(f.submitted.filter(action => action.kind === 'gather').length, 2)
+    const global = f.goals().find(goal => goal.ownerId === 'global')!, grouped = f.goals().find(goal => goal.ownerId !== 'global')!
+    const catalog = await import('../apps/companion/src/game-catalog.ts').then(module => module.loadGameCatalog(f.ctx, () => {}, loadPrompts().game))
+    await executeCapabilities([{ capability: 'management.rally', params: { unitIds: [12], x: 30, y: 30 } }], f.ctx, { text: '12号矿车去30,30', catalog })
+    assert.equal(global.status, 'cancelled')
+    assert.equal(grouped.status, 'active')
+    assert.equal(f.runtime.formations.ownerOf(11), '矿队')
+  } finally { await f.dispose() }
+})

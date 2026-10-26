@@ -3,9 +3,13 @@ import type { GameProfile, RuleFacts } from '@ra2c/command'
 export interface GameRule extends RuleFacts {
   type?: number
   prerequisite?: string[]
+  prerequisiteOverride?: string[]
   deploysInto?: string
   undeploysInto?: string
   buildCat?: number
+  techLevel?: number
+  factory?: number | string
+  ammo?: number
 }
 export type RuleQuery = (name: string, type: number) => Promise<unknown>
 
@@ -17,7 +21,7 @@ export function createRuleLookup(query: RuleQuery, check: () => void, profile: G
     let pending = cache.get(name)
     if (!pending) {
       pending = (async () => {
-        const hint = hints.get(name) ?? profile.member(name)?.type
+        const hint = hints.get(name) ?? profile.member(name)?.type ?? profile.entry(name)?.type
         let failure: unknown, reads = 0
         for (const type of [...new Set([...(hint ? [hint] : []), 2, 7, 3, 1])]) {
           check()

@@ -257,13 +257,13 @@ test('地图读取有批次上限，未知与图外格子不计覆盖，桥上�
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'window')
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { __ra2cSessionKey: 'battle-a', werhd: { map: {
     visible: (x: number) => { calls.push(x); return x !== 2 },
-    tile: (x: number) => x === 3 ? undefined : { landType: 7, onBridge: x === 1 },
+    tile: (x: number) => x === 3 ? undefined : { landType: x === 2 || x === 4 ? 9 : 7, onBridge: x === 1 },
   } } } })
   const bridge = new WerhdBridge({} as never)
   bridge.bindGameFrame({ isDetached: () => false, evaluate: async (fn: (arg: unknown) => unknown, arg: unknown) => fn(arg) } as never)
   try {
-    assert.deepEqual(await bridge.readMapBatch([0, 1, 2, 3], 100, 'battle-a'), { seen: [0, 1], impassable: [0] })
-    assert.equal(calls.length, 4)
+    assert.deepEqual(await bridge.readMapBatch([0, 1, 2, 3, 4], 100, 'battle-a'), { seen: [0, 1, 4], impassable: [0], ore: [4] })
+    assert.equal(calls.length, 5)
     await assert.rejects(bridge.readMapBatch(new Array(257).fill(0), 100, 'battle-a'), /批次过大/)
     await assert.rejects(bridge.readMapBatch([0], 100, 'old-battle'), /对局已变化/)
   } finally {

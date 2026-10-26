@@ -26,11 +26,13 @@ export interface SnapshotUnit {
   ry: number;
   hitPoints?: number;
   maxHitPoints?: number;
+  elevation?: number;
   isIdle: boolean;
   canDeploy?: boolean;
+  ammo?: number;
   veteranLevel?: number;
-  primaryWeapon?: { maxRange: number; minRange: number; aa: boolean; ag: boolean };
-  secondaryWeapon?: { maxRange: number; minRange: number; aa: boolean; ag: boolean };
+  primaryWeapon?: { maxRange: number; minRange: number; aa: boolean; ag: boolean; cooldownTicks?: number };
+  secondaryWeapon?: { maxRange: number; minRange: number; aa: boolean; ag: boolean; cooldownTicks?: number };
   transport?: { occupied: number; capacity: number; unitIds: number[]; passengers?: Array<{ id: number; name: string; type: number }> };
 }
 
@@ -61,6 +63,7 @@ export interface Snapshot {
   tick: number;
   time: number;
   credits: number;
+  country?: string;
   mapWidth: number;
   mapHeight: number;
   /** 己方全部单位（含建筑）。 */
@@ -89,7 +92,7 @@ export type ActionRequest =
   | { kind: 'guard'; unitIds: number[] }
   | { kind: 'produce'; name: string; quantity: number }
   | { kind: 'cancel'; name: string; quantity: number }
-  | { kind: 'place'; name: string; x?: number; y?: number }
+  | { kind: 'place'; name: string; x?: number; y?: number; placement?: import('./placement.ts').PlacementSlot; placementRegion?: import('./spatial.ts').TargetRegion }
   | { kind: 'pauseQueue'; queueType: number }
   | { kind: 'resumeQueue'; queueType: number };
 
@@ -100,6 +103,7 @@ export interface ActionResult {
   /** 实际进入 werhd 调用的单位数。 */
   submitted: number;
   session: number;
+  placement?: { x: number; y: number; elevation?: number };
 }
 
 /** 任务脚本执行侧约束：执行器第一道把关（宿主提交前还有会话/存活复查）。 */
@@ -121,6 +125,8 @@ export interface StepConstraints {
   resumableQueueTypes?: number[];
   allowedActions?: ActionRequest['kind'][];
   friendlyTargetIds?: number[];
+  placements?: Record<string, import('./placement.ts').PlacementSlot>;
+  placementRegions?: Record<string, import('./spatial.ts').TargetRegion>;
   region?: Region;
   targetRegion?: import('./spatial.ts').TargetRegion;
   retreat?: { x: number; y: number; active: boolean };
@@ -144,8 +150,9 @@ export interface ActionContext {
 }
 
 export { validateActions, validateScriptActions, liveScriptActions, inRegion } from './validate-actions.ts';
-export { inTargetRegion, type TargetRegion } from './spatial.ts';
+export { inTargetRegion, validTargetRegion, type TargetRegion } from './spatial.ts';
 export * from './control.ts';
+export * from './placement.ts';
 export type { CommandEvent, CommandSource, CommandStage, GoalExecution } from './command-log.ts';
 export type { BattleRecord, BattleRecordInfo, CommandFeedback, FeedbackRating, CurrentCommands } from './battle-record.ts';
 

@@ -55,7 +55,7 @@ export function applyCommandEvent(event: CommandEvent, previous?: CardData): Car
   if (data.goals.size) {
     const stages = [...data.goals.values()].map(goal => goal.execution?.state ?? goal.stage)
     const effective = stages.filter(stage => stage === 'effective').length
-    const succeeded = stages.some(stage => ['effective', 'running', 'continuous', 'completed'].includes(stage))
+    const succeeded = stages.some(stage => ['effective', 'pending', 'running', 'continuous', 'completed'].includes(stage))
     if (stages.every(stage => stage === 'completed')) { data.stage = data.skipped.size ? 'partial-completed' : 'completed'; data.error = '' }
     else if (stages.some(stage => ['bound', 'binding', 'generating'].includes(stage))) data.stage = 'generating'
     else if (stages.includes('merged')) data.stage = 'merged'
@@ -67,6 +67,7 @@ export function applyCommandEvent(event: CommandEvent, previous?: CardData): Car
       : stages.includes('failed') ? 'failed' : 'cancelled'
     else if (stages.includes('running')) data.stage = data.skipped.size ? 'partial' : 'running'
     else if (stages.includes('continuous')) data.stage = data.skipped.size ? 'partial' : 'continuous'
+    else if (stages.includes('pending')) data.stage = 'pending'
     else if (effective === stages.length) {
       data.error = ''
       data.stage = data.skipped.size ? 'partial' : 'effective'

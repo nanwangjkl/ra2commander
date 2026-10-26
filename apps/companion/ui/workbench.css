@@ -43,7 +43,7 @@ html.sidebar-collapsed #sidebar, html.sidebar-collapsed #resize-sidebar { visibi
 .command-card.running, .command-card.continuous, .command-card.effective { border-left: 3px solid #7eaccc; }
 .command-card.completed, .command-card.partial-completed { border-color: #34483c; background: #16201d; opacity: .72; }
 .command-card.partial-completed { border-color: #806c42; }
-.command-card.blocked, .command-card.paused { border-color: #806c42; }
+.command-card.blocked, .command-card.paused, .command-card.pending { border-color: #806c42; }
 .command-card.faulted { border-color: #99574f; background: #241b1d; }
 .card-head { display: flex; align-items: center; gap: 8px; color: #8b9caf; font-size: 11px; }
 .card-head time { font-variant-numeric: tabular-nums; }

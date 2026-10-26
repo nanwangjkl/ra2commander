@@ -7,7 +7,7 @@ import type { CommandContext } from './commands.ts'
 import { newCommandId, type CommandEvent, type TraceOptions } from './command-log.ts'
 import { bindDefaultMap } from './map-binding.ts'
 import { normalizeOperations } from './transcript-plan.ts'
-import { executeCapabilities, executionText, loadCommandPrompts, type CapabilityExecution } from './capabilities/index.ts'
+import { executeCapabilities, executionText, loadCommandPrompts, type BindingCorrection, type CapabilityExecution } from './capabilities/index.ts'
 import { isRepairVehicle, isCombatUnit, loadGameCatalog } from './capabilities/selectors.ts'
 
 export async function runTranscript(text: string, ctx: CommandContext, root: string, trace?: TraceOptions): Promise<string> {
@@ -27,6 +27,7 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     promptVersions: { interpret: undefined as string | undefined, compile: {} as Record<string, string> },
     plan: undefined as { summary: string; operations: unknown[] } | undefined,
     modelPlan: undefined as { summary: string; operations: unknown[] } | undefined,
+    bindingRepairs: [] as unknown[],
     goals: [] as GoalSpec[], choices: [] as string[], effects: [] as string[], skipped: [] as string[], results: [] as string[], error: '',
     terminalStage: undefined as 'completed' | 'failed' | 'cancelled' | undefined, terminalError: '' }
   let storageWarning = ''
@@ -63,9 +64,9 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     record.messages = [
       { role: 'system', content: prompts.render('interpret') },
       { role: 'user', content: JSON.stringify({ text, faction: prompts.game.factions().find(faction => faction.id === catalog.faction)?.label ?? null,
-        game: { id: prompts.game.id, version: prompts.game.version }, roles: prompts.game.roles().map(role => ({ id: role.id, aliases: role.aliases })),
-        self: snap.self.map(unit => ({ id: unit.id, name: unit.name, type: unit.type, formationId: ctx.formations.ownerOf(unit.id) ?? null, hitPoints: unit.hitPoints, maxHitPoints: unit.maxHitPoints, transport: unit.transport, isRepairVehicle: isRepairVehicle(unit, ctx, catalog), canDeploy: unit.canDeploy, isCombat: isCombatUnit(unit, catalog) })),
-        formations: ctx.formations.list(), catalog: catalog.items,
+        game: { id: prompts.game.id, version: prompts.game.version, catalogVersion: prompts.game.catalogVersion }, country: snap.country, roles: prompts.game.roles().map(role => ({ id: role.id, aliases: role.aliases })),
+        self: snap.self.map(unit => ({ id: unit.id, name: unit.name, type: unit.type, ammo: unit.ammo, formationId: ctx.formations.ownerOf(unit.id) ?? null, hitPoints: unit.hitPoints, maxHitPoints: unit.maxHitPoints, transport: unit.transport, isRepairVehicle: isRepairVehicle(unit, ctx, catalog), canDeploy: unit.canDeploy, isCombat: isCombatUnit(unit, catalog) })),
+        formations: ctx.formations.list(), catalog: catalog.forTranscript(text),
         skillRuns: [...ctx.runtime.skillRuns.values()].filter(run => ['preparing', 'exploring', 'repairing'].includes(run.status)).map(run => ({ id: run.id, skillId: run.skillId, version: run.version, formationId: run.formationId, status: run.status })),
         goals: [...ctx.runtime.goals.values()].filter(goal => goal.status !== 'cancelled').slice(-30).map(goal => ({ id: goal.spec.id, kind: goal.spec.kind, text: goal.spec.rawText, label: goal.spec.label, status: goal.status, owner: goal.ownerId, ...(goal.spec.kind === 'production' ? { target: goal.spec.target, quantity: goal.spec.quantity } : {}) })),
         map: ctx.mapRegions && ctx.mapSessionKey === key ? { name: ctx.mapRegions.scheme.map.name, regions: ctx.mapRegions.scheme.regions.map(region => region.name) } : null }) },
@@ -92,6 +93,35 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     save()
     const update = (execution: CapabilityExecution) => { Object.assign(record, execution); plan.summary = execution.summary; save() }
     const execution = await executeCapabilities(plan.operations, ctx, { text, prompts, catalog, signal, emit, onUpdate: update, commandId: requestId,
+      repairBindings: async (failures, accepted) => {
+        check()
+        const current = ctx.runtime.snapshot!
+        const messages = [
+          { role: 'system' as const, content: prompts.render('bindingRepair') },
+          { role: 'user' as const, content: JSON.stringify({ text, failures, accepted,
+            ...JSON.parse(record.messages[1]!.content),
+            self: current.self.map(unit => ({ ...unit, formationId: ctx.formations.ownerOf(unit.id) ?? null })),
+            formations: ctx.formations.list(),
+            goals: [...ctx.runtime.goals.values()].filter(goal => goal.status !== 'cancelled').slice(-30).map(goal => ({ id: goal.spec.id, kind: goal.spec.kind, text: goal.spec.rawText, status: goal.status, owner: goal.ownerId,
+              ...(goal.spec.kind === 'production' ? { target: goal.spec.target, quantity: goal.spec.quantity } : {}) })),
+            catalog: catalog.forTranscript(`${text} ${JSON.stringify(failures)}`),
+          }) },
+        ]
+        const attempt = { at: Date.now(), promptVersion: prompts.version, failures, messages, response: undefined as unknown, error: '' }
+        record.bindingRepairs.push(attempt); save()
+        try {
+          const result = await ctx.currentProvider().generate({ messages, maxTokens: 2048, thinking: 'disabled', signal })
+          attempt.response = result; save(); check()
+          const parsed = JSON.parse(result.text.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '').trim())
+          if (!Array.isArray(parsed?.repairs) || parsed.repairs.length > failures.length) throw new Error('绑定修正格式非法')
+          let count = 0
+          return parsed.repairs.map((repair: BindingCorrection) => {
+            if (!Number.isInteger(repair?.index) || !failures[repair.index] || !Array.isArray(repair.operations) || (count += repair.operations.length) > 8) throw new Error('绑定修正格式非法')
+            const calls = repair.operations.map(call => prompts.capabilities.parse(call))
+            return { index: repair.index, operations: normalizeOperations(text, calls, ctx.mapSessionKey === key ? ctx.mapRegions : undefined, catalog) }
+          })
+        } catch (error) { attempt.error = String(error); save(); throw error }
+      },
       ...(!plan.operations.length ? { emptyReason: plan.summary } : {}),
       onPromptVersion: (owner, version) => { record.promptVersions.compile[owner] = version },
       hasFailure: goalId => active?.log.since(0).reverse().find(event => event.goalId === goalId)?.stage === 'failed',

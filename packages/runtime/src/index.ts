@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import {
-  validateScriptActions, liveScriptActions, inRegion, inTargetRegion, goalOwner, ownerId,
+  validateScriptActions, liveScriptActions, inRegion, inTargetRegion, goalOwner, ownerId, validBuildingPlacement, validTargetRegion, directionLabels,
   type ActionRequest, type ActionResult, type ActionContext, type Snapshot, type StepConstraints,
   type GoalConstraints, type GoalSpec, type GoalView, type ScriptOwner, type FormationRequest, type GoalExecution,
 } from '@ra2c/contracts'
@@ -11,6 +11,11 @@ import { observeProduction, productionProgress } from './production-progress.ts'
 import { assessArrival } from './arrival.ts'
 import { planRepairs, emptyRepairState } from './repair.ts'
 import { ExplorationStore, skillGoalIds, type SkillRun } from './exploration.ts'
+import { RecoveryMonitor } from './recovery.ts'
+import { initialRelocation, observeRelocation, relocationView, recordRelocationResult } from './relocation.ts'
+import { initialMining, planMining, recordMiningResult } from './mining.ts'
+import { initialAttack, planAttack, recordAttack } from './attack.ts'
+export { initialMining, miningBatch, observeOre } from './mining.ts'
 export { skillGoalIds } from './exploration.ts'
 export { ExplorationStore } from './exploration.ts'
 export type { ExplorationMap, ExplorationProgress, ExplorationObservation, SkillRun } from './exploration.ts'
@@ -30,6 +35,7 @@ export interface CompileLease {
   readonly formationRevision: number
   readonly signal: AbortSignal
   readonly repair: boolean
+  readonly recoveryStatus?: 'active' | 'paused'
   goals: GoalSpec[]
 }
 export interface RuntimeDeps {
@@ -39,6 +45,8 @@ export interface RuntimeDeps {
   /** 必须成功完成持久化才允许发送非幂等生产请求。 */
   checkpoint: () => void | Promise<void>
   onProgramFaulted?: (ownerId: string) => void
+  onProgramStalled?: (ownerId: string, reason: string) => void
+  recovery?: { stallTicks?: number; cooldownTicks?: number }
   log?: (message: string) => void
 }
 
@@ -58,8 +66,14 @@ export class TaskRuntime {
   readonly handoffs: Handoff[] = []
   readonly exploration = new ExplorationStore()
   readonly skillRuns = new Map<string, SkillRun>()
+  private readonly recovery: RecoveryMonitor
 
-  constructor(private readonly deps: RuntimeDeps) { this.formations = deps.formations ?? new FormationRegistry() }
+  constructor(private readonly deps: RuntimeDeps) {
+    this.formations = deps.formations ?? new FormationRegistry()
+    this.recovery = new RecoveryMonitor(deps.recovery?.stallTicks, deps.recovery?.cooldownTicks)
+  }
+  recoveryContext(id: string) { return this.recovery.context(id) }
+  private recoveryKey(program: ProgramState): string { return `${this.sessionKey}:${program.revision}:${program.script?.version ?? 0}` }
   get battleKey(): string { return this.sessionKey }
   get snapshot(): Snapshot | undefined { return this.latest }
   hasPendingCommand(id: string): boolean { return this.pending.has(id) }
@@ -74,6 +88,11 @@ export class TaskRuntime {
   goalExecution(id: string): GoalExecution | undefined {
     const goal = this.goals.get(id)
     if (!goal) return undefined
+    if (goal.spec.kind === 'attack' && ['completed', 'partial', 'failed'].includes(goal.status)) {
+      const members = goal.facts.attack?.members ?? [], aircraft = members.filter(member => member.aircraft)
+      return { state: goal.status as 'completed' | 'partial' | 'failed', detail: goal.facts.outcomeDetail ?? '本次飞机已实际发射，返航与装弹交给游戏',
+        ...(aircraft.length ? { progress: { completed: aircraft.filter(member => member.phase === 'fired').length, total: aircraft.length, label: '已实际发射一次' } } : {}) }
+    }
     if (goal.status === 'partial' || goal.status === 'failed') {
       const exploration = this.explorationExecution(goal.spec)
       return { ...exploration, state: goal.status, detail: [goal.facts.outcomeDetail ?? '探索未全部完成', exploration.detail].filter(Boolean).join('；') }
@@ -88,11 +107,21 @@ export class TaskRuntime {
       ? { state: 'faulted', detail: `脚本运行出错，已暂停：${program.stats.lastError}` } : { state: 'paused', detail: '脚本已暂停' }
     if (program.status === 'stopped') return { state: 'cancelled', detail: '脚本已停止' }
     const view = this.frame(program, [spec], this.latest).snapshot.control!.goals[0]!
+    if (spec.kind === 'attack' && view.attack) {
+      const attack = view.attack
+      const waiting = !attack.readyIds.length && !attack.attackingIds.length && (attack.pendingIds.length > 0 || attack.preparing)
+      return { state: waiting ? 'pending' : attack.groundIds.length ? 'continuous' : 'running', detail: attack.detail,
+        ...(attack.totalAircraft ? { progress: { completed: attack.firedIds.length, total: attack.totalAircraft, label: '已实际发射一次' } } : {}) }
+    }
     const progress = spec.kind === 'explore' ? this.explorationExecution(spec).progress : spec.kind === 'production' && !spec.maintainPower
-      ? { completed: Math.min(spec.quantity, view.observed[spec.target]?.length ?? 0), total: spec.quantity }
+      ? { completed: Math.min(spec.quantity, view.productionPlan?.placement?.completed ?? view.observed[spec.target]?.length ?? 0), total: spec.quantity, ...(spec.placementRegion ? { label: '按指定分区及位置建成' } : spec.placement ? { label: '按指定方位建成' } : {}) }
       : spec.kind === 'combat' && spec.route ? { completed: goal.facts.routeIndex ?? 0, total: spec.route.length, label: '已到达路点' } : undefined
-    const detail = view.blocked ?? (view.uncertain.length ? `提交结果待确认：${view.uncertain.join('、')}` : undefined)
+    const unmet = view.productionPlan?.unmetConditions ?? []
+    const conditionDetail = unmet.length && !view.productionPlan?.availableToProduce.length && !view.productionPlan?.readyToPlace.length ? unmet.map(condition => condition.reason).join('；') : undefined
+    const detail = view.blocked ?? conditionDetail ?? (goal.facts.placementBlocked ? goal.facts.blocked : undefined) ?? (view.uncertain.length ? `提交结果待确认：${view.uncertain.join('、')}` : undefined)
     if (detail) return { state: 'blocked', detail, ...(progress ? { progress } : {}) }
+    if (spec.kind === 'mining' && view.mining) return { state: view.mining.assigned ? 'continuous' : 'running', detail: view.mining.detail, progress: { completed: view.mining.assigned, total: view.mining.total, label: '已下达采矿指令' } }
+    if (spec.kind === 'relocate' && view.relocation) return { state: 'running', detail: view.relocation.detail, progress: { completed: ['packing', 'moving', 'deploying', 'confirming', 'completed'].indexOf(view.relocation.phase), total: 4, label: '基地搬迁阶段' } }
     const continuous = (spec.kind === 'production' && !!spec.maintainPower) || spec.kind === 'reinforce' || (spec.kind === 'combat' && (spec.mode === 'hold' || spec.mode === 'assault' || (!spec.destination && !spec.attackRegion)))
     if (spec.kind === 'repair' && view.repair) {
       const r = view.repair
@@ -187,7 +216,13 @@ export class TaskRuntime {
     if (!goal.id || !goal.rawText || !this.latest) throw new Error('目标缺少 ID、命令或当前对局')
     const snap = this.latest
     const point = (x: number, y: number) => Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < snap.mapWidth && y < snap.mapHeight
-    if (goal.kind === 'repair') {
+    if (goal.kind === 'attack') {
+      if ((!goal.unitIds.length && !goal.dynamicNames?.length) || goal.unitIds.some(id => !Number.isSafeInteger(id)) || new Set(goal.unitIds).size !== goal.unitIds.length || goal.aircraftIds.some(id => !goal.unitIds.includes(id)) || !['enemies', 'base', 'units', 'buildings'].includes(goal.targetKind) || goal.targetRegion && !validTargetRegion(goal.targetRegion)) throw new Error('攻击对象或目标范围非法')
+      if (goal.formationId && !this.formations.list().some(formation => formation.id === goal.formationId) && !this.hasPlannedFormation(goal.formationId)) throw new Error('攻击编队不存在或尚无准备目标')
+    } else if (goal.kind === 'mining') {
+      if (!goal.unitIds.length || new Set(goal.unitIds).size !== goal.unitIds.length || goal.unitIds.some(id => !Number.isSafeInteger(id)) || !validTargetRegion(goal.targetRegion) || !point(goal.destination.x, goal.destination.y) || !inTargetRegion(goal.destination.x, goal.destination.y, goal.targetRegion)) throw new Error('采矿目标或分区非法')
+      if (goal.formationId && !this.formations.list().some(formation => formation.id === goal.formationId)) throw new Error('采矿编队不存在')
+    } else if (goal.kind === 'repair') {
       if (!this.formations.list().some(f => f.id === goal.formationId) && !this.hasPlannedFormation(goal.formationId)) throw new Error('维修编队不存在或尚无准备目标')
       if (!goal.vehicleNames.length || !goal.engineerNames.length || !goal.tankNames.length || !Number.isSafeInteger(goal.policy.retryTicks) || goal.policy.retryTicks < 1 || !Number.isSafeInteger(goal.policy.stallTicks) || goal.policy.stallTicks <= goal.policy.retryTicks) throw new Error('维修目标参数非法')
       if (goal.followFormationId === goal.formationId || (goal.followFormationId && !this.formations.list().some(f => f.id === goal.followFormationId))) throw new Error('被支援编队不存在或与维修队相同')
@@ -205,9 +240,16 @@ export class TaskRuntime {
       if (!r || !point(r.x1, r.y1) || !point(r.x2, r.y2) || r.x1 > r.x2 || r.y1 > r.y2) throw new Error('授权地域非法')
       if (goal.route && (!goal.route.length || goal.route.some(stop => !point(stop.x, stop.y)))) throw new Error('路线目的地非法')
       if (goal.retreat && (!point(goal.retreat.x, goal.retreat.y) || !Number.isFinite(goal.retreat.lossAbove) || goal.retreat.lossAbove < 0 || goal.retreat.lossAbove >= 1)) throw new Error('回撤条件非法')
+    } else if (goal.kind === 'relocate') {
+      if (goal.targetRegion && !validTargetRegion(goal.targetRegion)) throw new Error('基地搬迁分区非法')
+      if (!Number.isSafeInteger(goal.unitId) || !goal.vehicleName || !goal.yardName || !point(goal.destination.x, goal.destination.y) || !goal.candidates.length || goal.candidates.some(candidate => !point(candidate.x, candidate.y) || goal.targetRegion && !inTargetRegion(candidate.x, candidate.y, goal.targetRegion))) throw new Error('基地搬迁参数非法')
+      if (!this.goals.get(goal.id)?.facts.relocation && !snap.self.some(unit => unit.id === goal.unitId && [goal.vehicleName, goal.yardName].includes(unit.name) && !this.formations.ownerOf(unit.id))) throw new Error('基地搬迁对象不可用')
     } else if (goal.kind === 'deploy') {
       if (!goal.unitIds.length || goal.unitIds.some(id => !snap.self.some(u => u.id === id && u.canDeploy))) throw new Error('没有可展开的基地车')
     } else if (goal.kind === 'production') {
+      if (goal.placementRegion && ((goal.targetType !== undefined && goal.targetType !== 2) || !validTargetRegion(goal.placementRegion))) throw new Error('建筑分区要求非法')
+      if (goal.afterGoalId && (goal.afterGoalId === goal.id || this.goals.has(goal.afterGoalId) && this.goals.get(goal.afterGoalId)?.spec.kind !== 'relocate')) throw new Error('建造依赖必须指向基地搬迁目标')
+      if (goal.placement && ((goal.targetType !== undefined && goal.targetType !== 2) || !validBuildingPlacement(goal.placement, snap.mapWidth, snap.mapHeight))) throw new Error('建筑方位要求非法或生产目标不是建筑')
       if (!/^[A-Za-z0-9_]+$/.test(goal.target) || !Number.isSafeInteger(goal.quantity) || goal.quantity < 1 || goal.queues.some(q => !Number.isInteger(q) || q < 0 || q > 5)) throw new Error('生产目标非法')
       if (goal.maintainPower && (!Number.isFinite(goal.maintainPower.reserve) || goal.maintainPower.reserve < 0 || !Number.isFinite(goal.maintainPower.output) || goal.maintainPower.output <= 0)) throw new Error('补电参数非法')
     } else if (goal.kind === 'formation') {
@@ -235,7 +277,7 @@ export class TaskRuntime {
     const owner = goalOwner(spec)
     const program = this.program(owner)
     const old = this.goals.get(spec.id)
-    if (old && (spec.kind === 'combat' || spec.kind === 'explore' || spec.kind === 'repair') && (old.status !== 'pending' || old.activeSpec || old.spec.rawText !== spec.rawText)) throw new Error('编队新命令应使用新的目标 ID')
+    if (old && goalOwner(spec).kind === 'formation' && (old.status !== 'pending' || old.activeSpec || old.spec.rawText !== spec.rawText)) throw new Error('编队新命令应使用新的目标 ID')
     if (old && (old.ownerId !== program.id || old.spec.kind !== spec.kind || old.status === 'cancelled')) throw new Error('不能复用其他对象或已取消目标的 ID')
     if (old?.status === 'completed' && spec.kind !== 'production') throw new Error('该目标已完成，请建立新目标')
     if (old) {
@@ -266,11 +308,11 @@ export class TaskRuntime {
   beginCompile(id: string, repair = false): CompileLease {
     const program = this.programs.get(id)
     if (!program || !this.latest || this.latest.sessionKey !== this.sessionKey) throw new Error('没有有效控制对象或对局')
-    if (repair && program.status !== 'paused') throw new Error('脚本不处于暂停态')
+    if (repair && !['active', 'paused'].includes(program.status)) throw new Error('脚本不处于运行或故障暂停态')
     this.cancelCommand(id)
     const abort = new AbortController()
     const goals = program.goalIds.map(g => this.goals.get(g)!).filter(g => g && !['cancelled', 'completed', 'partial', 'failed'].includes(g.status)).map(g => structuredClone(g.spec))
-    const lease: CompileLease = { ownerId: id, sessionKey: this.sessionKey, revision: program.revision, formationRevision: this.formations.revision, signal: abort.signal, repair, goals }
+    const lease: CompileLease = { ownerId: id, sessionKey: this.sessionKey, revision: program.revision, formationRevision: this.formations.revision, signal: abort.signal, repair, goals, ...(repair ? { recoveryStatus: program.status as 'active' | 'paused' } : {}) }
     this.pending.set(id, { lease, abort })
     return lease
   }
@@ -300,7 +342,7 @@ export class TaskRuntime {
   commitCompile(lease: CompileLease, code: string, promptVersion?: string): boolean {
     if (!this.currentLease(lease)) return false
     const program = this.programs.get(lease.ownerId)!
-    if (lease.repair && program.status !== 'paused') return false
+    if (lease.repair && program.status !== lease.recoveryStatus) return false
     const nextIds = new Set(lease.goals.map(g => g.id))
     for (const id of program.activeGoalIds) {
       if (!nextIds.has(id)) {
@@ -317,6 +359,9 @@ export class TaskRuntime {
       if (['cancelled', 'completed', 'partial', 'failed'].includes(goal.status)) continue
       goal.activeSpec = structuredClone(spec)
       goal.status = 'active'
+      if (spec.kind === 'relocate') goal.facts.relocation ??= initialRelocation(spec, this.latest!)
+      if (spec.kind === 'mining') goal.facts.mining ??= initialMining()
+      if (spec.kind === 'attack') goal.facts.attack ??= initialAttack()
       if (!goal.facts.initialized && (spec.kind === 'combat' || spec.kind === 'deploy')) {
         const ids = spec.kind === 'combat' ? this.formations.membersOf(spec.formationId) : spec.unitIds
         goal.facts.members = this.latest!.self.filter(u => ids.includes(u.id)).map(u => ({ id: u.id, name: u.name, rx: u.rx, ry: u.ry }))
@@ -329,6 +374,7 @@ export class TaskRuntime {
     program.memory = {}
     program.status = program.activeGoalIds.length ? 'active' : 'idle'
     program.stats.errors = 0
+    this.recovery.reset(program.id)
     delete program.compileError
     this.cancelCommand(program.id)
     this.deps.log?.(`[runtime] ${program.id} v${program.script.version}，目标 ${program.activeGoalIds.join(', ') || '无'}`)
@@ -358,9 +404,10 @@ export class TaskRuntime {
     this.cancelCommand(program.id)
     const snap = this.latest
     const spec = goal.activeSpec ?? goal.spec
-    if (snap && (spec.kind === 'combat' || spec.kind === 'explore' || spec.kind === 'repair' || spec.kind === 'rally' || spec.kind === 'transport')) {
+    if (snap && (spec.kind === 'combat' || spec.kind === 'explore' || spec.kind === 'repair' || spec.kind === 'rally' || spec.kind === 'transport' || spec.kind === 'relocate' || spec.kind === 'mining' || spec.kind === 'attack')) {
       const ids = this.goalConstraints(spec, snap).allowedUnitIds
-      if (ids.length) await this.deps.submit([{ kind: 'stop', unitIds: ids }], snap, () => this.sessionKey === snap.sessionKey && goal.status === 'cancelled' && this.goals.get(id) === goal && (program.owner.kind === 'global' || !program.activeGoalIds.some(other => other !== id && this.goals.get(other)?.status === 'active')) && ids.every(unit => spec.kind === 'rally' || spec.kind === 'transport' ? !this.formations.ownerOf(unit) : this.formations.ownerOf(unit) === spec.formationId))
+      const stoppedIds = spec.kind === 'relocate' ? [goal.facts.relocation?.unitId ?? spec.unitId].filter(id => snap.self.some(unit => unit.id === id)) : spec.kind === 'attack' ? this.attackMembers(spec, snap).filter(id => !goal.facts.attack?.members.some(member => member.unitId === id && member.phase === 'fired')) : ids
+      if (stoppedIds.length) await this.deps.submit([{ kind: 'stop', unitIds: stoppedIds }], snap, () => this.sessionKey === snap.sessionKey && goal.status === 'cancelled' && this.goals.get(id) === goal && (program.owner.kind === 'global' || !program.activeGoalIds.some(other => other !== id && this.goals.get(other)?.status === 'active')) && stoppedIds.every(unit => spec.kind === 'rally' || spec.kind === 'transport' || spec.kind === 'relocate' || (spec.kind === 'mining' || spec.kind === 'attack') && !spec.formationId ? !this.formations.ownerOf(unit) : this.formations.ownerOf(unit) === spec.formationId))
     }
     for (const [queue, owner] of this.pausedQueues) {
       if (owner !== id || !snap) continue
@@ -382,6 +429,7 @@ export class TaskRuntime {
     await Promise.all(goals.map(g => this.cancelGoal(g, `${program.id} 脚本已停止`)))
   }
   pause(id: string): void {
+    this.recovery.reset(id)
     this.cancelCommand(id)
     const program = this.programs.get(id)
     if (program) {
@@ -390,6 +438,7 @@ export class TaskRuntime {
     }
   }
   resume(id: string): void {
+    this.recovery.reset(id)
     this.cancelCommand(id)
     const program = this.programs.get(id)
     if (program?.script && program.status === 'paused') { program.status = 'active'; program.stats.errors = 0; program.generation++ }
@@ -400,7 +449,7 @@ export class TaskRuntime {
     for (const goal of this.goals.values()) {
       const spec = goal.activeSpec ?? goal.spec
       if (['cancelled', 'completed', 'partial', 'failed'].includes(goal.status)) continue
-      const members = spec.kind === 'rally' || spec.kind === 'transport' ? spec.unitIds : spec.kind === 'formation' ? spec.request.kind === 'dissolveFormation' ? this.formations.membersOf(spec.request.formationId) : spec.request.unitIds : spec.kind === 'reinforce' ? this.latest?.self.filter(u => u.name === spec.name && ((this.formations.ownerOf(u.id) ?? null) === spec.source || this.formations.ownerOf(u.id) === spec.formationId)).map(u => u.id) ?? [] : []
+      const members = spec.kind === 'relocate' ? [goal.facts.relocation?.unitId ?? spec.unitId] : spec.kind === 'attack' ? this.latest ? this.attackMembers(spec, this.latest) : spec.unitIds : spec.kind === 'rally' || spec.kind === 'transport' || spec.kind === 'mining' ? spec.unitIds : spec.kind === 'formation' ? spec.request.kind === 'dissolveFormation' ? this.formations.membersOf(spec.request.formationId) : spec.request.unitIds : spec.kind === 'reinforce' ? this.latest?.self.filter(u => u.name === spec.name && ((this.formations.ownerOf(u.id) ?? null) === spec.source || this.formations.ownerOf(u.id) === spec.formationId)).map(u => u.id) ?? [] : []
       if (members.some(id => ids.includes(id))) cancel.push(spec.id)
     }
     await Promise.all([...owners].map(id => this.stop(id)).concat(cancel.map(id => this.cancelGoal(id))))
@@ -422,6 +471,23 @@ export class TaskRuntime {
   private goalConstraints(spec: GoalSpec, snap: Snapshot): GoalConstraints {
     const base: GoalConstraints = { allowedUnitIds: [], enemyIds: snap.enemies.map(u => u.id), mapWidth: snap.mapWidth, mapHeight: snap.mapHeight, allowedActions: [] }
     const alive = (ids: number[]) => ids.filter(id => snap.self.some(u => u.id === id) && !this.locked(id))
+    if (spec.kind === 'attack') {
+      const planned = this.attackPlan(spec, snap)
+      return { ...base, allowedUnitIds: planned.view.readyIds, allowedActions: ['attack', 'move', 'attackMove', 'stop'], aircraftIds: planned.state.members.filter(member => member.aircraft).map(member => member.unitId), enemyIds: planned.view.targets.map(unit => unit.id), region: { name: '攻击与返航路径', x1: 0, y1: 0, x2: snap.mapWidth - 1, y2: snap.mapHeight - 1 } }
+    }
+    if (spec.kind === 'mining') {
+      const planned = this.miningPlan(spec, snap)
+      return { ...base, allowedUnitIds: this.miningMembers(spec, snap), allowedActions: ['move', 'gather'], miningActions: planned.view.actions, region: { name: '采矿及返厂路径', x1: 0, y1: 0, x2: snap.mapWidth - 1, y2: snap.mapHeight - 1 } }
+    }
+    if (spec.kind === 'relocate') {
+      const state = this.goals.get(spec.id)?.facts.relocation ?? initialRelocation(spec, snap)
+      const view = relocationView(spec, state, snap)
+      return { ...base, allowedUnitIds: view.action ? alive([state.unitId]) : [], allowedActions: view.action ? [view.action.kind] : [], ...(view.action ? { relocationAction: view.action } : {}), region: { name: '基地搬迁路径', x1: 0, y1: 0, x2: snap.mapWidth - 1, y2: snap.mapHeight - 1 } }
+    }
+    if (spec.kind === 'production' && spec.afterGoalId) {
+      const dependency = this.goals.get(spec.afterGoalId)
+      if (dependency?.status !== 'completed') return { ...base, allowedProduce: [], allowedPlace: [], produceRemaining: {}, blocked: `等待基地搬迁完成${dependency && ['failed', 'partial', 'cancelled'].includes(dependency.status) ? `（搬迁已${dependency.status === 'cancelled' ? '取消' : '失败'}，未在旧址建造）` : dependency ? '' : '（搬迁目标尚未绑定）'}` }
+    }
     if (spec.kind === 'transport') return { ...base, allowedUnitIds: alive(spec.unitIds).filter(id => !this.formations.ownerOf(id)), allowedActions: ['enterTransport'], friendlyTargetIds: snap.self.filter(unit => unit.id === spec.transportId && unit.transport && unit.transport.occupied < unit.transport.capacity).map(unit => unit.id) }
     if (spec.kind === 'repair') {
       const view = this.repairPlan(spec, snap).view
@@ -441,6 +507,14 @@ export class TaskRuntime {
       const quantity = desired?.kind === 'production' ? Math.min(spec.quantity, desired.quantity) : spec.quantity
       const progress = productionProgress({ ...spec, quantity }, this.production, snap)
       const allowedPlace = this.production.filter(r => r.building && !r.placed && r.state !== 'rejected' && (r.name === spec.target ? r.goalId === spec.id : spec.prerequisites.includes(r.name))).map(r => r.name)
+      const placements: NonNullable<GoalConstraints['placements']> = {}
+      const placementRegions: NonNullable<GoalConstraints['placementRegions']> = {}
+      if (spec.placementRegion) placementRegions[spec.target] = spec.placementRegion
+      for (const name of allowedPlace) {
+        const record = this.production.find(r => r.building && !r.placed && r.state !== 'rejected' && r.name === name && (name === spec.target ? r.goalId === spec.id : spec.prerequisites.includes(name)))
+        const direction = record?.placement?.directions[record.observedIds.length]
+        if (record?.placement && direction) placements[name] = { id: `${record.id}:${record.observedIds.length}`, anchor: record.placement.anchor, direction }
+      }
       const productionQueueTypes = { ...Object.fromEntries(spec.prerequisites.map(name => [name, 0])), [spec.target]: spec.targetType === 2 ? 0 : spec.targetType === 3 ? 2 : spec.targetType === 1 ? 4 : 3, ...spec.queueTypes }
       const queueSpace: Record<number, number> = {}
       for (const queue of snap.production?.queues ?? []) {
@@ -449,10 +523,13 @@ export class TaskRuntime {
       }
       const members = spec.formationId ? alive(progress.observed[spec.target] ?? []).filter(id => !this.formations.ownerOf(id)) : []
       const exists = spec.formationId && this.formations.list().some(f => f.id === spec.formationId)
-      return { ...base, allowedProduce: [...spec.prerequisites, spec.target], allowedPlace, productionQueueTypes, queueSpace, produceRemaining: progress.remaining, allowedQueueTypes: spec.queues, resumableQueueTypes: [...this.pausedQueues].filter(([, id]) => id === spec.id).map(([q]) => q),
+      return { ...base, allowedProduce: [...spec.prerequisites, spec.target], allowedPlace, placements, placementRegions, productionQueueTypes, queueSpace, produceRemaining: progress.remaining, allowedQueueTypes: spec.queues, resumableQueueTypes: [...this.pausedQueues].filter(([, id]) => id === spec.id).map(([q]) => q),
         ...(spec.formationId ? { management: { kind: exists ? 'transferUnits' as const : 'createFormation' as const, formationId: spec.formationId, allowedUnitIds: members, maxUnits: members.length } } : {}) }
     }
-    if (spec.kind === 'rally') return { ...base, allowedUnitIds: alive(spec.unitIds).filter(id => !this.formations.ownerOf(id)), allowedActions: ['move', 'stop'], region: { name: '集结路径', x1: 0, y1: 0, x2: snap.mapWidth - 1, y2: snap.mapHeight - 1 }, destination: { x: spec.x, y: spec.y } }
+    if (spec.kind === 'rally') {
+      const desired = this.goals.get(spec.id)?.spec
+      return { ...base, allowedUnitIds: alive(spec.unitIds).filter(id => !this.formations.ownerOf(id) && (desired?.kind !== 'rally' || desired.unitIds.includes(id))), allowedActions: ['move', 'stop'], region: { name: '集结路径', x1: 0, y1: 0, x2: snap.mapWidth - 1, y2: snap.mapHeight - 1 }, destination: { x: spec.x, y: spec.y } }
+    }
     if (spec.kind === 'formation') {
       const r = spec.request
       const ids = r.kind === 'dissolveFormation' ? this.formations.membersOf(r.formationId) : r.unitIds
@@ -475,6 +552,25 @@ export class TaskRuntime {
     return planRepairs(spec, snap, members, previous, waiting, spec.followFormationId ? this.formations.membersOf(spec.followFormationId) : undefined)
   }
 
+  private miningMembers(spec: import('@ra2c/contracts').MiningGoal, snap: Snapshot): number[] {
+    const desired = this.goals.get(spec.id)?.spec
+    return spec.unitIds.filter(id => snap.self.some(unit => unit.id === id) && !this.locked(id) && (this.formations.ownerOf(id) ?? undefined) === spec.formationId && (desired?.kind !== 'mining' || desired.unitIds.includes(id)))
+  }
+  private miningPlan(spec: import('@ra2c/contracts').MiningGoal, snap: Snapshot) {
+    return planMining(spec, snap, this.miningMembers(spec, snap), this.goals.get(spec.id)?.facts.mining ?? initialMining())
+  }
+  private attackMembers(spec: import('@ra2c/contracts').AttackGoal, snap: Snapshot): number[] {
+    const desired = this.goals.get(spec.id)?.spec
+    return snap.self.filter(unit => !this.locked(unit.id) && (this.formations.ownerOf(unit.id) ?? undefined) === spec.formationId
+      && (spec.dynamicNames ? spec.dynamicNames.includes(unit.name) && !!(unit.primaryWeapon || unit.secondaryWeapon) : spec.unitIds.includes(unit.id) && (desired?.kind !== 'attack' || desired.unitIds.includes(unit.id)))).map(unit => unit.id)
+  }
+  private attackPlan(spec: import('@ra2c/contracts').AttackGoal, snap: Snapshot) {
+    const desired = this.goals.get(spec.id)?.spec
+    const retained = desired?.kind === 'attack' ? desired.unitIds : spec.unitIds
+    const preparing = spec.preparationGoalIds.some(id => { const goal = this.goals.get(id); return goal && ['pending', 'active'].includes(goal.status) })
+    return planAttack(spec, snap, this.attackMembers(spec, snap), this.goals.get(spec.id)?.facts.attack ?? initialAttack(), preparing, retained)
+  }
+
   private movementArrival(spec: GoalSpec, snap: Snapshot) {
     const destination = spec.kind === 'combat' ? spec.route?.[this.goals.get(spec.id)?.facts.routeIndex ?? 0] ?? spec.destination
       : spec.kind === 'rally' ? { x: spec.x, y: spec.y } : undefined
@@ -495,8 +591,14 @@ export class TaskRuntime {
       const currentSpec = spec.kind === 'combat' && spec.route ? { ...spec, destination: spec.route[Math.min(facts.routeIndex ?? 0, spec.route.length - 1)]! } : spec
       const view: GoalView = { spec: currentSpec, unitIds: constraints.management?.allowedUnitIds ?? constraints.allowedUnitIds, produceRemaining: constraints.produceRemaining ?? {}, submitted: progress?.sent ?? {}, observed: progress?.observed ?? {}, uncertain: progress?.uncertain ?? [], lossRatio: facts.lossRatio, retreatActive: facts.retreatTriggered }
       const arrival = this.movementArrival(spec, snap)
+      if (spec.kind === 'relocate') view.relocation = relocationView(spec, facts.relocation ?? initialRelocation(spec, snap), snap)
       if (arrival) view.arrival = arrival
       if (spec.kind === 'repair') view.repair = this.repairPlan(spec, snap).view
+      if (spec.kind === 'attack') view.attack = this.attackPlan(spec, snap).view
+      if (spec.kind === 'mining') {
+        view.mining = this.miningPlan(spec, snap).view
+        if (!view.mining.knownOre && !view.mining.actions.length && !view.mining.assigned && snap.self.filter(unit => view.unitIds.includes(unit.id)).every(unit => unit.isIdle)) view.blocked = view.mining.detail
+      }
       if (spec.kind === 'explore' && this.exploration.progress.has(spec.explorationId)) {
         view.exploration = this.exploration.view(spec)
         if (!view.unitIds.length) view.blocked = '等待侦察成员实际交接就绪'
@@ -505,13 +607,17 @@ export class TaskRuntime {
         const missingPrerequisites = snap.production?.available.includes(spec.target) ? [] : spec.prerequisites.filter(name => !snap.self.some(unit => unit.type === 2 && unit.name === name))
         view.productionPlan = {
           missingPrerequisites,
+          unmetConditions: snap.production?.available.includes(spec.target) ? [] : (spec.unlockConditions ?? []).filter(condition => !condition.requiresExisting || !snap.self.some(unit => unit.type === 2 && unit.name === condition.name)),
           pendingPrerequisites: missingPrerequisites.filter(name => (progress.sent[name] ?? 0) > (progress.observed[name]?.length ?? 0)),
           availableToProduce: (constraints.allowedProduce ?? []).filter(name => (constraints.produceRemaining?.[name] ?? 0) > 0 && snap.production?.available.includes(name) && (constraints.queueSpace?.[constraints.productionQueueTypes?.[name] ?? 0] ?? 1) > 0),
+          ...(progress.placement ? { placement: { ...progress.placement, ...(constraints.placements?.[spec.target] ? { next: constraints.placements[spec.target] } : {}) } } : {}),
           readyToPlace: (constraints.allowedPlace ?? []).filter(name => snap.production?.queues.some(queue => queue.status === 3 && queue.items.some(item => item.name === name))),
         }
+        if (spec.unlockConditions !== undefined && !snap.production?.available.includes(spec.target) && !missingPrerequisites.length && !view.productionPlan.unmetConditions?.length && (constraints.produceRemaining?.[spec.target] ?? 0) > 0 && !view.productionPlan.availableToProduce.length && !view.productionPlan.readyToPlace.length) view.productionPlan.unmetConditions = [{ name: spec.target, reason: `${spec.target} 前置建筑已齐，但游戏当前未开放生产，等待生产设施或科技条件变化` }]
       }
-      const blocked = progress?.blocked ?? facts.blocked
+      const blocked = progress?.blocked ?? (facts.placementBlocked || spec.kind === 'mining' || spec.kind === 'attack' ? undefined : facts.blocked)
       if (blocked) view.blocked = blocked
+      if (constraints.blocked) view.blocked = constraints.blocked
       if (spec.kind === 'combat' && !this.formations.list().some(formation => formation.id === spec.formationId)) view.blocked = `等待 ${spec.formationId} 编队完成`
       if (constraints.management) view.maxUnits = constraints.management.maxUnits
       if (constraints.management?.exact && constraints.management.allowedUnitIds.length !== constraints.management.maxUnits) view.blocked = '成员或来源已变化，请重新下达管理命令'
@@ -525,6 +631,12 @@ export class TaskRuntime {
 
   private observe(snap: Snapshot): void {
     const converted = new Set<number>()
+    for (const goal of this.goals.values()) if (goal.status === 'active' && goal.activeSpec?.kind === 'relocate' && goal.facts.relocation) {
+      const id = observeRelocation(goal.activeSpec, goal.facts.relocation, snap, this.programs.get(goal.ownerId)?.status === 'paused')
+      if (id !== undefined) converted.add(id)
+      if (goal.facts.relocation.phase === 'completed') this.complete(goal)
+      else if (goal.facts.relocation.phase === 'failed') { goal.status = 'failed'; goal.facts.outcomeDetail = goal.facts.relocation.detail }
+    }
     for (const goal of this.goals.values()) {
       const spec = goal.activeSpec
       if (spec?.kind !== 'combat') continue
@@ -551,7 +663,23 @@ export class TaskRuntime {
     for (const goal of this.goals.values()) {
       if (goal.status !== 'active' || !goal.activeSpec) continue
       const spec = goal.activeSpec
-      if (spec.kind === 'repair') {
+      if (spec.kind === 'attack') {
+        const planned = this.attackPlan(spec, snap)
+        goal.facts.attack = planned.state
+        if (this.programs.get(goal.ownerId)?.status === 'paused') for (const member of planned.state.members) if (member.acceptedAt !== undefined) member.acceptedAt = snap.tick
+        if (planned.finished) {
+          if (planned.outcome === 'completed') this.complete(goal)
+          else { goal.status = planned.outcome; goal.facts.done = true; goal.facts.outcomeDetail = planned.view.detail }
+        }
+      } else if (spec.kind === 'mining') {
+        const planned = this.miningPlan(spec, snap)
+        goal.facts.mining = planned.state
+        if (this.programs.get(goal.ownerId)?.status === 'paused') for (const job of planned.state.jobs) { if (job.lastSentTick !== undefined) job.lastSentTick = snap.tick; if (job.idleSince !== undefined) job.idleSince = snap.tick }
+        if (!planned.view.total) {
+          goal.status = spec.unitIds.some(id => snap.self.some(unit => unit.id === id)) ? 'cancelled' : 'failed'
+          goal.facts.cancelReason = goal.facts.outcomeDetail = '矿车已损失或交给其他控制对象，未追加生产'
+        }
+      } else if (spec.kind === 'repair') {
         const planned = this.repairPlan(spec, snap)
         // 暂停时不积累停滞时钟，恢复后重新观察位置与血量。
         if (this.programs.get(goal.ownerId)?.status === 'paused') for (const job of planned.state.jobs) job.progressTick = snap.tick
@@ -565,7 +693,11 @@ export class TaskRuntime {
       } else if (spec.kind === 'production') {
         const progress = productionProgress(spec, this.production, snap)
         const assigned = !spec.formationId || (progress.observed[spec.target] ?? []).filter(id => snap.self.some(u => u.id === id)).every(id => this.formations.ownerOf(id) === spec.formationId && !this.locked(id))
-        if (!spec.maintainPower && assigned && (progress.observed[spec.target]?.length ?? 0) >= spec.quantity && !progress.uncertain.includes(spec.target)) this.complete(goal)
+        if (!spec.maintainPower && assigned && (progress.observed[spec.target]?.length ?? 0) >= spec.quantity && !progress.uncertain.includes(spec.target)) {
+          if (progress.placement && progress.placement.completed < spec.quantity) {
+            goal.status = 'partial'; goal.facts.done = true; goal.facts.outcomeDetail = `已生产${spec.quantity}座，按指定${spec.placementRegion ? '分区及位置' : '方位'}建成${progress.placement.completed}座；位置未达标的建筑：${progress.placement.mismatchedIds.join('、') || '尚未确认'}，未额外补造`
+          } else this.complete(goal)
+        }
       } else if (spec.kind === 'deploy') {
         if (goal.facts.members.some(m => snap.self.some(u => u.name === spec.target && Math.hypot(u.rx - m.rx, u.ry - m.ry) <= 3))) this.complete(goal)
       } else if (spec.kind === 'formation' && spec.request.kind !== 'dissolveFormation') {
@@ -599,6 +731,7 @@ export class TaskRuntime {
         this.cancelAllCommands()
         this.programs.clear(); this.goals.clear(); this.formations.clear()
         this.exploration.clear(); this.skillRuns.clear()
+        this.recovery.clear()
         this.production.length = 0; this.handoffs.length = 0; this.seenUnitIds.clear(); this.pausedQueues.clear()
       }
       this.session = snap.session; this.sessionKey = snap.sessionKey
@@ -620,7 +753,15 @@ export class TaskRuntime {
       if (this.handoffs.length) await this.flushHandoffs(snap)
       for (const program of this.programs.values()) {
         if (this.latest !== snap) break
-        if (program.status === 'active' && program.script) await this.step(program, snap)
+        if (program.status === 'active' && program.script) {
+          await this.step(program, snap)
+          if (this.latest !== snap || program.status !== 'active' || this.hasPendingCommand(program.id)) continue
+          const frame = this.frame(program, this.activeSpecs(program), snap, true)
+          const waiting = new Set(this.handoffs.map(handoff => handoff.goalId))
+          for (const goal of frame.snapshot.control!.goals) if (this.goals.get(goal.spec.id)?.facts.placementBlocked) waiting.add(goal.spec.id)
+          const stalled = this.recovery.observe(program.id, this.recoveryKey(program), snap, frame.snapshot.control!.goals, frame.constraints.goals!, waiting)
+          if (stalled) this.deps.onProgramStalled?.(program.id, stalled)
+        }
       }
     }
   }
@@ -679,6 +820,7 @@ export class TaskRuntime {
   }
 
   private async fault(program: ProgramState, error: string, snap: Snapshot): Promise<void> {
+    this.recovery.trace(program.id, this.recoveryKey(program), snap.tick, { kind: 'error', error })
     program.stats.errors++; program.stats.lastError = error
     if (program.stats.errors < 3) return
     program.status = 'paused'; program.generation++
@@ -708,6 +850,7 @@ export class TaskRuntime {
     const outcome = await this.deps.executor.run(script.code, frame.snapshot, program.memory, frame.constraints)
     if (!valid()) return
     program.stats.steps++
+    this.recovery.trace(program.id, this.recoveryKey(program), snap.tick, { kind: 'script', actions: outcome.actions, ...(!outcome.ok ? { error: outcome.error } : {}) })
     if (!outcome.ok) { await this.fault(program, outcome.error ?? '执行失败', snap); return }
     outcome.actions = liveScriptActions(outcome.actions, frame.constraints, frame.snapshot)
     const outputError = validateScriptActions(outcome.actions, frame.constraints, frame.snapshot)
@@ -736,10 +879,18 @@ export class TaskRuntime {
         // 同一句话明确要求的建筑也可能先被其他目标当作前置生产；统一记到该建设目标，避免换代码后再造一遍。
         const target = spec.kind === 'production' && request.name !== spec.target ? [...this.goals.values()].find(candidate => {
           const desired = candidate.activeSpec ?? candidate.spec
-          return !['cancelled', 'completed', 'partial', 'failed'].includes(candidate.status) && desired.kind === 'production' && !desired.maintainPower && desired.target === request.name
+          return !['cancelled', 'completed', 'partial', 'failed'].includes(candidate.status) && desired.kind === 'production' && !desired.maintainPower && !desired.placement && !desired.placementRegion && !desired.afterGoalId && desired.target === request.name
             && (productionProgress(desired, this.production, snap).remaining[request.name] ?? 0) >= request.quantity
         }) : undefined
         record = { id: randomUUID(), goalId: target?.spec.id ?? item.goalId, name: request.name, quantity: request.quantity, building: spec.kind === 'production' && (request.name !== spec.target || spec.targetType === 2), queueType: fresh.constraints.goals![item.goalId]!.productionQueueTypes![request.name]!, state: 'reserved', observedIds: [], placed: false }
+        const ownerSpec = target?.activeSpec ?? target?.spec ?? spec
+        if (ownerSpec.kind === 'production' && ownerSpec.target === request.name && ownerSpec.placementRegion) record.placementRegion = structuredClone(ownerSpec.placementRegion)
+        if (ownerSpec.kind === 'production' && ownerSpec.target === request.name && ownerSpec.placement) {
+          const submitted = this.production.filter(r => r.goalId === record!.goalId && r.name === request.name && r.state !== 'rejected').reduce((n, r) => n + r.quantity, 0)
+          record.placement = { anchor: structuredClone(ownerSpec.placement.anchor), directions: Array.from({ length: request.quantity }, (_, n) => ownerSpec.placement!.directions[Math.min(submitted + n, ownerSpec.placement!.directions.length - 1)]!) }
+          const base = ownerSpec.afterGoalId ? this.goals.get(ownerSpec.afterGoalId)?.facts.relocation : undefined
+          if (base && ownerSpec.placement.anchor.name === '基地') record.placement.anchor = { ...base.position, name: '基地' }
+        }
         this.production.push(record)
         try { await this.deps.checkpoint() }
         catch (err) { record.state = 'rejected'; goal.facts.blocked = `生产预留保存失败: ${String(err)}`; return }
@@ -748,8 +899,16 @@ export class TaskRuntime {
       const guard = () => valid() && goal.status === 'active' && goal.activeSpec === this.goals.get(item.goalId)?.activeSpec
       try {
         const results = await this.deps.submit([request], snap, guard)
+        if (goal.activeSpec.kind === 'attack') recordAttack(goal.facts.attack ??= initialAttack(), request, results, snap)
+        if (goal.activeSpec.kind === 'mining') recordMiningResult(goal.facts.mining ??= initialMining(), request, results, snap)
+        if (goal.activeSpec.kind === 'relocate' && goal.facts.relocation) {
+          recordRelocationResult(goal.activeSpec, goal.facts.relocation, request, results, snap.tick)
+          if (results.some(result => result.reason === 'deploy-rejected')) continue
+        }
+        this.recovery.trace(program.id, this.recoveryKey(program), snap.tick, { goalId: item.goalId, request, results })
         if (request.kind === 'place' && results.length && results.every(result => !result.ok && result.submitted === 0 && ['no-spot', 'cannot-place'].includes(result.reason ?? ''))) {
-          goal.facts.blocked = `${request.name} 暂无可放置位置，保留就绪建筑并继续重试`
+          goal.facts.placementBlocked = true
+          goal.facts.blocked = request.placement ? `${request.name} 在${request.placement.anchor.name ?? '参照点'}${directionLabels[request.placement.direction]}暂无合法位置，保留就绪建筑并继续尝试该方向` : `${request.name} 暂无可放置位置，保留就绪建筑并继续重试`
           program.stats.rejected++
           continue
         }
@@ -765,8 +924,10 @@ export class TaskRuntime {
         if (request.kind === 'pauseQueue' && snap.production?.queues.some(q => q.type === request.queueType && q.status !== 2)) this.pausedQueues.set(request.queueType, item.goalId)
         if (request.kind === 'resumeQueue') this.pausedQueues.delete(request.queueType)
         delete goal.facts.blocked
+        delete goal.facts.placementBlocked
         program.stats.actions++
       } catch (err) {
+        this.recovery.trace(program.id, this.recoveryKey(program), snap.tick, { goalId: item.goalId, request, error: String(err) })
         if (record) record.state = 'unknown'
         goal.facts.blocked = `提交结果不确定: ${String(err).slice(0, 120)}`
         return

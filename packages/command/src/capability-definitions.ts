@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 export const CAPABILITY_DIRECTORY = new URL('../../../prompts/capabilities/', import.meta.url)
 export interface ParameterDefinition {
-  type: 'string' | 'integer' | 'number' | 'boolean' | 'integer[]'
+  type: 'string' | 'integer' | 'number' | 'boolean' | 'integer[]' | 'string[]'
   description: string
   required?: boolean
   default?: unknown
@@ -31,12 +31,13 @@ export function parameterValue(value: unknown, rule: ParameterDefinition, locati
   if (rule.allowAll && value === 'all') return value
   const valid = rule.type === 'string' ? typeof value === 'string' && !!value.trim()
     : rule.type === 'boolean' ? typeof value === 'boolean'
+      : rule.type === 'string[]' ? Array.isArray(value) && value.every(item => typeof item === 'string' && !!item.trim() && (!rule.enum || rule.enum.includes(item)))
       : rule.type === 'integer[]' ? Array.isArray(value) && value.every(Number.isSafeInteger)
         : typeof value === 'number' && Number.isFinite(value) && (rule.type !== 'integer' || Number.isSafeInteger(value))
   if (!valid) throw new Error(`${location} 参数类型应为 ${rule.type}${rule.allowAll ? ' 或 all' : ''}`)
   if (typeof value === 'number' && ((rule.min !== undefined && value < rule.min) || (rule.max !== undefined && value > rule.max))) throw new Error(`${location} 参数超出允许范围`)
   if (typeof value === 'string' && rule.enum && !rule.enum.includes(value)) throw new Error(`${location} 参数须为 ${rule.enum.join('|')}`)
-  if (Array.isArray(value) && ((rule.minItems !== undefined && value.length < rule.minItems) || (rule.maxItems !== undefined && value.length > rule.maxItems) || value.some(n => (rule.min !== undefined && n < rule.min) || (rule.max !== undefined && n > rule.max)))) throw new Error(`${location} 数组长度或元素超出允许范围`)
+  if (Array.isArray(value) && ((rule.minItems !== undefined && value.length < rule.minItems) || (rule.maxItems !== undefined && value.length > rule.maxItems) || (rule.type === 'integer[]' && value.some(n => (rule.min !== undefined && n < rule.min) || (rule.max !== undefined && n > rule.max))))) throw new Error(`${location} 数组长度或元素超出允许范围`)
   return structuredClone(value)
 }
 
@@ -55,14 +56,14 @@ export function readCapabilityDocuments(directory = CAPABILITY_DIRECTORY): Capab
       if (file !== `${value.id}.md` || seen.has(value.id)) throw new Error(`能力文件名不匹配或 ID 重复：${value.id}`)
       seen.add(value.id)
       for (const [name, raw] of Object.entries(value.parameters)) {
-        if (!/^[a-zA-Z]\w*$/.test(name) || !object(raw) || !['string', 'integer', 'number', 'boolean', 'integer[]'].includes(String(raw.type)) || typeof raw.description !== 'string' || !raw.description.trim()) throw new Error(`参数定义非法：${name}`)
+        if (!/^[a-zA-Z]\w*$/.test(name) || !object(raw) || !['string', 'integer', 'number', 'boolean', 'integer[]', 'string[]'].includes(String(raw.type)) || typeof raw.description !== 'string' || !raw.description.trim()) throw new Error(`参数定义非法：${name}`)
         const allowed = ['type', 'description', 'required', 'default', 'enum', 'min', 'max', 'minItems', 'maxItems', 'allowAll']
         if (Object.keys(raw).some(key => !allowed.includes(key))) throw new Error(`参数 ${name} 含不支持的字段`)
         if (['required', 'allowAll'].some(key => raw[key] !== undefined && typeof raw[key] !== 'boolean')) throw new Error(`参数 ${name} 的开关须为 boolean`)
         if (raw.allowAll && raw.type !== 'integer') throw new Error(`参数 ${name} 仅 integer 支持 allowAll`)
-        if (raw.enum !== undefined && (raw.type !== 'string' || !Array.isArray(raw.enum) || !raw.enum.length || raw.enum.some(item => typeof item !== 'string' || !item))) throw new Error(`参数 ${name} 的枚举非法`)
+        if (raw.enum !== undefined && (!['string', 'string[]'].includes(String(raw.type)) || !Array.isArray(raw.enum) || !raw.enum.length || raw.enum.some(item => typeof item !== 'string' || !item))) throw new Error(`参数 ${name} 的枚举非法`)
         if (['min', 'max', 'minItems', 'maxItems'].some(key => raw[key] !== undefined && (typeof raw[key] !== 'number' || !Number.isFinite(raw[key])))) throw new Error(`参数 ${name} 的范围非法`)
-        if ((typeof raw.min === 'number' && typeof raw.max === 'number' && raw.min > raw.max) || ['minItems', 'maxItems'].some(key => raw[key] !== undefined && (raw.type !== 'integer[]' || !Number.isSafeInteger(raw[key]) || Number(raw[key]) < 0)) || (typeof raw.minItems === 'number' && typeof raw.maxItems === 'number' && raw.minItems > raw.maxItems)) throw new Error(`参数 ${name} 的范围非法`)
+        if ((typeof raw.min === 'number' && typeof raw.max === 'number' && raw.min > raw.max) || ['minItems', 'maxItems'].some(key => raw[key] !== undefined && (!['integer[]', 'string[]'].includes(String(raw.type)) || !Number.isSafeInteger(raw[key]) || Number(raw[key]) < 0)) || (typeof raw.minItems === 'number' && typeof raw.maxItems === 'number' && raw.minItems > raw.maxItems)) throw new Error(`参数 ${name} 的范围非法`)
         if ('default' in raw) parameterValue(raw.default, raw as unknown as ParameterDefinition, name)
       }
       if (!source.replace(blocks[0]![0], '').trim()) throw new Error('能力缺少行为说明')

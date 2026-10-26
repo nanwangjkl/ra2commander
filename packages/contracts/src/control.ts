@@ -29,6 +29,30 @@ export interface CombatGoal extends GoalBase {
   attackRegion?: import('./spatial.ts').TargetRegion
 }
 export interface DeployGoal extends GoalBase { kind: 'deploy'; unitIds: number[]; target: string }
+export interface AttackGoal extends GoalBase {
+  kind: 'attack'
+  unitIds: number[]
+  aircraftIds: number[]
+  formationId?: string
+  /** 编队仍在生产/交接时，从真实成员中继续接入本次选中的兵种。 */
+  dynamicNames?: string[]
+  preparationGoalIds: string[]
+  ammoCapacity: Record<string, number>
+  targetKind: 'enemies' | 'base' | 'units' | 'buildings'
+  targetNames: string[]
+  targetId?: number
+  targetRegion?: import('./spatial.ts').TargetRegion
+}
+export interface RelocateGoal extends GoalBase {
+  kind: 'relocate'
+  unitId: number
+  origin: { x: number; y: number }
+  vehicleName: string
+  yardName: string
+  destination: { x: number; y: number; name?: string }
+  candidates: Array<{ x: number; y: number }>
+  targetRegion?: import('./spatial.ts').TargetRegion
+}
 export interface ProductionGoal extends GoalBase {
   kind: 'production'
   target: string
@@ -41,6 +65,11 @@ export interface ProductionGoal extends GoalBase {
   /** 明确要求持续补电时，按实时电力及未完成建设的电耗计算目标总量。 */
   maintainPower?: { reserve: number; output: number }
   powerCosts?: Record<string, number>
+  /** 只在原话指定方位时设置；顺序对应本目标逐座新增建筑。 */
+  placement?: import('./placement.ts').BuildingPlacement
+  placementRegion?: import('./spatial.ts').TargetRegion
+  afterGoalId?: string
+  unlockConditions?: Array<{ name: string; reason: string; requiresExisting?: boolean }>
 }
 export type FormationRequest =
   | { kind: 'createFormation'; formationId: string; unitIds: number[]; force?: boolean }
@@ -57,13 +86,20 @@ export interface ReinforceGoal extends GoalBase {
 }
 export interface RallyGoal extends GoalBase { kind: 'rally'; unitIds: number[]; x: number; y: number }
 export interface TransportGoal extends GoalBase { kind: 'transport'; unitIds: number[]; transportId: number }
+export interface MiningGoal extends GoalBase {
+  kind: 'mining'
+  unitIds: number[]
+  formationId?: string
+  targetRegion: import('./spatial.ts').TargetRegion
+  destination: { x: number; y: number }
+}
 export interface RepairGoal extends GoalBase {
   kind: 'repair'; formationId: string; vehicleNames: string[]; engineerNames: string[]; tankNames: string[]
   preparationGoalIds: string[]; quantity?: number; targetId?: number; followFormationId?: string
   policy: { retryTicks: number; stallTicks: number }
 }
-export type GoalSpec = CombatGoal | ExploreGoal | DeployGoal | ProductionGoal | FormationGoal | ReinforceGoal | RallyGoal | TransportGoal | RepairGoal
-export const goalOwner = (goal: GoalSpec): ScriptOwner => goal.kind === 'combat' || goal.kind === 'explore' || goal.kind === 'repair' ? { kind: 'formation', formationId: goal.formationId } : { kind: 'global' }
+export type GoalSpec = CombatGoal | AttackGoal | ExploreGoal | DeployGoal | RelocateGoal | ProductionGoal | FormationGoal | ReinforceGoal | RallyGoal | TransportGoal | MiningGoal | RepairGoal
+export const goalOwner = (goal: GoalSpec): ScriptOwner => goal.kind === 'combat' || goal.kind === 'explore' || goal.kind === 'repair' || (goal.kind === 'mining' || goal.kind === 'attack') && goal.formationId ? { kind: 'formation', formationId: goal.formationId! } : { kind: 'global' }
 
 export interface ScriptAction { goalId: string; request: ActionRequest | FormationRequest }
 /** 本步部队主体是否抵达目的地；宿主与脚本共用，不要求全队挤到同一点。 */
@@ -87,6 +123,9 @@ export interface GoalView {
   blocked?: string
   maxUnits?: number
   arrival?: ArrivalState
+  relocation?: { phase: 'packing' | 'moving' | 'deploying' | 'confirming' | 'completed' | 'failed'; unitId: number; destination: { x: number; y: number }; action?: ActionRequest; detail: string }
+  mining?: { actions: ActionRequest[]; knownOre: number; assigned: number; total: number; detail: string }
+  attack?: { readyIds: number[]; pendingIds: number[]; attackingIds: number[]; firedIds: number[]; lostIds: number[]; totalAircraft: number; groundIds: number[]; targets: import('./index.ts').SnapshotUnit[]; preparing: boolean; detail: string }
   exploration?: { seen: number; total: number; coverageRatio: number; regions: Array<{ id: string; name: string; seen: number; total: number; satisfied: boolean; deferred: boolean }>; targets: Array<{ unitId: number; x: number; y: number; regionId: string }> }
   repair?: {
     readyIds: number[]; assembling: Array<{ engineerId: number; vehicleId: number }>
@@ -98,6 +137,8 @@ export interface GoalView {
     pendingPrerequisites: string[]
     availableToProduce: string[]
     readyToPlace: string[]
+    unmetConditions?: Array<{ name: string; reason: string; requiresExisting?: boolean }>
+    placement?: { completed: number; total: number; mismatchedIds: number[]; next?: import('./placement.ts').PlacementSlot }
   }
 }
 export interface ControlFrame {
@@ -114,6 +155,10 @@ export interface ManagementConstraints {
   exact?: boolean
 }
 export interface GoalConstraints extends Omit<StepConstraints, 'goals'> {
+  blocked?: string
+  relocationAction?: ActionRequest
+  miningActions?: ActionRequest[]
+  aircraftIds?: number[]
   management?: ManagementConstraints
   destination?: { x: number; y: number }
 }

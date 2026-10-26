@@ -6,6 +6,28 @@ import type { GameCatalog } from './game-catalog.ts'
 /** 纠正已确认的编队/地域误解；原位替换，保留同句话各操作的先后关系。 */
 export function normalizeOperations(text: string, operations: CapabilityCall[], map?: MapRegionIndex, catalog?: GameCatalog): CapabilityCall[] {
   const raw = normalizeName(text)
+  // 已复现：模型为“所有飞机攻击”擅自建队，建队等待后又将攻击扩大到侦察队。
+  if (/(?:所有|全部|全体).*(?:飞机|战机|轰炸机)/.test(raw) && /攻击|轰炸|摧毁|消灭/.test(raw) && !/编入|编到|加入|建队|[一二三四五六七八九十\d]+队/.test(raw)) {
+    const airClause = raw.split(/[，,。；;\n]/).find(clause => /(?:所有|全部|全体).*(?:飞机|战机|轰炸机)/.test(clause) && /攻击|轰炸|摧毁|消灭/.test(clause)) ?? raw
+    const target = /基地/.test(airClause) ? 'base' as const : /建筑/.test(airClause) ? 'buildings' as const : /敌方单位|敌军单位/.test(airClause) ? 'units' as const : 'enemies' as const
+    const region = map?.scheme.regions.slice().sort((a, b) => b.name.length - a.name.length).find(region => [region.name, ...region.aliases].some(name => airClause.includes(normalizeName(name))))
+    const implicit = new Set(operations.flatMap(call => call.capability === 'formation.assign' && /aircraft|飞机|空军/.test(call.params.selector ?? '') ? [formationAlias(call.params.formationId)] : []))
+    let replaced = false
+    operations = operations.flatMap(call => {
+      if (call.capability === 'formation.assign' && /aircraft|飞机|空军/.test(call.params.selector ?? '')) return []
+      if (!['combat.attack', 'combat.attack-all', 'combat.clear-region'].includes(call.capability)) return [call]
+      if (call.capability === 'combat.attack' && !['combat', 'aircraft', '飞机', '空军'].includes(call.params.selector ?? 'combat')) return [call]
+      if ('formationId' in call.params && call.params.formationId && !implicit.has(formationAlias(call.params.formationId))) return [call]
+      if (call.capability === 'combat.attack' && ['aircraft', '飞机', '空军'].includes(call.params.selector ?? '')) {
+        const { formationId: _implicitFormation, ...params } = call.params
+        replaced = true
+        return [{ ...call, params }]
+      }
+      if (replaced) return []
+      replaced = true
+      return [{ capability: 'combat.attack' as const, params: { selector: 'aircraft', target, ...(region ? { regionName: region.name } : {}) } }]
+    })
+  }
   const match = raw.match(/(?:编入|编到|归入|加入)([\d一二三四五六七八九十两]+)队/) ?? raw.match(/([\d一二三四五六七八九十两]+)队/)
   const formationId = match ? `${chineseNumber(match[1]!)}队` : undefined
   if (!formationId) return operations
@@ -49,6 +71,14 @@ export function normalizeOperations(text: string, operations: CapabilityCall[], 
     const targetId = named ? `${chineseNumber(named[1]!)}队` : formationId
     if (patrolFormations.has(targetId)) continue
     const region = map?.scheme.regions.slice().sort((a, b) => b.name.length - a.name.length).find(region => [region.name, ...region.aliases].some(name => clause.includes(normalizeName(name))))
+    if (region && operations.some(call => call.capability === 'combat.attack' && call.params.formationId && formationAlias(call.params.formationId) === targetId)) {
+      operations = operations.flatMap(call => {
+        if (call.capability === 'combat.attack' && call.params.formationId && formationAlias(call.params.formationId) === targetId) return [{ ...call, params: { ...call.params, regionName: region.name } }]
+        if (['combat.move', 'combat.attack-all', 'combat.clear-region'].includes(call.capability) && 'formationId' in call.params && call.params.formationId && formationAlias(call.params.formationId) === targetId) return []
+        return [call]
+      })
+      continue
+    }
     if (region) replace(call => call.capability === 'combat.attack-all' ? !call.params.formationId || formationAlias(call.params.formationId) === targetId
       : (call.capability === 'combat.move' || call.capability === 'combat.clear-region') && formationAlias(call.params.formationId) === targetId,
     { capability: 'combat.clear-region', params: { formationId: targetId, regionName: region.name } })

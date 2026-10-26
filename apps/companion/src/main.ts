@@ -1,4 +1,5 @@
 import { ExplorationObserver } from './exploration.ts'
+import { MiningObserver } from './mining.ts'
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -166,6 +167,7 @@ async function main(): Promise<void> {
       return results
     },
     onProgramFaulted: id => controller.fault(id),
+    onProgramStalled: (id, reason) => controller.fault(id, reason),
     log: message => console.log(message),
   })
   controller = new ProgramController({
@@ -184,6 +186,8 @@ async function main(): Promise<void> {
   catch (err) { if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.log(`[companion] 未恢复旧状态：${String(err).slice(0, 180)}`) }
   let lastSessionKey = ''
   const explorationObserver = new ExplorationObserver()
+  const miningObserver = new MiningObserver()
+  let lastMiningWarning = 0
   let lastExplorationWarning = 0
   let commandContext: CommandContext | undefined
   let mapAttemptSession = ''
@@ -224,6 +228,9 @@ async function main(): Promise<void> {
       markDirty()
       if (commandContext) void explorationObserver.poll(commandContext).catch(error => {
         if (Date.now() - lastExplorationWarning > 10000) { lastExplorationWarning = Date.now(); console.log(`[companion] 地图观察暂不可用：${String(error).slice(0, 160)}`) }
+      })
+      if (commandContext) void miningObserver.poll(commandContext).catch(error => {
+        if (Date.now() - lastMiningWarning > 10000) { lastMiningWarning = Date.now(); console.log(`[companion] 矿格观察暂不可用：${String(error).slice(0, 160)}`) }
       })
       if (restored) commandLog.restoreCurrent(ROOT, runtime)
       commandLog.syncRuntime(runtime)

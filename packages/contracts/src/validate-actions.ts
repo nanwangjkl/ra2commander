@@ -5,12 +5,22 @@ import { inTargetRegion } from './spatial.ts'
 /** 清理过期动作，并按共享队列空位安排本步生产；结构、额度与边界仍严格校验。 */
 export function liveScriptActions(value: ScriptAction[], c: StepConstraints, snapshot?: Snapshot): ScriptAction[] {
   if (!Array.isArray(value) || value.length > (c.maxActions ?? 20)) return value
+  value = value.map(item => {
+    if (item?.request?.kind !== 'place') return item
+    const placement = c.goals?.[item.goalId]?.placements?.[item.request.name]
+    const placementRegion = c.goals?.[item.goalId]?.placementRegions?.[item.request.name]
+    if (!placement && !placementRegion) return item
+    const { x, y, placement: ignored, placementRegion: ignoredRegion, ...request } = item.request
+    return { ...item, request: { ...request, ...(placement ? { placement } : {}), ...(placementRegion ? { placementRegion } : {}) } }
+  })
   if (!c.ignoreInactiveGoals) return scheduleProduction(value, c, snapshot)
   const live = value.flatMap(item => {
     if (!item || typeof item.goalId !== 'string' || !item.request || typeof item.request !== 'object') return [item]
     const goal = c.goals?.[item.goalId]
     if (!goal) return []
+    if (goal.blocked) return []
     const action = item.request
+    if (goal.miningActions && !goal.miningActions.some(expected => sameMiningAction(action, expected))) return []
     if (action.kind === 'produce' && typeof action.name === 'string' && Number.isSafeInteger(action.quantity) && action.quantity > 0 && goal.produceRemaining?.[action.name] === 0) return []
     if (action.kind === 'attack' && Number.isSafeInteger(action.targetId) && !goal.enemyIds.includes(action.targetId)) return []
     if ((action.kind === 'repair' || action.kind === 'enterTransport') && Number.isSafeInteger(action.targetId) && !goal.friendlyTargetIds?.includes(action.targetId)) return []
@@ -41,6 +51,7 @@ function scheduleProduction(actions: ScriptAction[], c: StepConstraints, snapsho
   const requested = new Map<string, number>()
   for (const item of actions) {
     const goal = item && c.goals?.[item.goalId], action = item?.request
+    if (goal && action?.kind === 'place' && validateActions([action], goal, snapshot)) return actions
     if (!goal || action?.kind !== 'produce') continue
     // 先保留真正的输入/额度错误交给原校验，不用队列裁剪掩盖它们。
     if (validateActions([action], { ...goal, queueSpace: {} }, snapshot)) return actions
@@ -52,8 +63,14 @@ function scheduleProduction(actions: ScriptAction[], c: StepConstraints, snapsho
   for (const goal of Object.values(c.goals ?? {})) for (const [queue, space] of Object.entries(goal.queueSpace ?? {})) {
     remaining.set(Number(queue), Math.min(remaining.get(Number(queue)) ?? space, space))
   }
+  const placed = new Set<string>()
   return actions.flatMap(item => {
     const action = item?.request, goal = item && c.goals?.[item.goalId]
+    if (goal && action?.kind === 'place') {
+      // 明确建设目标和其他目标的共享前置可能指向同一座就绪建筑。
+      if (placed.has(action.name)) return []
+      placed.add(action.name)
+    }
     if (!goal || action?.kind !== 'produce') return [item]
     const queue = goal.productionQueueTypes?.[action.name], space = queue === undefined ? undefined : remaining.get(queue)
     if (space === undefined) return [item]
@@ -73,6 +90,18 @@ export function validateScriptActions(value: unknown, c: StepConstraints, snapsh
     const goal = c.goals?.[item.goalId]
     if (!goal) { if (c.ignoreInactiveGoals) continue; return '动作引用未生效目标' }
     const a = item.request
+    if (goal.blocked) return `目标尚不可执行：${goal.blocked}`
+    if ('unitIds' in a && Array.isArray(a.unitIds) && a.unitIds.some(id => goal.aircraftIds?.includes(id)) && a.kind !== 'attack') return '本次飞机出击只下达攻击，装弹和返航交给游戏处理'
+    if (goal.miningActions) {
+      if (!goal.miningActions.some(expected => sameMiningAction(a, expected))) return '采矿动作不属于本步矿格分配或正在打断忙碌成员'
+      const key = `${item.goalId}:miner:${'unitIds' in a ? a.unitIds[0] : ''}`
+      if (spent[key]) return '同一矿车本步不能重复发令'
+      spent[key] = 1
+    }
+    if (goal.relocationAction) {
+      const expected = goal.relocationAction
+      if (a.kind !== expected.kind || !('unitIds' in a) || !('unitIds' in expected) || a.unitIds.length !== 1 || a.unitIds[0] !== expected.unitIds[0] || a.kind === 'move' && expected.kind === 'move' && (a.x !== expected.x || a.y !== expected.y)) return '基地搬迁动作与当前阶段不符'
+    }
     if (a.kind === 'createFormation' || a.kind === 'transferUnits' || a.kind === 'dissolveFormation') {
       const m = goal.management
       if (!m || m.kind !== a.kind || m.formationId !== a.formationId) return '编队管理请求与目标不符'
@@ -103,6 +132,11 @@ export function validateScriptActions(value: unknown, c: StepConstraints, snapsh
   }
 }
 
+function sameMiningAction(value: ScriptAction['request'], expected: ActionRequest): boolean {
+  return (value.kind === 'move' || value.kind === 'gather') && expected.kind === value.kind && 'x' in expected && 'unitIds' in expected
+    && Array.isArray(value.unitIds) && value.unitIds.length === 1 && value.unitIds[0] === expected.unitIds[0] && value.x === expected.x && value.y === expected.y
+}
+
 export function inRegion(x: number, y: number, r: Region): boolean {
   return x >= r.x1 && x <= r.x2 && y >= r.y1 && y <= r.y2
 }
@@ -127,6 +161,11 @@ export function validateActions(value: unknown, c: StepConstraints, snapshot?: S
         if (quantities[a.name]! > (Object.hasOwn(c.produceRemaining ?? {}, a.name) ? c.produceRemaining![a.name]! : 0)) return `生产额度不足: ${a.name}`
       } else {
         if (c.allowedPlace && !c.allowedPlace.includes(a.name)) return '没有该目标或共享前置的待落地建筑'
+        const placement = c.placements?.[a.name]
+        if (JSON.stringify(a.placement) !== JSON.stringify(placement)) return '建筑方位与当前待放置目标不符'
+        const region = c.placementRegions?.[a.name]
+        if (JSON.stringify(a.placementRegion) !== JSON.stringify(region)) return '建筑分区与目标不符'
+        if (region && a.x !== undefined && a.y !== undefined && !inTargetRegion(a.x, a.y, region)) return '建筑坐标不在指定分区内'
         if ((a.x !== undefined || a.y !== undefined) && !tile(a.x, a.y, c)) return '建筑坐标非法'
       }
       continue

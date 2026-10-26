@@ -21,7 +21,7 @@ export interface BridgeState {
  * install() 必须在打开任何页面之前调用（exposeBinding/addInitScript 是 context 级）。
  */
 /** 桥版本（与 bridge.js 的 BRIDGE_VERSION 保持一致；升级后对已开页面重装）。 */
-const BRIDGE_VERSION = 6
+const BRIDGE_VERSION = 11
 
 export function isGameDocument(url: string, gameUrl: string): boolean {
   try {
@@ -31,6 +31,8 @@ export function isGameDocument(url: string, gameUrl: string): boolean {
 }
 
 export class WerhdBridge {
+  private ruleSession = ''
+  private ruleCache = new Map<string, unknown>()
   private latestSnapshot: Snapshot | undefined
   private readonly listeners = new Set<(s: Snapshot) => void>()
   private targetFrame: Frame | undefined
@@ -75,22 +77,23 @@ export class WerhdBridge {
   }
 
   /** visible 表示黑幕已揭开，不是当前交战视野，也不证明可通行。 */
-  async readMapBatch(cells: number[], width: number, sessionKey: string): Promise<{ seen: number[]; impassable: number[] }> {
+  async readMapBatch(cells: number[], width: number, sessionKey: string): Promise<{ seen: number[]; impassable: number[]; ore?: number[] }> {
     if (cells.length > 256) throw new Error('地图观察批次过大')
     return this.frame.evaluate(({ cells, width, sessionKey }) => {
       const win = window as unknown as { __ra2cSessionKey?: string; werhd?: { map: { visible(x: number, y: number): boolean; tile(x: number, y: number): { landType?: number; onBridge?: boolean; bridge?: unknown } | undefined } } }
       if (win.__ra2cSessionKey !== sessionKey || !win.werhd) throw new Error('地图观察对局已变化')
-      const seen: number[] = [], impassable: number[] = []
+      const seen: number[] = [], impassable: number[] = [], ore: number[] = []
       for (const cell of cells) {
         const x = cell % width, y = Math.floor(cell / width)
         if (!win.werhd.map.visible(x, y)) continue
         const tile = win.werhd.map.tile(x, y)
         if (!tile) continue
         seen.push(cell)
+        if (tile.landType === 9) ore.push(cell)
         if (!tile.onBridge && !tile.bridge && [7, 8, 10].includes(tile.landType ?? -1)) impassable.push(cell)
       }
       if (win.__ra2cSessionKey !== sessionKey) throw new Error('地图观察对局已变化')
-      return { seen, impassable }
+      return { seen, impassable, ore }
     }, { cells, width, sessionKey })
   }
 
@@ -142,9 +145,27 @@ export class WerhdBridge {
 
   /** 查询当前有效规则（含地图/MOD 覆盖）；无效名称返回 undefined。 */
   async rules(name: string, type: number): Promise<unknown> {
+    if (this.latestSnapshot) return (await this.rulesMany([{ name, type }], this.latestSnapshot.sessionKey))[0]?.rule
     return this.frame.evaluate(
       `(() => { const w = window.werhd; if (!w) return undefined; return w.rules(${JSON.stringify(name)}, ${type}) })()`,
     )
+  }
+
+  /** 按本局缓存静态规则，批量查询不经过逐 tick 回调；可造性始终读取最新快照。 */
+  async rulesMany(requests: Array<{ name: string; type: number }>, sessionKey: string): Promise<Array<{ name: string; type: number; rule: unknown }>> {
+    if (this.ruleSession !== sessionKey) { this.ruleSession = sessionKey; this.ruleCache.clear() }
+    const missing = requests.filter(request => !this.ruleCache.has(`${request.type}:${request.name}`))
+    for (let start = 0; start < missing.length; start += 64) {
+      const chunk = missing.slice(start, start + 64)
+      const rules = await this.frame.evaluate(({ requests, key }) => {
+        const win = window as unknown as { __ra2cSessionKey?: string; werhd?: { rules(name: string, type: number): unknown } }
+        if (win.__ra2cSessionKey !== key || !win.werhd) throw new Error('规则查询对局已变化')
+        return requests.map(request => win.werhd!.rules(request.name, request.type))
+      }, { requests: chunk, key: sessionKey })
+      if (this.ruleSession !== sessionKey) throw new Error('规则查询已过期')
+      chunk.forEach((request, index) => this.ruleCache.set(`${request.type}:${request.name}`, rules[index]))
+    }
+    return requests.map(request => ({ ...request, rule: this.ruleCache.get(`${request.type}:${request.name}`) }))
   }
 
   /** 提交动作；会话不一致或单位失效时被拒绝。 */

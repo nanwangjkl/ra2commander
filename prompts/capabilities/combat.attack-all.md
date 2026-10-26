@@ -4,10 +4,12 @@
 {
   "id": "combat.attack-all",
   "name": "全图进攻",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "binder": "combat.attack-all",
   "owner": "formation",
   "parameters": {
+    "selector": { "type": "string", "description": "可选兵种选择，如 aircraft、tanks、combat；填写时可直接操作未编队成员" },
+    "unitIds": { "type": "integer[]", "min": 0, "minItems": 1, "description": "明确选择的现有单位ID，不需要新建编队" },
     "formationId": {
       "type": "string",
       "description": "指定队伍；仅在玩家未指定队伍时省略"

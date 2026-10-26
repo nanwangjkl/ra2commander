@@ -118,7 +118,7 @@ export class BattleRecords {
       if (this.fingerprints.get(snap.sessionKey) === fingerprint) return
       this.append(this.ensure(snap.sessionKey), 'observation', { at: Date.now(), tick: snap.tick, credits: snap.credits,
         map: { width: snap.mapWidth, height: snap.mapHeight }, power: snap.production?.power, queues: snap.production?.queues,
-        self: snap.self.map(unit => ({ id: unit.id, name: unit.name, rx: unit.rx, ry: unit.ry, hitPoints: unit.hitPoints, maxHitPoints: unit.maxHitPoints, transport: unit.transport })), visibleEnemies: snap.enemies,
+        self: snap.self.map(unit => ({ id: unit.id, name: unit.name, rx: unit.rx, ry: unit.ry, hitPoints: unit.hitPoints, maxHitPoints: unit.maxHitPoints, ammo: unit.ammo, transport: unit.transport })), visibleEnemies: snap.enemies,
         ...facts,
       })
       this.fingerprints.set(snap.sessionKey, fingerprint)
@@ -206,7 +206,7 @@ export class BattleRecords {
   }
   markdown(record: BattleRecord): string {
     const fence = (value: string, lang = '') => { const ticks = '`'.repeat(Math.max(3, ...[...value.matchAll(/`+/g)].map(match => match[0].length + 1))); return `${ticks}${lang}\n${value}\n${ticks}` }
-    const labels: Record<string, string> = { received: '已收到', understanding: '理解中', understood: '已理解', binding: '绑定中', bound: '待生效', generating: '生成中', merged: '等待合并', effective: '脚本已生效', completed: '已完成', running: '执行中', continuous: '持续执行', paused: '暂停', faulted: '运行出错', blocked: '执行受阻', cancelled: '已取消', failed: '失败', partial: '部分执行', 'partial-completed': '部分完成' }
+    const labels: Record<string, string> = { received: '已收到', understanding: '理解中', understood: '已理解', binding: '绑定中', bound: '待生效', generating: '生成中', merged: '等待合并', effective: '脚本已生效', pending: '等待就绪', completed: '已完成', running: '执行中', continuous: '持续执行', paused: '暂停', faulted: '运行出错', blocked: '执行受阻', cancelled: '已取消', failed: '失败', partial: '部分执行', 'partial-completed': '部分完成' }
     const info = this.info(record)
     const lines = ['# 对局记录', '', `对局：${record.sessionKey || '未进入对局'}`, `开始：${new Date(record.startedAt).toLocaleString('zh-CN')}`, `最后记录：${new Date(record.updatedAt).toLocaleString('zh-CN')}`, `命令 ${info.commands} 条，已反馈 ${info.feedback} 条，其中待改进 ${info.issues} 条。`, '', '执行结果来自最后观察到的游戏事实；游戏关闭后不推断完成或胜负。用户反馈单独保留。', '完整请求、响应、状态变化与反馈在同目录 events.jsonl 中，供开发复盘使用。', '']
     const ids = new Set([...record.events.map(event => event.commandId), ...Object.keys(record.transcripts)])

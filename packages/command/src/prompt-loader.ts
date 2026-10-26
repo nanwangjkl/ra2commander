@@ -12,13 +12,14 @@ const PLACEHOLDER = /{{\s*([A-Za-z][\w]*)\s*}}/g
 const TEMPLATE_DIRECTORY = new URL('../../../prompts/templates/', import.meta.url)
 const DEFINITIONS = {
   interpret: { file: 'interpret.md', variables: ['capabilities', 'skills'] },
+  bindingRepair: { file: 'binding-repair.md', variables: ['capabilities', 'skills'] },
   compile: { file: 'compile.md', variables: [] },
   repair: { file: 'repair.md', variables: ['error'] },
   validationFeedback: { file: 'validation-feedback.md', variables: ['errors'] },
 } as const satisfies Record<string, { file: string; variables: readonly string[] }>
 
 type PromptName = keyof typeof DEFINITIONS
-type StaticPromptName = 'interpret' | 'compile'
+type StaticPromptName = 'interpret' | 'compile' | 'bindingRepair'
 
 /** 一次命令固定使用同一套模板；版本由全部 Markdown 内容计算。 */
 export class PromptLibrary {
@@ -46,9 +47,10 @@ export class PromptLibrary {
     for (const key of expected) {
       if (typeof variables[key] !== 'string') throw new Error(`提示词 ${name} 缺少变量 ${key}`)
     }
-    const values = name === 'interpret' ? { ...variables, capabilities: this.capabilities.render(), skills: this.skills.renderIndex() } : variables
+    const interpreting = name === 'interpret' || name === 'bindingRepair'
+    const values = interpreting ? { ...variables, capabilities: this.capabilities.render(), skills: this.skills.renderIndex() } : variables
     const rendered = this.templates[name].replace(PLACEHOLDER, (_match, key: string) => values[key] ?? '')
-    return name === 'interpret' ? [rendered, this.game.instructions, ...this.tactics.select('interpret').map(tactic => tactic.text)].join('\n\n') : rendered
+    return interpreting ? [rendered, this.game.instructions, ...this.tactics.select('interpret').map(tactic => tactic.text)].join('\n\n') : rendered
   }
 
   compileFor(goals: readonly GoalSpec[], recovery = false): string {
@@ -92,6 +94,7 @@ export function readPrompts(directory = TEMPLATE_DIRECTORY): PromptLibrary {
   if (!skills.catalog.get('scout')) throw new Error('缺少首版 scout Skill')
   for (const skill of skills.sources) for (const step of skill.definition.steps) if ('role' in step && !game.profile.roles().some(role => role.id === step.role)) throw new Error(`Skill ${skill.definition.id} 引用了未知游戏角色`)
   hash.update('games/current-mod.md').update('\0').update(game.source).update('\0')
+  hash.update('games/catalog').update('\0').update(game.catalogSource).update('\0')
   for (const document of tactics.sources) hash.update(`tactics/${document.file}`).update('\0').update(document.source).update('\0')
   for (const document of skills.sources) hash.update(`skills/${document.file}`).update('\0').update(document.source).update('\0')
   return new PromptLibrary(templates, `sha256:${hash.digest('hex').slice(0, 16)}`, capabilities, game.profile, tactics.library, skills.catalog)

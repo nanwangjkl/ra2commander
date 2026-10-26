@@ -1,4 +1,4 @@
-import type { ProductionGoal, Snapshot } from '@ra2c/contracts'
+import { matchesPlacement, inTargetRegion, type ProductionGoal, type Snapshot } from '@ra2c/contracts'
 import type { ProductionRecord } from './state.ts'
 
 export function submitted(records: ProductionRecord[], goalId: string, name: string): number {
@@ -35,7 +35,9 @@ export function productionProgress(goal: ProductionGoal, records: ProductionReco
   const earlier = records.find(r => r.name === goal.target && r.goalId !== goal.id && r.state !== 'rejected' && r.observedIds.length < r.quantity)
   const blocked = earlier ? `等待同名目标 ${earlier.goalId} 的产出确认` : undefined
   if (blocked) remaining[goal.target] = 0
-  return { remaining, sent, observed, uncertain, blocked }
+  const positions = goal.placement || goal.placementRegion ? records.filter(r => r.goalId === goal.id && r.name === goal.target && r.state !== 'rejected').flatMap(record => record.placementResults ?? []).slice(0, quantity) : []
+  const placement = goal.placement || goal.placementRegion ? { completed: positions.filter(result => result.matched).length, total: quantity, mismatchedIds: positions.filter(result => !result.matched).map(result => result.unitId) } : undefined
+  return { remaining, sent, observed, uncertain, blocked, placement }
 }
 
 /** 只累计首次出现的身份，损失和换代码都不会减少累计产出。 */
@@ -47,8 +49,17 @@ export function observeProduction(records: ProductionRecord[], seen: Set<number>
     const candidates = records.filter(r => r.name === unit.name && r.state !== 'rejected' && r.observedIds.length < r.quantity)
     // 有多个可能来源时保持未确认；不凭猜测完成目标或自动追加生产。
     if (candidates.length && new Set(candidates.map(r => r.goalId)).size === 1) {
-      candidates[0]!.observedIds.push(unit.id)
-      if (unit.type === 2) candidates[0]!.placed = true
+      const record = candidates[0]!, index = record.observedIds.length
+      record.observedIds.push(unit.id)
+      if (unit.type === 2) {
+        record.placed = record.observedIds.length >= record.quantity
+        const direction = record.placement?.directions[index]
+        if (record.placement && direction || record.placementRegion) {
+          const point = { x: unit.rx, y: unit.ry, ...(unit.elevation !== undefined ? { elevation: unit.elevation } : {}) }
+          record.placementResults ??= []
+          record.placementResults.push({ unitId: unit.id, ...point, matched: (!record.placement || !!direction && matchesPlacement({ anchor: record.placement.anchor, direction }, point)) && (!record.placementRegion || inTargetRegion(point.x, point.y, record.placementRegion)) })
+        }
+      }
     }
   }
 }

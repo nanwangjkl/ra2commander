@@ -8,7 +8,7 @@ declare global { interface Window { __ra2cUnmountCommands?: () => void } }
 const LABEL: Record<string, string> = {
   received: '已收到', understanding: '理解中', understood: '已理解', binding: '绑定目标',
   bound: '待生效', skipped: '部分未执行', generating: '生成脚本', merged: '等待合并版本',
-  effective: '执行中', running: '执行中', continuous: '持续执行', completed: '已完成',
+  effective: '执行中', pending: '等待就绪', running: '执行中', continuous: '持续执行', completed: '已完成',
   partial: '部分执行', 'partial-completed': '部分完成', failed: '失败', cancelled: '已取消', blocked: '执行受阻', paused: '已暂停', faulted: '运行出错',
 }
 
