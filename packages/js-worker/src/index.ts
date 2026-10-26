@@ -115,3 +115,10 @@ export class StepExecutor {
 export function codeHash(code: string): string {
   return createHash('sha256').update(code).digest('hex').slice(0, 16)
 }
+
+/** 编译检查与实战各自排队、各用一个按需启动的隔离进程。 */
+export function createScriptExecutors() {
+  const runtime = new StepExecutor()
+  const compilation = new StepExecutor()
+  return { runtime, compilation, async dispose(): Promise<void> { await Promise.all([runtime.dispose(), compilation.dispose()]) } }
+}

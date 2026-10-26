@@ -8,7 +8,7 @@ import { createServer } from 'node:net'
 import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { chromium, type Browser, type BrowserContext } from 'playwright'
-import { StepExecutor } from '@ra2c/js-worker'
+import { createScriptExecutors } from '@ra2c/js-worker'
 import { configuredProviderNames, providerFromEnv, type OpenAICompatibleProvider } from '@ra2c/model-providers'
 import {
   FormationRegistry,
@@ -146,7 +146,7 @@ async function main(): Promise<void> {
   bridge = gameBridge
   await gameBridge.install()
 
-  const executor = new StepExecutor()
+  const executors = createScriptExecutors()
   const formations = new FormationRegistry()
   let controller!: ProgramController
   let currentProvider: OpenAICompatibleProvider | undefined
@@ -156,7 +156,7 @@ async function main(): Promise<void> {
     return currentProvider
   }
   const runtime: TaskRuntime = new TaskRuntime({
-    executor, formations,
+    executor: executors.runtime, formations,
     checkpoint: () => saveStateFile(STATE_FILE, persistState(runtime)),
     submit: async (actions, context, guard) => {
       const results = []
@@ -171,7 +171,7 @@ async function main(): Promise<void> {
     log: message => console.log(message),
   })
   controller = new ProgramController({
-    runtime, executor, provider: currentModel,
+    runtime, executor: executors.compilation, provider: currentModel,
     recordCompilation: records.compilation,
     prepare: (goals, signal, prompts) => {
       const snap = runtime.snapshot
@@ -354,7 +354,7 @@ async function main(): Promise<void> {
     // connectOverCDP 的 close 仅断连：浏览器与对局保留，重启 companion 即恢复。
     await browser.close()
   }
-  await executor.dispose()
+  await executors.dispose()
   server.close()
   cmdServer.close()
 }

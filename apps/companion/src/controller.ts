@@ -16,6 +16,7 @@ export interface CompilationEvent {
 
 interface ControllerDeps {
   runtime: TaskRuntime
+  /** 候选脚本检查专用，应用启动时与实战执行器分开创建。 */
   executor: Pick<StepExecutor, 'run'>
   provider: () => OpenAICompatibleProvider
   prepare?: (goals: GoalSpec[], signal: AbortSignal, prompts: PromptLibrary) => Promise<GoalSpec[]>

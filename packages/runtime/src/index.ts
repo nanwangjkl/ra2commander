@@ -57,6 +57,8 @@ export class TaskRuntime {
   private retiredSessions = new Set<string>()
   private latest?: Snapshot
   private draining: Promise<void> | undefined
+  /** 新快照不重置下一位，避免前面的控制对象反复抢先。 */
+  private nextProgram = 0
   private pending = new Map<string, { lease: CompileLease; abort: AbortController }>()
   readonly programs = new Map<string, ProgramState>()
   readonly goals = new Map<string, GoalState>()
@@ -765,6 +767,7 @@ export class TaskRuntime {
         this.production.length = 0; this.handoffs.length = 0; this.seenUnitIds.clear(); this.pausedQueues.clear()
       }
       this.session = snap.session; this.sessionKey = snap.sessionKey
+      this.nextProgram = 0
       for (const unit of snap.self) this.seenUnitIds.add(unit.id)
     } else if (this.latest && snap.seq <= this.latest.seq) return
     this.latest = snap
@@ -781,17 +784,26 @@ export class TaskRuntime {
       const snap = this.latest
       consumed = snap
       if (this.handoffs.length) await this.flushHandoffs(snap)
-      for (const program of this.programs.values()) {
+      const programs = [...this.programs.values()]
+      const start = this.nextProgram % (programs.length || 1)
+      for (let offset = 0; offset < programs.length; offset++) {
         if (this.latest !== snap) break
+        const index = (start + offset) % programs.length
+        const program = programs[index]!
+        // 在 await 前交棒；当前计算若被新快照抢占，下一轮也不会从它重新开始。
+        this.nextProgram = (index + 1) % programs.length
         if (program.status === 'active' && program.script) {
           await this.step(program, snap)
-          if (this.latest !== snap || program.status !== 'active' || this.hasPendingCommand(program.id)) continue
-          const frame = this.frame(program, this.activeSpecs(program), snap, true)
-          const waiting = new Set(this.handoffs.map(handoff => handoff.goalId))
-          for (const goal of frame.snapshot.control!.goals) if (this.goals.get(goal.spec.id)?.facts.placementBlocked) waiting.add(goal.spec.id)
-          const stalled = this.recovery.observe(program.id, this.recoveryKey(program), snap, frame.snapshot.control!.goals, frame.constraints.goals!, waiting)
-          if (stalled) this.deps.onProgramStalled?.(program.id, stalled)
+          if (this.latest === snap && program.status === 'active' && !this.hasPendingCommand(program.id)) {
+            const frame = this.frame(program, this.activeSpecs(program), snap, true)
+            const waiting = new Set(this.handoffs.map(handoff => handoff.goalId))
+            for (const goal of frame.snapshot.control!.goals) if (this.goals.get(goal.spec.id)?.facts.placementBlocked) waiting.add(goal.spec.id)
+            const stalled = this.recovery.observe(program.id, this.recoveryKey(program), snap, frame.snapshot.control!.goals, frame.constraints.goals!, waiting)
+            if (stalled) this.deps.onProgramStalled?.(program.id, stalled)
+          }
         }
+        // 每个片段最多访问 8 个对象；剩余对象可在同一快照继续，不丢步、不重复执行。
+        if (this.latest === snap && (offset + 1) % 8 === 0 && offset + 1 < programs.length) await new Promise<void>(resolve => setImmediate(resolve))
       }
     }
   }
