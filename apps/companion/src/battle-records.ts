@@ -165,13 +165,15 @@ export class BattleRecords {
         script: program.script, compileError: program.compileError, errors: program.stats.errors, rejected: program.stats.rejected, lastError: program.stats.lastError })),
     }
     if (!full && !facts.goals.length && !facts.programs.length) return
-    const fingerprint = hash(facts)
-    if (!full && previous?.value === fingerprint) return
-    this.append(this.ensure(snap.sessionKey), 'observation', { at: Date.now(), tick: snap.tick, credits: snap.credits,
+    const observation = { credits: snap.credits,
       map: { width: snap.mapWidth, height: snap.mapHeight }, power: snap.production?.power, queues: snap.production?.queues,
       self: snap.self.map(unit => ({ id: unit.id, name: unit.name, rx: unit.rx, ry: unit.ry, hitPoints: unit.hitPoints, maxHitPoints: unit.maxHitPoints, ammo: unit.ammo, hasWrenchRepair: unit.hasWrenchRepair, transport: unit.transport })), visibleEnemies: snap.enemies,
       ...facts,
-    }, false, full)
+    }
+    // 比较实际保存的战场内容；时间戳和采样序号不产生重复观察。
+    const fingerprint = hash(observation)
+    if (!full && previous?.value === fingerprint) return
+    this.append(this.ensure(snap.sessionKey), 'observation', { at: Date.now(), tick: snap.tick, ...observation }, false, full)
     this.fingerprints.set(snap.sessionKey, { value: fingerprint, stages, tick: snap.tick })
   }
   private readStored(id: string): StoredRecord | undefined {

@@ -6,7 +6,9 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { EventEmitter } from 'node:events'
 import type { IncomingMessage } from 'node:http'
+import type { SnapshotUnit } from '../packages/contracts/src/index.ts'
 import type { CommandContext } from '../apps/companion/src/commands.ts'
+import { FormationRegistry } from '../packages/runtime/src/index.ts'
 import { BattleRecords } from '../apps/companion/src/battle-records.ts'
 import { CommandLog } from '../apps/companion/src/command-log.ts'
 import { ProgramController } from '../apps/companion/src/controller.ts'
@@ -244,6 +246,38 @@ test('日常观察存变化，完成和反馈保留完整观察；反馈写入�
     assert.equal(restored.feedback[0]!.note, '重试成功')
     assert.ok((restored.observations.at(-1)!.self as Array<{ id: number }>).some(unit => unit.id === 100))
     assert.equal(restored.observations.at(-1)!.goals[0]!.execution!.state, 'completed')
+  } finally { records.close(); rmSync(root, { recursive: true, force: true }) }
+})
+
+test('任务事实不变时仍保留资源、血量和敌情变化，相同战场不重复归档', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ra2c-world-observations-')), records = new BattleRecords(root)
+  try {
+    const { runtime } = await harness({ run: async () => outcome() }, { formations: new FormationRegistry() })
+    const initial = snapshot({ seq: 2, self: [{ ...snapshot().self[0]!, hitPoints: 100, maxHitPoints: 100 }], enemies: [{ ...snapshot().enemies[0]!, hitPoints: 100, maxHitPoints: 100 }] })
+    await runtime.onSnapshot(initial)
+    activate(runtime, { id: 'rally', kind: 'rally', unitIds: [1], x: 30, y: 30, rawText: '集结' })
+    records.setSession(runtime.battleKey); records.observe(runtime)
+    const facts = structuredClone(runtime.goals.get('rally')!.facts)
+    let changed = initial
+    const changes = [
+      { credits: 400 },
+      { self: initial.self.map(unit => ({ ...unit, hitPoints: 50 })) },
+      { enemies: initial.enemies.map(unit => ({ ...unit, hitPoints: 25 })) },
+      { production: { ...initial.production!, power: { drain: 200, total: 100, isLowPower: true } } },
+    ]
+    for (const change of changes) {
+      changed = { ...changed, ...change, seq: changed.seq + 1, tick: changed.tick + 150 }
+      await runtime.onSnapshot(changed); records.observe(runtime)
+    }
+    assert.deepEqual(runtime.goals.get('rally')!.facts, facts, '只有战场发生变化')
+    const frames = records.read(records.currentId!)!.observations
+    assert.equal(frames.length, changes.length + 1, '每类独立变化都应留下观察')
+    assert.equal(frames[1]!.credits, 400)
+    assert.equal((frames[2]!.self as SnapshotUnit[])[0]!.hitPoints, 50)
+    assert.equal((frames[3]!.visibleEnemies as SnapshotUnit[])[0]!.hitPoints, 25)
+    assert.deepEqual(frames[4]!.power, changed.production!.power)
+    await runtime.onSnapshot({ ...changed, seq: changed.seq + 1, tick: changed.tick + 150 }); records.observe(runtime)
+    assert.equal(records.read(records.currentId!)!.observations.length, frames.length, '只有采样时间变化不产生新观察')
   } finally { records.close(); rmSync(root, { recursive: true, force: true }) }
 })
 

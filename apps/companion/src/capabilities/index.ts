@@ -136,11 +136,17 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
   }
   const compileFailures = new Map<string, string>()
   const compileOwners = async () => {
+    // 所有已绑定的固定流程先启用，避免被其他控制对象的云端生成拖住。
     for (const owner of owners) {
       if (suppressed.has(owner)) continue
       check()
       const native = [...ctx.runtime.goals.values()].some(goal => goal.ownerId === owner && ['pending', 'active'].includes(goal.status) && goalExecutionMode(goal.spec) === 'native') ? ctx.controller.activateNative(owner) : undefined
-      if (!scriptOwners.has(owner)) { if (native) state.results.push(native); options.onUpdate?.(state); continue }
+      if (native && !scriptOwners.has(owner)) state.results.push(native)
+    }
+    options.onUpdate?.(state)
+    for (const owner of owners) {
+      if (suppressed.has(owner) || !scriptOwners.has(owner)) continue
+      check()
       emit({ stage: 'generating', owner, executionMode: 'script' })
       try {
         state.results.push(await ctx.controller.refresh(owner, false, { prompts, ...(options.commandId ? { commandId: options.commandId } : {}), onPromptVersion: version => options.onPromptVersion?.(owner, version) }))

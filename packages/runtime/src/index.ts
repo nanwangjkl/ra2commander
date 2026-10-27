@@ -449,6 +449,8 @@ export class TaskRuntime {
   private observe(snap: Snapshot): void {
     const converted = new Set<number>()
     for (const goal of this.goals.values()) {
+      // 已退出目标的事实冻结；不能再把后来出现的产物认作旧成员变形。
+      if (goal.status !== 'active' && goal.status !== 'pending') continue
       // 回退等待脚本时仍观察已提交的变形，避免把新身份误记成生产。
       const spec = goal.activeSpec ?? (goal.status === 'pending' && goal.facts.initialized ? goal.spec : undefined)
       if (!spec || goal.facts.nativeError) continue

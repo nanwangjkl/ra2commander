@@ -51,17 +51,21 @@ export class CommandLog {
   syncRuntime(runtime: TaskRuntime): void {
     for (const [goalId, binding] of this.bindings) {
       const previous = this.execution.get(goalId)
-      const execution = binding.sessionKey === runtime.battleKey ? runtime.goalExecution(goalId)
+      const ended = binding.sessionKey !== runtime.battleKey
+      const execution = !ended ? runtime.goalExecution(goalId)
         : previous?.state === 'completed' ? previous : { state: 'cancelled' as const, detail: '对局已结束或切换' }
-      if (!execution || JSON.stringify(previous) === JSON.stringify(execution)) continue
-      this.execution.set(goalId, execution)
-      const goal = runtime.goals.get(goalId)
-      const executionMode = goal ? goalExecutionMode(goal.activeSpec ?? goal.spec) : undefined
-      const program = runtime.programs.get(goal?.ownerId ?? '')
-      this.emit({ ...binding, goalId, stage: 'execution', execution, ...(executionMode ? { executionMode } : {}),
-        ...(program ? { owner: program.id } : {}),
-        ...(executionMode === 'script' && program?.script && !['completed', 'cancelled'].includes(execution.state) ? { version: program.script.version } : {}),
-      })
+      if (execution && JSON.stringify(previous) !== JSON.stringify(execution)) {
+        this.execution.set(goalId, execution)
+        const goal = !ended ? runtime.goals.get(goalId) : undefined
+        const executionMode = goal ? goalExecutionMode(goal.activeSpec ?? goal.spec) : undefined
+        const program = runtime.programs.get(goal?.ownerId ?? '')
+        this.emit({ ...binding, goalId, stage: 'execution', execution, ...(executionMode ? { executionMode } : {}),
+          ...(program ? { owner: program.id } : {}),
+          ...(executionMode === 'script' && program?.script && !['completed', 'cancelled'].includes(execution.state) ? { version: program.script.version } : {}),
+        })
+      }
+      // 同局目标完成后仍可追加产量；目标关联只在对局结束后释放。
+      if (ended && this.bindings.get(goalId) === binding) { this.bindings.delete(goalId); this.execution.delete(goalId) }
     }
   }
 
@@ -112,8 +116,6 @@ export class CommandLog {
     if (full.stage === 'execution' && full.goalId && full.execution) this.execution.set(full.goalId, full.execution)
     if (this.events.length > MAX_EVENTS) {
       this.events.splice(0, this.events.length - MAX_EVENTS)
-      const kept = new Set(this.events.map(event => event.commandId))
-      for (const [id, binding] of this.bindings) if (!kept.has(binding.commandId)) { this.bindings.delete(id); this.execution.delete(id) }
     }
     for (const subscriber of this.subscribers) {
       try { subscriber(full) } catch { this.subscribers.delete(subscriber) }

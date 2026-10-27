@@ -14,7 +14,7 @@ import { regionDestination } from '../apps/companion/src/capabilities/selectors.
 import { MiningObserver } from '../apps/companion/src/mining.ts'
 import { executeCapabilities } from '../apps/companion/src/capabilities/index.ts'
 import type { CommandContext } from '../apps/companion/src/commands.ts'
-import { activate, deferred, harness, snapshot, spec } from './helpers.ts'
+import { activate, code, deferred, harness, snapshot, spec } from './helpers.ts'
 import { handleCommand } from '../apps/companion/src/commands.ts'
 
 const source = `function step(s,m){const actions=[];for(const g of s.control.goals){if(g.spec.kind==='mining'){for(const request of g.mining.actions)actions.push({goalId:g.spec.id,request});}else if(g.spec.kind==='rally'&&g.unitIds.length)actions.push({goalId:g.spec.id,request:{kind:'move',unitIds:g.unitIds,x:g.spec.x,y:g.spec.y}});}return {actions,memory:m}}`
@@ -154,6 +154,34 @@ test('编队脚本与本机采矿双向改令，撤销迟到候选并保留真�
     assert.equal(f.submitted.filter(action => action.kind === 'gather' && action.unitIds.includes(11)).length, gathered)
     assert.equal(f.runtime.formations.ownerOf(11), '矿队')
   } finally { await f.dispose() }
+})
+
+test('复合命令的全局生成等待或失败时，另一编队的本机采矿先执行', async () => {
+  for (const fail of [false, true]) {
+    const f = await fixture(true), started = deferred<void>(), release = deferred<void>()
+    const provider = { generate: async () => {
+      started.resolve(); await release.promise
+      if (fail) throw new Error('fixture 生成失败')
+      return reply(code)
+    } }
+    f.ctx.controller = new ProgramController({ runtime: f.runtime, executor: f.executor, provider: () => provider as never })
+    const prompts = loadPrompts(), catalog = await import('../apps/companion/src/game-catalog.ts').then(module => module.loadGameCatalog(f.ctx, () => {}, prompts.game))
+    const pending = executeCapabilities([
+      { capability: 'production.produce', params: { target: 'MTNK', quantity: 1 } },
+      { capability: 'economy.gather', params: { regionName: '一楼', formationId: '矿队' } },
+    ], f.ctx, { text: '造一辆坦克，矿队去一楼采矿', prompts, catalog })
+    try {
+      await Promise.race([started.promise, pending.then(() => { throw new Error('应当进入全局脚本生成') })])
+      const mining = f.goals()[0]!
+      assert.equal(mining.status, 'active', '无需等待全局模型返回')
+      await f.observer.poll(f.ctx); await f.tick()
+      assert.ok(f.submitted.some(action => action.kind === 'gather' && action.unitIds.includes(11)))
+      assert.equal(f.runtime.programs.get('global')!.script, undefined)
+      release.resolve(); await pending
+      assert.equal(mining.status, 'active', '其他对象生成失败不撤销已经执行的采矿')
+      assert.equal(!!f.runtime.programs.get('global')!.compileError, fail)
+    } finally { release.resolve(); await pending; await f.dispose() }
+  }
 })
 
 test('直接采矿无模型；暂停恢复与按能力回退保留发令事实', async () => {

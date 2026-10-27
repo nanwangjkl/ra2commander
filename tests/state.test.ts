@@ -41,6 +41,25 @@ test('正常部署转换不计阵亡，转换后的身份继续跟踪', async ()
   assert.equal(runtime.goals.get('alpha')!.facts.lossRatio, 0.5)
 })
 
+test('取消或替换任务后冻结旧变形事实，附近新产物正常记入生产', async () => {
+  for (const exit of ['cancel', 'replace'] as const) {
+    const { runtime } = await harness({ run: async () => outcome() })
+    const tank = snapshot().self[0]!
+    await runtime.onSnapshot(snapshot({ seq: 2, self: [tank] }))
+    activate(runtime, spec({ transforms: { MTNK: 'DMTK', DMTK: 'MTNK' } }))
+    await runtime.onSnapshot(snapshot({ seq: 3, self: [{ ...tank, id: 40, name: 'DMTK', type: 2 }] }))
+    if (exit === 'cancel') await runtime.cancelGoal('alpha')
+    else activate(runtime, spec({ id: 'replacement' }))
+    const frozen = structuredClone(runtime.goals.get('alpha')!.facts)
+    activate(runtime, production())
+    runtime.production.push({ id: 'queued', goalId: 'production', name: 'MTNK', quantity: 1, building: false, state: 'submitted', observedIds: [], placed: false })
+    await runtime.onSnapshot(snapshot({ seq: 4, self: [{ ...tank, id: 50 }] }))
+    assert.deepEqual(runtime.goals.get('alpha')!.facts, frozen, exit)
+    assert.deepEqual(runtime.production[0]!.observedIds, [50], exit)
+    assert.equal(runtime.goalExecution('production')!.state, 'completed', exit)
+  }
+})
+
 test('生产提交确认期间收到新快照，不丢失进度或重复下单', async () => {
   const acknowledged = deferred<void>()
   let submissions = 0

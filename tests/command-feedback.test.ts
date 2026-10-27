@@ -151,6 +151,36 @@ function bind(log: CommandLog, goalId: string, owner = 'global', commandId = 'tr
   log.emit({ commandId, source: 'cli', sessionKey: 'battle-a', stage: 'bound', goalId, owner, choice: goalId })
 }
 
+test('事件窗口滚动后老目标仍推送完成，已完成生产追加总量继续跟踪', async () => {
+  const { runtime } = await harness(executor)
+  activate(runtime, production({ id: 'tank' }))
+  const log = new CommandLog(), delivered: CommandEvent[] = []
+  log.subscribe(event => delivered.push(event))
+  bind(log, 'tank')
+  log.syncRuntime(runtime)
+  for (let n = 0; n < 2100; n++) log.emit({ commandId: `other-${n}`, source: 'cli', stage: 'received', text: '其他命令' })
+  assert.ok(!log.since(0).some(event => event.commandId === 'tracked'), '老事件已离开重连窗口')
+  const before = log.lastSeq(), born = { ...snapshot().self[0]!, id: 11 }
+  runtime.production.push({ id: 'sent', goalId: 'tank', name: 'MTNK', quantity: 1, building: false, state: 'submitted', observedIds: [], placed: false })
+  await runtime.onSnapshot(snapshot({ seq: 2, self: [...snapshot().self, born] }))
+  log.syncRuntime(runtime)
+  assert.equal(log.since(before).find(event => event.goalId === 'tank')!.execution!.state, 'completed')
+  for (let n = 0; n < 2100; n++) log.emit({ commandId: `later-${n}`, source: 'cli', stage: 'received', text: '后续命令' })
+  activate(runtime, production({ id: 'tank', quantity: 2 }))
+  const updated = log.lastSeq()
+  log.syncRuntime(runtime)
+  const progress = log.since(updated).find(event => event.goalId === 'tank')!
+  assert.equal(progress.commandId, 'tracked')
+  assert.equal(progress.execution!.progress!.total, 2)
+  assert.notEqual(progress.execution!.state, 'completed')
+  await runtime.onSnapshot(snapshot({ sessionKey: 'battle-b', seq: 1 }))
+  log.syncRuntime(runtime)
+  assert.equal(delivered.filter(event => event.goalId === 'tank').at(-1)!.execution!.state, 'cancelled')
+  const ended = log.lastSeq()
+  log.syncRuntime(runtime)
+  assert.equal(log.lastSeq(), ended, '结束对局的目标关联已释放')
+})
+
 test('实际产出后才完成，持续补电保持执行中，暂停与运行故障不伪装为完成', async () => {
   let sent = false, fault = false
   const { runtime } = await harness({ run: async () => {
