@@ -38,7 +38,7 @@ M1（公共 API 桥）与 M2 单队循环已实测：文本命令经云模型（
 | [现有单位攻击与飞机出击](doc/spec/selected-attacks-and-sorties.md) | 如何不建队直接攻击，并让飞机等待装弹、投弹一次后完成？ |
 | [游戏规则与战术约定](doc/spec/game-rules-and-tactics.md) | 如何按真实规则选择阵营项目、复用前置，并按目标组合战术提示？ |
 | [完整游戏目录与通用科技树](doc/spec/full-game-catalog.md) | 如何识别尚未解锁的单位与建筑，导入中文名称并自动补齐前置和生产设施？ |
-| [对局记录与命令反馈](doc/spec/battle-records.md) | 如何提交命令反馈，并在本机归档理解、代码和实际成果供开发复盘？ |
+| [对局记录与命令反馈](doc/spec/battle-records.md) | 如何归档命令反馈、理解、代码和实际成果，导出紧凑单局提交包供开发复盘？ |
 | [领域术语](doc/spec/CONTEXT.md) | 玩家、编队、战损、授权条件与 Skill 分别指什么？ |
 | [架构决策记录](doc/decisions/README.md) | 为什么选择当前方案，有哪些取舍和后果？ |
 

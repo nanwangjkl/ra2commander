@@ -19,7 +19,7 @@ export interface CurrentCommands {
   warning: string
 }
 export interface BattleRecord {
-  schemaVersion: 1 | 2
+  schemaVersion: 1 | 2 | 3
   id: string
   sessionKey: string
   startedAt: number

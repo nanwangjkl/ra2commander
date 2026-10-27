@@ -5,6 +5,7 @@ import { goalOwner, ownerId, type BattleRecord, type BattleRecordInfo, type Comm
 import type { TaskRuntime } from '@ra2c/runtime'
 import { applyCommandEvent, type CardData } from '../ui/command-card.ts'
 import { BattleJournal, atomicWrite, jsonValue, syncDirectory, type ArchiveEntry } from './battle-storage.ts'
+import { decodeObservation, encodeObservation, fieldDelta } from './battle-codec.ts'
 
 type Compilation = BattleRecord['compilations'][number] & { sessionKey: string }
 type SummaryRecord = Omit<BattleRecord, 'observations'> & { observations: Array<Record<string, unknown>> }
@@ -63,11 +64,11 @@ export class BattleRecords {
   private ensure(key: string): StoredRecord {
     const id = battleId(key || 'unbound'), existing = this.readStored(id)
     if (existing) return existing
-    const record: StoredRecord = { schemaVersion: 2, id, sessionKey: key, startedAt: Date.now(), updatedAt: Date.now(), events: [], transcripts: {}, compilations: [], observations: [], observationCount: 0, feedback: [] }
+    const record: StoredRecord = { schemaVersion: 3, id, sessionKey: key, startedAt: Date.now(), updatedAt: Date.now(), events: [], transcripts: {}, compilations: [], observations: [], observationCount: 0, feedback: [] }
     const firstFolder = !existsSync(this.folder)
     mkdirSync(join(this.folder, id), { recursive: true })
     if (firstFolder) { syncDirectory(this.folder); syncDirectory(join(this.folder, '..')); syncDirectory(join(this.folder, '../..')) }
-    atomicWrite(join(this.folder, id, 'meta.json'), JSON.stringify({ ...this.info(record), schemaVersion: 2 }), true)
+    atomicWrite(join(this.folder, id, 'meta.json'), JSON.stringify({ ...this.info(record), schemaVersion: 3 }), true)
     this.cache.set(id, record)
     this.dirty.add(id)
     return record
@@ -81,13 +82,13 @@ export class BattleRecords {
     if (kind === 'transcript' || kind === 'observation') {
       const packed = this.packFields(record.id, plain)
       const previous = kind === 'transcript' ? record.transcripts[canonicalId(String(plain.requestId))] ?? {} : record.observations.at(-1) ?? {}
-      const changed = Object.fromEntries(Object.entries(packed).filter(([key, value]) => full || JSON.stringify(previous[key]) !== JSON.stringify(value)))
-      const removed = Object.keys(previous).filter(key => !(key in packed))
-      if (!Object.keys(changed).length && !removed.length) return
-      encoded = kind === 'transcript' ? { requestId: plain.requestId, patch: changed, removed }
-        : { mode: full || !record.observationCount ? 'full' : 'delta', base: record.observationCount - 1, patch: full || !record.observationCount ? packed : changed, removed }
+      if (kind === 'transcript') {
+        const delta = fieldDelta(previous, packed)
+        if (!Object.keys(delta.patch).length && !delta.removed.length) return
+        encoded = { requestId: plain.requestId, ...delta }
+      } else encoded = encodeObservation(previous, packed, full, record.observationCount)
     } else if (kind === 'compilation') encoded = this.packFields(record.id, plain)
-    const entry: ArchiveEntry = { schemaVersion: 2, kind, at: Date.now(), value: encoded }
+    const entry: ArchiveEntry = { schemaVersion: 3, kind, at: Date.now(), value: encoded }
     const journal = this.journal(record.id)
     journal.append(entry)
     if (durable) { try { journal.flush(true) } catch (error) { journal.discard(entry); throw error } }
@@ -102,13 +103,13 @@ export class BattleRecords {
   private apply(record: StoredRecord, entry: ArchiveEntry, observation?: (value: Record<string, unknown>) => void): void {
     record.updatedAt = Math.max(record.updatedAt, entry.at)
     const raw = entry.value as Record<string, unknown>
-    const value = entry.schemaVersion === 2 || entry.kind === 'event' || entry.kind === 'feedback' ? raw : Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, value && typeof value === 'object' ? { $ra2cArchive: { raw: value } } : value]))
+    const value = (entry.schemaVersion ?? 1) >= 2 || entry.kind === 'event' || entry.kind === 'feedback' ? raw : Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, value && typeof value === 'object' ? { $ra2cArchive: { raw: value } } : value]))
     if (entry.kind === 'event') record.events.push(value as unknown as CommandEvent)
     if (entry.kind === 'feedback') record.feedback.push(value as unknown as CommandFeedback)
     if (entry.kind === 'transcript') {
       if (typeof value.requestId !== 'string') throw new Error('转写记录缺少命令 ID')
       const id = canonicalId(value.requestId)
-      if (entry.schemaVersion === 2) {
+      if ((entry.schemaVersion ?? 1) >= 2) {
         const next = { ...record.transcripts[id], ...(value.patch as object) }
         for (const key of value.removed as string[]) delete next[key]
         record.transcripts[id] = next
@@ -116,16 +117,12 @@ export class BattleRecords {
     }
     if (entry.kind === 'compilation') record.compilations.push(value as Compilation)
     if (entry.kind === 'observation') {
-      if (entry.schemaVersion === 2) {
-        if (!['full', 'delta'].includes(String(value.mode)) || value.mode === 'delta' && value.base !== record.observationCount - 1) throw new Error('观察变化缺少正确的前序记录')
-        const next = { ...(value.mode === 'full' ? {} : record.observations.at(-1)), ...(value.patch as object) }
-        for (const key of value.removed as string[]) delete next[key]
-        record.observations = [next]
-      } else record.observations = [value]
+      if ((entry.schemaVersion ?? 1) >= 2) record.observations = [decodeObservation(record.observations.at(-1) ?? {}, value, record.observationCount, entry.schemaVersion)]
+      else record.observations = [value]
       record.observationCount++
       observation?.(record.observations[0]!)
     }
-    if (entry.schemaVersion === 2) record.schemaVersion = 2
+    record.schemaVersion = Math.max(record.schemaVersion, entry.schemaVersion ?? 1) as BattleRecord['schemaVersion']
   }
   event = (event: CommandEvent): void => this.guarded(() => {
     if (event.sessionKey === undefined && event.stage === 'received') return
@@ -172,7 +169,7 @@ export class BattleRecords {
     }
     // 比较实际保存的战场内容；时间戳和采样序号不产生重复观察。
     const fingerprint = hash(observation)
-    if (!full && previous?.value === fingerprint) return
+    if (previous?.value === fingerprint) return
     this.append(this.ensure(snap.sessionKey), 'observation', { at: Date.now(), tick: snap.tick, ...observation }, false, full)
     this.fingerprints.set(snap.sessionKey, { value: fingerprint, stages, tick: snap.tick })
   }
@@ -182,7 +179,7 @@ export class BattleRecords {
     if (cached) return cached
     const path = join(this.folder, id)
     if (!existsSync(join(path, 'meta.json'))) return undefined
-    const meta = JSON.parse(readFileSync(join(path, 'meta.json'), 'utf8')) as BattleRecordInfo & { sessionKey: string; schemaVersion?: 1 | 2 }
+    const meta = JSON.parse(readFileSync(join(path, 'meta.json'), 'utf8')) as BattleRecordInfo & { sessionKey: string; schemaVersion?: 1 | 2 | 3 }
     const record: StoredRecord = { schemaVersion: meta.schemaVersion ?? 1, id, sessionKey: meta.sessionKey, startedAt: meta.startedAt, updatedAt: meta.startedAt, events: [], transcripts: {}, compilations: [], observations: [], observationCount: 0, feedback: [] }
     for (const entry of this.journal(id).entries()) this.apply(record, entry)
     this.cache.set(id, record)
@@ -356,7 +353,11 @@ export class BattleRecords {
     if (observation) {
       lines.push('## 最后观察到的成果与态势', '', `游戏 tick：${String(observation.tick)}；资金：${String(observation.credits)}`)
       if (observation.power) lines.push(`电力：${JSON.stringify(observation.power)}`)
-      lines.push('', '编队与生产记录（提交和实际产出分别记录）：', '', fence(JSON.stringify({ formations: observation.formations, production: observation.production }, null, 2), 'json'), '')
+      const production = Array.isArray(observation.production) ? observation.production.map(record => {
+        const region = record.placementRegion
+        return { ...record, ...(region ? { placementRegion: { id: region.id, name: region.name } } : {}) }
+      }) : observation.production
+      lines.push('', '编队与生产记录（提交和实际产出分别记录，分区边界保存在完整归档中）：', '', fence(JSON.stringify({ formations: observation.formations, production }, null, 2), 'json'), '')
     }
     return `${lines.join('\n')}\n`
   }

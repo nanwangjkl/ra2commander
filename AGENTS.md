@@ -75,15 +75,17 @@ pnpm game-data:check
 
 ## 对局记录与反馈
 
-新命令只写 `.runtime/battles/<battle-id>/`：v2 `events.jsonl` 保存变化与引用，`objects/` 按哈希保存正文，`meta.json` 和 `summary.md` 为派生索引/复盘。反馈成功前同步正文和日志；保存失败保留输入供重试。旧 v1 日志与 `.runtime/transcripts/` 继续兼容读取，不批量覆盖历史。
+新命令只写 `.runtime/battles/<battle-id>/`：v3 `events.jsonl` 保存变化与引用，动态列表按成员身份和字段记变化；`objects/` 按哈希保存正文，`meta.json` 和 `summary.md` 为派生索引/复盘。相同观察不重复保存，关键变化保留完整上下文。反馈成功前同步正文和日志；保存失败保留输入供重试。旧 v1/v2 日志与 `.runtime/transcripts/` 继续兼容读取，不批量覆盖历史。
 
 ```sh
 pnpm records:read --list
 pnpm records:read <battle-id>             # 展开引用输出完整 JSON，无需游戏或 Companion
 pnpm records:read <battle-id> --summary
+pnpm records:export <battle-id>          # 无损去重并生成单局 .ra2c.jsonl.gz 提交包
+pnpm records:read <提交包路径> --summary  # 可在没有游戏和原档的机器读取
 ```
 
-归档供玩家与开发 Agent 复盘。侧栏只保留当前局命令和反馈，不提供历史选择、导出或代码预览；如需归档 UI，另设页面与 URL。数据格式与接口见[对局记录](doc/spec/battle-records.md)。
+归档供玩家与开发 Agent 复盘。提交包默认写 `.runtime/record-exports/`，导出前后逐事件校验，保留所有命令、反馈、错误、代码和历史观察，原档不改写；不包含无引用正文、临时文件和派生摘要，不上传。用户于 2026-10-27 明确只优化后续新增记录，存量原档保持原样；在核对新对局体积后验收此轮优化并要求提交推送。侧栏只保留当前局命令和反馈，不提供历史选择、导出或代码预览；如需归档 UI，另设页面与 URL。数据格式与接口见[对局记录](doc/spec/battle-records.md)。
 
 ## 地图工具
 

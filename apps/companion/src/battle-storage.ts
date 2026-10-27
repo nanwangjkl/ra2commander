@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, closeSync, existsSync, fstatSync, ftruncateSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, renameSync, truncateSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-export interface ArchiveEntry { schemaVersion?: 1 | 2; kind: 'event' | 'transcript' | 'compilation' | 'observation' | 'feedback'; at: number; value: unknown }
+export interface ArchiveEntry { schemaVersion?: 1 | 2 | 3; kind: 'event' | 'transcript' | 'compilation' | 'observation' | 'feedback'; at: number; value: unknown }
 type Reference = { $ra2cArchive: { hash: string; format: 'text' | 'json' | 'json-string'; prefix?: string; suffix?: string } }
 const digest = (kind: string, text: string) => createHash('sha256').update(`${kind}\0${text}`).digest('hex')
 export const jsonValue = (value: unknown): unknown => value === undefined ? undefined : JSON.parse(JSON.stringify(value))
@@ -126,6 +126,7 @@ export class BattleJournal {
   private tail: { offset: number; text: string; valid: boolean } | undefined
   private readonly path: string
   constructor(readonly folder: string) { this.path = join(folder, 'events.jsonl'); this.objects = new BattleObjects(folder) }
+  get incompleteTail(): boolean { return this.tail?.valid === false }
   *entries(onlyKind?: ArchiveEntry['kind']): Generator<ArchiveEntry> {
     if (!existsSync(this.path)) return
     const fd = openSync(this.path, 'r'), buffer = Buffer.alloc(64 * 1024)
@@ -135,7 +136,7 @@ export class BattleJournal {
       const kind = onlyKind && /\"kind\"\s*:\s*\"([^\"]+)\"/.exec(text.slice(0, 256))?.[1]
       if (kind && kind !== onlyKind) return undefined
       const entry = JSON.parse(text) as ArchiveEntry
-      if (![undefined, 1, 2].includes(entry.schemaVersion) || !['event', 'transcript', 'compilation', 'observation', 'feedback'].includes(entry.kind) || !Number.isFinite(entry.at) || !Object.hasOwn(entry, 'value')) throw new Error('记录结构或版本非法')
+      if (![undefined, 1, 2, 3].includes(entry.schemaVersion) || !['event', 'transcript', 'compilation', 'observation', 'feedback'].includes(entry.kind) || !Number.isFinite(entry.at) || !Object.hasOwn(entry, 'value')) throw new Error('记录结构或版本非法')
       return entry
     }
     try {
