@@ -42,6 +42,23 @@ function pageBridge() {
   return { window, api, submitted, sample, next, poll: () => poll(), install, own, enemy, setTick: (value: number) => { tick = value } }
 }
 
+test('撤销生产只按本步真实同名队列数量提交，不影响其他项目', () => {
+  const page = pageBridge()
+  let queued = 2
+  Object.assign(page.api, {
+    production: { queues: () => [{ type: 4, items: [{ name: 'ORCA', quantity: queued }, { name: 'YAK', quantity: 1 }] }], available: () => [] },
+    cancel: (name: string, quantity: number) => page.submitted.push({ name, quantity }),
+  })
+  let snap = page.sample()
+  const submit = (quantity: number) => page.window.__ra2cSubmit(snap.session, { kind: 'cancel', name: 'ORCA', quantity }, snap.seq, snap.sessionKey)
+  assert.equal(submit(4).ok, true)
+  assert.deepEqual(page.submitted, [{ name: 'ORCA', quantity: 2 }])
+  queued = 0; snap = page.next()
+  assert.equal(submit(2).reason, 'not-queued')
+  assert.equal(submit(-1).reason, 'invalid-quantity')
+  assert.equal(page.submitted.length, 1)
+})
+
 test('分区内建造遵守异形边界和孔洞，无落点时不退回基地默认位置', () => {
   const page = pageBridge()
   page.own.push({ ...page.own[0]!, id: 500, name: 'GACNST', type: 2, tile: { rx: 50, ry: 50 } })

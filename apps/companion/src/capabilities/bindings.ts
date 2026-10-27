@@ -84,9 +84,9 @@ async function control(params: CapabilityParameters['control.stop'], context: Bi
   }
   return { choices: [`${owners.join('、') || '全部脚本'} 已恢复保留的目标`], refreshOwners }
 }
-function findGoal(context: BindingContext, token: string) {
+function findGoal(context: BindingContext, token: string, includeCancelled = false) {
   const { ctx } = context
-  const goals = [...ctx.runtime.goals.values()].reverse().filter(goal => goal.status !== 'cancelled')
+  const goals = [...ctx.runtime.goals.values()].reverse().filter(goal => goal.status !== 'cancelled' || includeCancelled && goal.spec.kind === 'production')
   const found = goals.find(goal => goal.spec.id === token)
     ?? goals.find(goal => goal.spec.label === token || goal.spec.rawText.includes(token) || (goal.spec.kind === 'production' && goal.spec.target.toLowerCase() === token.toLowerCase()))
   if (!found) throw new Error(`目标不存在：${token}`)
@@ -286,10 +286,15 @@ export const bindings: Binders = {
   'control.pause': (params, context) => control(params, context, 'pause'),
   'control.resume': (params, context) => control(params, context, 'resume'),
   'goal.cancel': async (params, context) => {
-    const goal = findGoal(context, params.goalId)
+    const goal = findGoal(context, params.goalId, true)
     if (goal.status === 'completed') return done(`目标 ${goal.spec.id} 已完成，无需取消`)
-    await context.ctx.runtime.cancelGoal(goal.spec.id)
-    return { choices: [`目标 ${goal.spec.id} 已取消，其余目标继续`], ...(goal.spec.executionMode === 'native' ? {} : { refreshOwners: [goal.ownerId] }) }
+    const detail = goal.spec.kind === 'production' ? await context.ctx.runtime.cancelProductionGoal(goal.spec.id) : (await context.ctx.runtime.cancelGoal(goal.spec.id), '目标已取消')
+    const runtime = context.ctx.runtime, program = runtime.programs.get(goal.ownerId)
+    const waiting = program && !['paused', 'stopped'].includes(program.status) && !runtime.hasPendingCommand(goal.ownerId) && program.goalIds.some(id => {
+      const retained = runtime.goals.get(id)
+      return retained && ['pending', 'active'].includes(retained.status) && retained.spec.executionMode !== 'native' && JSON.stringify(retained.spec) !== JSON.stringify(retained.activeSpec)
+    })
+    return { choices: [`目标 ${goal.spec.id}：${detail}，其余目标继续`], ...(waiting ? { refreshOwners: [goal.ownerId] } : {}) }
   },
   'goal.edit': async (params, context) => {
     const goal = findGoal(context, params.goalId)

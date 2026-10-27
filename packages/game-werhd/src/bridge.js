@@ -9,7 +9,7 @@
 // 且带性能护栏（超预算自动降频）。
 (() => {
   'use strict';
-  var BRIDGE_VERSION = 12;
+  var BRIDGE_VERSION = 13;
   if (window.__ra2cInstalled && window.__ra2cVersion === BRIDGE_VERSION) return;
   var upgrading = false;
   if (window.__ra2cInstalled && window.__ra2cSessionKey && typeof window.__ra2cSubmit === 'function') {
@@ -249,7 +249,15 @@
     try {
       switch (action.kind) {
         case 'produce': w.produce(action.name, action.quantity || 1); return { ok: true, submitted: 1, session: session };
-        case 'cancel': w.cancel(action.name, action.quantity || 1); return { ok: true, submitted: 1, session: session };
+        case 'cancel': {
+          if (!Number.isSafeInteger(action.quantity) || action.quantity < 1) return { ok: false, reason: 'invalid-quantity', submitted: 0, session: session };
+          var queued = (w.production.queues() || []).reduce(function (total, queue) {
+            return total + (queue.items || []).reduce(function (n, item) { return n + (item.name === action.name ? item.quantity : 0); }, 0);
+          }, 0);
+          if (!queued) return { ok: false, reason: 'not-queued', submitted: 0, session: session };
+          w.cancel(action.name, Math.min(queued, action.quantity));
+          return { ok: true, submitted: 1, session: session };
+        }
         case 'place': {
           var px = action.x, py = action.y, elevation;
           if (!Number.isFinite(px) || !Number.isFinite(py)) {

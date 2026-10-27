@@ -1,6 +1,7 @@
 import { closeSync, constants, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { ownerId, goalOwner, goalExecutionMode, normalizeAttackGoal, validBuildingPlacement, validTargetRegion } from '@ra2c/contracts'
+import { validateCancellation } from './production-cancellation.ts'
 import { validateAttackSources } from './attack-selection.ts'
 import { validateGoalSpec, validateGoalFacts } from './goals/index.ts'
 import type { TaskRuntime } from './index.ts'
@@ -52,6 +53,7 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
 
   for (const p of state.programs) if ([...p.goalIds, ...p.activeGoalIds].some(id => state.goals.find(([key]) => key === id)![1].ownerId !== p.id)) throw new Error('目标归属非法')
   for (const r of state.production) if (!ids.has(r.goalId) || !Number.isSafeInteger(r.quantity) || r.quantity < 1 || !Array.isArray(r.observedIds) || !['reserved', 'submitted', 'unknown', 'rejected'].includes(r.state)) throw new Error('生产记录非法')
+  for (const record of state.production) validateCancellation(record)
   for (const record of state.production) if (record.placement && (!record.building || !validBuildingPlacement(record.placement, runtime.snapshot.mapWidth, runtime.snapshot.mapHeight) || record.placement.directions.length !== record.quantity || record.placementResults?.some(result => !record.observedIds.includes(result.unitId) || !Number.isFinite(result.x) || !Number.isFinite(result.y) || typeof result.matched !== 'boolean'))) throw new Error('建筑放置记录非法')
   for (const record of state.production) if (record.placementRegion && (!record.building || !validTargetRegion(record.placementRegion) || record.placementResults?.some(result => !record.observedIds.includes(result.unitId) || !Number.isFinite(result.x) || !Number.isFinite(result.y) || typeof result.matched !== 'boolean'))) throw new Error('建筑分区记录非法')
   const unitOwners = new Set<number>()
@@ -110,7 +112,7 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
     delete (restored.facts as typeof restored.facts & { done?: boolean }).done
     runtime.goals.set(id, restored)
   }
-  runtime.production.push(...structuredClone(state.production).map(r => ({ ...r, state: r.state === 'reserved' ? 'unknown' as const : r.state })))
+  runtime.production.push(...structuredClone(state.production).map(r => ({ ...r, state: r.state === 'reserved' ? 'unknown' as const : r.state, ...(r.cancellation?.state === 'prepared' ? { cancellation: { ...r.cancellation, state: 'unknown' as const } } : {}) })))
   runtime.seenUnitIds.clear()
   for (const id of state.seenUnitIds) runtime.seenUnitIds.add(id)
   for (const [queue, id] of state.pausedQueues) if (ids.has(id) && Number.isInteger(queue) && queue >= 0 && queue <= 5) runtime.pausedQueues.set(queue, id)

@@ -91,7 +91,7 @@ reinforce @一队 MTNK 6
 
 每队独立一份脚本，全局一份脚本。`produce`、`form create/transfer/dissolve`、`reinforce` 和 `rally` 都更新全局目标并整体替换其代码；`task new <标签> @编队 ...` 仅替换对应编队代码。`form create` 也支持单位 ID、范围或兵种筛选。编队成员变更停车提交确认后交接，`form list` 查看实际归属。
 
-`goal list` 显示目标状态、待生效变更和生产提交记录；`goal edit <生产目标ID> <总量>` 保留已提交进度；`goal cancel <目标ID>` 立即停止该目标的后续执行，其余全局目标继续。`global pause/resume` 控制全局脚本及本机目标，`task stop/pause/resume @编队` 控制编队，旧任务标签也可解析到对应编队。普通改令失败时旧目标继续，新增目标显示待生效及失败原因。
+`goal list` 显示目标状态、待生效变更和生产提交记录；`goal edit <生产目标ID> <总量>` 保留已提交进度；`goal cancel <目标ID>` 立即停止该目标的后续执行，若为生产目标还撤销其尚在游戏队列中的数量，保留已造产物，其余目标继续。撤销以真实队列变化确认，记录与原始提交一同持久化；旧已取消生产目标仍有未决提交时可再次发令。详见[生产取消](../spec/production-cancellation.md)。`global pause/resume` 控制全局脚本及本机目标，`task stop/pause/resume @编队` 控制编队，旧任务标签也可解析到对应编队。普通改令失败时旧目标继续，新增目标显示待生效及失败原因。
 
 `reinforce @编队 <兵种名> <维持数量> [--source=@来源编队]` 持续补员，缺省只使用未编队单位，不额外生产；`rally <ids|all> <x> <y>` 给未编队单位建立集结目标。底层 `move/amove/gather/attack` 仅供调试，涉及活动脚本或待编译命令管理的单位时先停止对应控制对象。
 

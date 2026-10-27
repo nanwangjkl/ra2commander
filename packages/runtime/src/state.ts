@@ -16,6 +16,7 @@ export interface GoalProgress {
   /** 已完成生产被追加总量时，保留前次完成事实供待生效/失败状态展示。 */
   completedQuantity?: number
   placementBlocked?: boolean
+  cancelProduction?: boolean
   repair?: import('./repair.ts').RepairState
   relocation?: import('./relocation.ts').RelocationState
   mining?: import('./mining.ts').MiningState
@@ -24,7 +25,7 @@ export interface GoalProgress {
 }
 export interface GoalFactKeys {
   combat: 'routeIndex'
-  production: 'completedQuantity' | 'placementBlocked'
+  production: 'completedQuantity' | 'placementBlocked' | 'cancelProduction'
   repair: 'repair'
   relocate: 'relocation'
   mining: 'mining'
@@ -70,6 +71,20 @@ export interface ProductionRecord {
   state: 'reserved' | 'submitted' | 'unknown' | 'rejected'
   observedIds: number[]
   placed: boolean
+  /** 实际队列减少确认的累计撤销量，不改写原始提交量。 */
+  cancelledQuantity?: number
+  cancellation?: {
+    state: 'prepared' | 'sent' | 'unknown' | 'confirmed'
+    quantity: number
+    before: number
+    queueType: number
+    seq: number
+    tick: number
+    observed: number
+    knownIds: number[]
+    born: number
+    removed?: number
+  }
   placement?: import('@ra2c/contracts').BuildingPlacement
   placementRegion?: import('@ra2c/contracts').TargetRegion
   placementResults?: Array<{ unitId: number; x: number; y: number; elevation?: number; matched: boolean }>

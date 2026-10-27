@@ -56,7 +56,7 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
         self: snap.self.map(unit => ({ id: unit.id, name: unit.name, type: unit.type, ammo: unit.ammo, hasWrenchRepair: unit.hasWrenchRepair, formationId: ctx.formations.ownerOf(unit.id) ?? null, hitPoints: unit.hitPoints, maxHitPoints: unit.maxHitPoints, transport: unit.transport, isRepairVehicle: isRepairVehicle(unit, ctx, catalog), canDeploy: unit.canDeploy, isCombat: isCombatUnit(unit, catalog) })),
         formations: ctx.formations.list(), catalog: catalog.forTranscript(text),
         skillRuns: [...ctx.runtime.skillRuns.values()].filter(run => ['preparing', 'exploring', 'repairing'].includes(run.status)).map(run => ({ id: run.id, skillId: run.skillId, version: run.version, formationId: run.formationId, status: run.status })),
-        goals: [...ctx.runtime.goals.values()].filter(goal => goal.status !== 'cancelled').slice(-30).map(goal => ({ id: goal.spec.id, kind: goal.spec.kind, text: goal.spec.rawText, label: goal.spec.label, status: goal.status, owner: goal.ownerId, ...(goal.spec.kind === 'production' ? { target: goal.spec.target, quantity: goal.spec.quantity } : {}) })),
+        goals: [...ctx.runtime.goals.values()].filter(goal => goal.status !== 'cancelled' || goal.spec.kind === 'production' && ctx.runtime.pendingProductionCount(goal.spec.id) > 0).slice(-30).map(goal => ({ id: goal.spec.id, kind: goal.spec.kind, text: goal.spec.rawText, label: goal.spec.label, status: goal.status, owner: goal.ownerId, ...(goal.spec.kind === 'production' ? { target: goal.spec.target, quantity: goal.spec.quantity, pendingSubmissions: ctx.runtime.pendingProductionCount(goal.spec.id) } : {}) })),
         map: ctx.mapRegions && ctx.mapSessionKey === key ? { name: ctx.mapRegions.scheme.map.name, regions: ctx.mapRegions.scheme.regions.map(region => region.name) } : null }) },
     ]
     save()
@@ -90,8 +90,8 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
             ...JSON.parse(record.messages[1]!.content),
             self: current.self.map(unit => ({ ...unit, formationId: ctx.formations.ownerOf(unit.id) ?? null })),
             formations: ctx.formations.list(),
-            goals: [...ctx.runtime.goals.values()].filter(goal => goal.status !== 'cancelled').slice(-30).map(goal => ({ id: goal.spec.id, kind: goal.spec.kind, text: goal.spec.rawText, status: goal.status, owner: goal.ownerId,
-              ...(goal.spec.kind === 'production' ? { target: goal.spec.target, quantity: goal.spec.quantity } : {}) })),
+            goals: [...ctx.runtime.goals.values()].filter(goal => goal.status !== 'cancelled' || goal.spec.kind === 'production' && ctx.runtime.pendingProductionCount(goal.spec.id) > 0).slice(-30).map(goal => ({ id: goal.spec.id, kind: goal.spec.kind, text: goal.spec.rawText, status: goal.status, owner: goal.ownerId,
+              ...(goal.spec.kind === 'production' ? { target: goal.spec.target, quantity: goal.spec.quantity, pendingSubmissions: ctx.runtime.pendingProductionCount(goal.spec.id) } : {}) })),
             catalog: catalog.forTranscript(`${text} ${JSON.stringify(failures)}`),
           }) },
         ]

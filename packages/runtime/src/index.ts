@@ -8,6 +8,7 @@ import { codeHash, type StepExecutor } from '@ra2c/js-worker'
 import { FormationRegistry } from './formation.ts'
 import { emptyFacts, type GoalState, type ProgramState, type ProductionRecord, type Handoff } from './state.ts'
 import { observeProduction, productionProgress } from './production-progress.ts'
+import { cancellationDetail, observeCancellations, pendingProduction, prepareCancellation } from './production-cancellation.ts'
 import { ExplorationStore, skillGoalIds, type SkillRun } from './exploration.ts'
 import { RecoveryMonitor } from './recovery.ts'
 import { handlerFor, validateGoalSpec, validateGoalFacts } from './goals/index.ts'
@@ -53,6 +54,7 @@ export class TaskRuntime {
   private retiredSessions = new Set<string>()
   private latest?: Snapshot
   private draining: Promise<void> | undefined
+  private cancelling: Promise<void> | undefined
   /** 新快照不重置下一位，避免前面的控制对象反复抢先。 */
   private nextProgram = 0
   private pending = new Map<string, { lease: CompileLease; abort: AbortController }>()
@@ -93,7 +95,7 @@ export class TaskRuntime {
     const progress = this.latest && ['completed', 'partial', 'failed'].includes(goal.status) ? handler.progress?.(this.goalContext(goal.spec, this.latest), this.project(goal.spec, this.latest).view) ?? {} : {}
     if (goal.status === 'partial' || goal.status === 'failed') return { ...progress, state: goal.status, detail: [goal.facts.outcomeDetail ?? '探索未全部完成', progress.detail].filter(Boolean).join('；') }
     if (goal.status === 'completed') return { state: 'completed', ...progress }
-    if (goal.status === 'cancelled') return { state: 'cancelled', detail: goal.facts.cancelReason ?? '目标已取消或被替换' }
+    if (goal.status === 'cancelled') return { state: 'cancelled', detail: goal.facts.cancelProduction ? cancellationDetail(goal, this.production) : goal.facts.cancelReason ?? '目标已取消或被替换' }
     const program = this.programs.get(goal.ownerId)
     const spec = goal.activeSpec
     if (!spec && goal.status === 'pending' && goal.facts.completedQuantity !== undefined) return { state: 'completed', detail: `前次${goal.facts.completedQuantity}个已完成，新增总量待生效` }
@@ -380,6 +382,54 @@ export class TaskRuntime {
     }
   }
 
+  pendingProductionCount(id: string): number { return this.production.filter(record => record.goalId === id).reduce((n, record) => n + pendingProduction(record), 0) }
+
+  async cancelProductionGoal(id: string): Promise<string> {
+    const goal = this.goals.get(id)
+    if (!goal || goal.spec.kind !== 'production') throw new Error('生产目标不存在')
+    if (goal.status === 'completed') return '生产目标已完成'
+    await this.cancelGoal(id)
+    if (goal.status !== 'cancelled') return '目标已结束'
+    goal.facts.cancelProduction = true
+    await this.flushProductionCancellations()
+    return cancellationDetail(goal, this.production)
+  }
+
+  private flushProductionCancellations(): Promise<void> {
+    return this.cancelling ??= this.sendProductionCancellations().finally(() => { this.cancelling = undefined })
+  }
+  private async sendProductionCancellations(): Promise<void> {
+    for (const record of this.production) {
+      const goal = this.goals.get(record.goalId), snap = this.latest
+      if (!snap || goal?.status !== 'cancelled' || !goal.facts.cancelProduction || !pendingProduction(record)) continue
+      // 其他目标仍需的共享前置保留；这里只撤销本次目标的提交。
+      if (goal.spec.kind === 'production' && record.name !== goal.spec.target && [...this.goals.values()].some(other => other !== goal && ['pending', 'active'].includes(other.status)
+        && other.spec.kind === 'production' && [other.spec.target, ...other.spec.prerequisites].includes(record.name))) continue
+      if (!prepareCancellation(record, this.production, snap)) continue
+      const ticket = record.cancellation!
+      const valid = () => this.sessionKey === snap.sessionKey && this.latest === snap && this.production.includes(record) && record.cancellation === ticket && ticket.state === 'prepared' && goal.status === 'cancelled'
+      try { await this.deps.checkpoint() }
+      catch (error) { delete record.cancellation; goal.facts.blocked = `撤销记录保存失败：${String(error).slice(0, 100)}`; return }
+      try {
+        if (!valid()) { if (record.cancellation === ticket && ticket.state !== 'confirmed') delete record.cancellation; continue }
+        const results = await this.deps.submit([{ kind: 'cancel', name: record.name, quantity: ticket.quantity }], snap, valid)
+        if (ticket.state === 'confirmed') continue
+        if (!results.length || results.every(result => !result.ok && result.submitted === 0)) {
+          delete record.cancellation
+          goal.facts.blocked = `队列撤销尚未发送：${results.map(result => result.reason).join('、')}`
+        } else {
+          ticket.state = results.length && results.every(result => result.ok) ? 'sent' : 'unknown'
+          delete goal.facts.blocked
+        }
+      } catch (error) {
+        // API 调用结果不明时保留票据，重启/重试不能盲目再撤一份。
+        if (ticket.state === 'confirmed') continue
+        ticket.state = 'unknown'
+        goal.facts.blocked = `队列撤销结果待确认：${String(error).slice(0, 120)}`
+      }
+    }
+  }
+
   async stop(id: string): Promise<void> {
     const program = this.programs.get(id) ?? this.programs.get(this.goals.get(id)?.ownerId ?? '')
     if (!program) return
@@ -459,6 +509,7 @@ export class TaskRuntime {
       catch (error) { if (goalExecutionMode(spec) !== 'native') throw error; this.nativeFault(goal, error) }
     }
     observeProduction(this.production, this.seenUnitIds, snap, converted)
+    observeCancellations(this.production, snap)
     for (const last of [false, true]) for (const goal of this.goals.values()) {
       const spec = goal.activeSpec
       if (goal.status !== 'active' || !spec) continue
@@ -509,6 +560,10 @@ export class TaskRuntime {
     while (this.latest && consumed !== this.latest) {
       const snap = this.latest
       consumed = snap
+      if (this.production.some(record => pendingProduction(record) > 0 && this.goals.get(record.goalId)?.facts.cancelProduction)) {
+        await this.flushProductionCancellations()
+        if (this.latest !== snap) continue
+      }
       if (this.handoffs.length) await this.flushHandoffs(snap)
       const programs = [...this.programs.values()]
       const start = this.nextProgram % (programs.length || 1)

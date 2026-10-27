@@ -30,6 +30,7 @@ M1（公共 API 桥）与 M2 单队循环已实测：文本命令经云模型（
 | [维修车 Skill](doc/spec/repair-vehicle-skill.md) | 如何生产、组装维修车，按坦克血量选择目标并让多车并行维修？ |
 | [基础能力、提示词与 Skill 改造方案](doc/roadmap/capabilities-prompts-and-skills.md) | 如何统一能力入口、将提示词外置为 Markdown，并组合“探路”等常规操作？（A～C 已验收，探路流程已实机认可） |
 | [玩家基础能力](doc/spec/player-capabilities.md) | 已接通哪些能力，Markdown 参数如何连接模型、类型与宿主，如何新增能力？ |
+| [生产取消](doc/spec/production-cancellation.md) | 如何撤销一个目标剩余的游戏队列，保留产物并继续其他生产？ |
 | [建筑方位要求](doc/spec/building-placement.md) | 如何保留明确的上、下、左、右要求，选择合法落点并确认实际位置？ |
 | [建筑维修与出售](doc/spec/building-operations.md) | 如何直接使用原生扳手维修，或出售指定己方建筑，并确认实际效果？ |
 | [基地搬迁与区域建造](doc/spec/base-relocation.md) | 如何收起基地、搬至分区重新展开，并等待搬迁后在区域内建造？ |

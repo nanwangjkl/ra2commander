@@ -1,6 +1,7 @@
 import { validBuildingPlacement, validTargetRegion } from '@ra2c/contracts'
 import type { GoalConstraints, GoalView } from '@ra2c/contracts'
 import { productionProgress } from '../production-progress.ts'
+import { pendingProduction } from '../production-cancellation.ts'
 import { alive as living, baseConstraints, projection, stringsValid } from './common.ts'
 import type { GoalContext, GoalHandler } from './types.ts'
 
@@ -15,19 +16,19 @@ function constraintsFor(ctx: GoalContext<'production'>, observed: ReturnType<typ
   // 减少产量属于立即收紧；增量仍需等候新代码激活。
   const quantity = desired?.kind === 'production' ? Math.min(spec.quantity, desired.quantity) : spec.quantity
   const progress = quantity === spec.quantity ? observed : productionProgress({ ...spec, quantity }, production, snap)
-  const allowedPlace = production.filter(r => r.building && !r.placed && r.state !== 'rejected' && (r.name === spec.target ? r.goalId === spec.id : spec.prerequisites.includes(r.name))).map(r => r.name)
+  const allowedPlace = production.filter(r => r.building && !r.placed && pendingProduction(r) > 0 && (r.name === spec.target ? r.goalId === spec.id : spec.prerequisites.includes(r.name))).map(r => r.name)
   const placements: NonNullable<GoalConstraints['placements']> = {}
   const placementRegions: NonNullable<GoalConstraints['placementRegions']> = {}
   if (spec.placementRegion) placementRegions[spec.target] = spec.placementRegion
   for (const name of allowedPlace) {
-    const record = production.find(r => r.building && !r.placed && r.state !== 'rejected' && r.name === name && (name === spec.target ? r.goalId === spec.id : spec.prerequisites.includes(name)))
+    const record = production.find(r => r.building && !r.placed && pendingProduction(r) > 0 && r.name === name && (name === spec.target ? r.goalId === spec.id : spec.prerequisites.includes(name)))
     const direction = record?.placement?.directions[record.observedIds.length]
     if (record?.placement && direction) placements[name] = { id: `${record.id}:${record.observedIds.length}`, anchor: record.placement.anchor, direction }
   }
   const productionQueueTypes = { ...Object.fromEntries(spec.prerequisites.map(name => [name, 0])), [spec.target]: spec.targetType === 2 ? 0 : spec.targetType === 3 ? 2 : spec.targetType === 1 ? 4 : 3, ...spec.queueTypes }
   const queueSpace: Record<number, number> = {}
   for (const queue of snap.production?.queues ?? []) {
-    const pending = production.filter(r => r.state !== 'rejected' && (r.queueType ?? (r.building ? 0 : 3)) === queue.type).reduce((n, r) => n + Math.max(0, r.quantity - r.observedIds.length), 0)
+    const pending = production.filter(r => (r.queueType ?? (r.building ? 0 : 3)) === queue.type).reduce((n, r) => n + pendingProduction(r), 0)
     queueSpace[queue.type] = Math.max(0, queue.maxSize - Math.max(queue.size, pending))
   }
   const members = spec.formationId ? alive(progress.observed[spec.target] ?? []).filter(id => !formations.ownerOf(id)) : []
