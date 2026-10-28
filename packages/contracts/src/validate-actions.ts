@@ -23,7 +23,7 @@ export function liveScriptActions(value: ScriptAction[], c: StepConstraints, sna
     if (goal.buildingActions && !goal.buildingActions.some(expected => sameBuildingAction(action, expected))) return []
     if (goal.miningActions && !goal.miningActions.some(expected => sameMiningAction(action, expected))) return []
     if (action.kind === 'produce' && typeof action.name === 'string' && Number.isSafeInteger(action.quantity) && action.quantity > 0 && goal.produceRemaining?.[action.name] === 0) return []
-    if (action.kind === 'attack' && Number.isSafeInteger(action.targetId) && !goal.enemyIds.includes(action.targetId)) return []
+    if (action.kind === 'attack' && Number.isSafeInteger(action.targetId) && !goal.enemyIds.includes(action.targetId) && !(goal.coverFire?.enemyIds.includes(action.targetId) && action.unitIds.every(id => goal.coverFire!.unitIds.includes(id)))) return []
     if ((action.kind === 'repair' || action.kind === 'enterTransport') && Number.isSafeInteger(action.targetId) && !goal.friendlyTargetIds?.includes(action.targetId)) return []
     if ('unitIds' in action && Array.isArray(action.unitIds) && action.unitIds.length && action.unitIds.every(id => Number.isSafeInteger(id))) {
       if (['createFormation', 'transferUnits'].includes(action.kind)) {
@@ -189,7 +189,8 @@ export function validateActions(value: unknown, c: StepConstraints, snapshot?: S
       continue
     }
     if (!['move', 'attackMove', 'gather', 'attack', 'stop', 'deploy', 'scatter', 'guard', 'repair', 'enterTransport', 'repairBuilding', 'sellBuilding'].includes(a.kind)) return '未知动作类型'
-    if (a.kind !== 'stop' && !c.allowedActions?.includes(a.kind)) return `未授权动作: ${a.kind}`
+    const coverFire = a.kind === 'attack' && c.coverFire?.enemyIds.includes(a.targetId) && a.unitIds.every(id => c.coverFire!.unitIds.includes(id))
+    if (a.kind !== 'stop' && !c.allowedActions?.includes(a.kind) && !coverFire) return `未授权动作: ${a.kind}`
     if (!Array.isArray(a.unitIds) || !a.unitIds.length || a.unitIds.some(id => !Number.isSafeInteger(id) || !allowed.has(id))) return '引用未授权或失效单位'
     if (a.kind === 'repairBuilding' || a.kind === 'sellBuilding') {
       if (snapshot && a.unitIds.some(id => !snapshot.self.some(unit => unit.id === id && unit.type === 2))) return '建筑操作只能指向己方建筑'
@@ -218,7 +219,7 @@ export function validateActions(value: unknown, c: StepConstraints, snapshot?: S
       if (!c.region || !inRegion(a.x, a.y, c.region)) return '移动超出授权地域'
       if (a.kind === 'attackMove' && c.targetRegion && !inTargetRegion(a.x, a.y, c.targetRegion)) return '攻击移动超出目标分区'
     } else if (a.kind === 'attack') {
-      if (!enemies.has(a.targetId)) return '攻击目标已不可见'
+      if (!enemies.has(a.targetId) && !coverFire) return '攻击目标已不可见'
       const target = snapshot?.enemies.find(u => u.id === a.targetId)
       if (c.targetRegion && target && !inTargetRegion(target.rx, target.ry, c.targetRegion)) return '攻击目标不在指定分区'
       for (const id of a.unitIds) {

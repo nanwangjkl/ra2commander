@@ -2,6 +2,7 @@ import { closeSync, constants, copyFileSync, existsSync, fsyncSync, mkdirSync, o
 import { dirname } from 'node:path'
 import { ownerId, goalOwner, goalExecutionMode, normalizeAttackGoal, validBuildingPlacement, validTargetRegion } from '@ra2c/contracts'
 import { validateCancellation } from './production-cancellation.ts'
+import { validateCover } from './cover.ts'
 import { validateAttackSources } from './attack-selection.ts'
 import { validateGoalSpec, validateGoalFacts } from './goals/index.ts'
 import type { TaskRuntime } from './index.ts'
@@ -59,6 +60,7 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
   const unitOwners = new Set<number>()
   const formationIds = new Set<string>()
   for (const f of state.formations) {
+    if (f.cover) { validateCover(f.cover); if (f.cover.escortIds.some(id => !f.memberIds.includes(id))) throw new Error('掩护成员不属于该队') }
     if (formationIds.has(f.id) || !Array.isArray(f.memberIds) || !Array.isArray(f.originalMemberIds) || f.memberIds.some(id => !Number.isSafeInteger(id) || unitOwners.has(id))) throw new Error('编队归属非法')
     formationIds.add(f.id)
     for (const id of f.memberIds) unitOwners.add(id)
@@ -87,7 +89,20 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
     for (const [id, goal] of state.goals) if (goal.spec.kind === 'explore' && (goal.spec.explorationId !== id || !runs.has(id))) throw new Error('探索目标缺少进度')
     const skillIds = new Set<string>()
     for (const run of state.skillRuns) {
-      if (!run.id || skillIds.has(run.id) || run.sessionKey !== state.sessionKey || skillGoalIds(run).some(id => !ids.has(id)) || !['preparing', 'exploring', 'repairing', 'completed', 'partial', 'failed', 'cancelled', 'superseded'].includes(run.status)) throw new Error('Skill 运行记录非法')
+      if (!run.id || skillIds.has(run.id) || run.sessionKey !== state.sessionKey || skillGoalIds(run).some(id => !ids.has(id)) || !['preparing', 'exploring', 'repairing', 'covering', 'completed', 'partial', 'failed', 'cancelled', 'superseded'].includes(run.status)) throw new Error('Skill 运行记录非法')
+      if (run.kind === 'cover') {
+        if (!Array.isArray(run.preparationGoalIds) || !Array.isArray(run.escortIds) || run.escortIds.some(id => !Number.isSafeInteger(id)) || run.assignedEscortIds?.some(id => !Number.isSafeInteger(id)) || run.ownedPreparationGoalIds?.some(id => !run.preparationGoalIds.includes(id))) throw new Error('掩护 Skill 来源非法')
+        if (run.cover) {
+          validateCover(run.cover)
+          if (run.cover.runId !== run.id || run.cover.protectedSources?.some(id => !run.preparationGoalIds.includes(id) || state.goals.find(([key]) => key === id)?.[1].spec.kind !== 'production') || run.cover.escortSources?.some(source => {
+            const goal = state.goals.find(([id]) => id === source.goalId)?.[1].spec
+            // 来源上限捕获于安排时；玩家后来减产不使历史角色来源失效。
+            return !run.preparationGoalIds.includes(source.goalId) || goal?.kind !== 'production'
+          })) throw new Error('掩护生产来源不匹配')
+        }
+        // 转编/解散后的检查点可能先于运行状态刷新；恢复后由真实编队配置归一化状态。
+        skillIds.add(run.id); continue
+      }
       if (run.kind === 'repair-vehicle') {
         const goal = state.goals.find(([id]) => id === run.repairGoalId)![1].spec
         if (goal.kind !== 'repair' || goal.skill?.runId !== run.id || goal.skill.hash !== run.hash || goal.formationId !== run.formationId || JSON.stringify(goal.preparationGoalIds) !== JSON.stringify(run.preparationGoalIds)) throw new Error('维修 Skill 来源关联非法')

@@ -21,7 +21,7 @@ export interface BridgeState {
  * install() 必须在打开任何页面之前调用（exposeBinding/addInitScript 是 context 级）。
  */
 /** 桥版本（与 bridge.js 的 BRIDGE_VERSION 保持一致；升级后对已开页面重装）。 */
-const BRIDGE_VERSION = 13
+const BRIDGE_VERSION = 17
 
 export function isGameDocument(url: string, gameUrl: string): boolean {
   try {
@@ -73,7 +73,20 @@ export class WerhdBridge {
   }
 
   get latest(): Snapshot | undefined {
+    this.findFrame()
     return this.latestSnapshot
+  }
+
+  /** 只读查询当前实际武器；掩护协调按批次调用，保持 tick 采样轻量。 */
+  async coverRanges(pairs: Array<{ unitId: number; targetId: number }>, sessionKey: string): Promise<Array<{ unitId: number; targetId: number; inRange: boolean; canAttack: boolean }>> {
+    return this.frame.evaluate(({ pairs, sessionKey }) => {
+      const win = window as unknown as { __ra2cSessionKey?: string; werhd?: { weaponVs(a: number, b: number, mode: string): { inRange: boolean } | undefined } }
+      if (win.__ra2cSessionKey !== sessionKey || !win.werhd) return []
+      return pairs.slice(0, 64).map(pair => {
+        try { const weapon = win.werhd!.weaponVs(pair.unitId, pair.targetId, 'current'); return { ...pair, canAttack: !!weapon, inRange: weapon?.inRange === true } }
+        catch { return { ...pair, canAttack: false, inRange: false } }
+      })
+    }, { pairs, sessionKey })
   }
 
   /** visible 表示黑幕已揭开，不是当前交战视野，也不证明可通行。 */
@@ -98,28 +111,37 @@ export class WerhdBridge {
   }
 
   private findFrame(): Frame | undefined {
-    if (this.targetFrame && !this.targetFrame.isDetached()) return this.targetFrame
-    const pages = this.context.pages()
-    if (!this.gameUrl) return pages[pages.length - 1]?.mainFrame()
-    const frames = pages.flatMap(page => page.frames()).filter(frame => isGameDocument(frame.url(), this.gameUrl!))
-    return frames.find(frame => frame.name() === 'ra2c-game') ?? frames[0]
+    const live = (frame: Frame) => !frame.isDetached() && !frame.page().isClosed() && (!this.gameUrl || isGameDocument(frame.url(), this.gameUrl))
+    if (this.targetFrame && live(this.targetFrame)) return this.targetFrame
+    const pages = this.context.pages().filter(page => !page.isClosed())
+    const frames = this.gameUrl ? pages.flatMap(page => page.frames()).filter(live) : pages.slice(-1).flatMap(page => [page.mainFrame()]).filter(live)
+    const frame = frames.find(frame => frame.name() === 'ra2c-game') ?? frames[0]
+    if (this.targetFrame !== frame) {
+      this.targetFrame = frame
+      this.latestSnapshot = undefined
+    }
+    return frame
   }
 
   get frame(): Frame {
     const frame = this.findFrame()
-    if (!frame) throw new Error('游戏页面尚未打开')
+    if (!frame) throw new Error('游戏页面已关闭或尚未打开，请重新打开工作台')
     return frame
   }
 
   async state(): Promise<BridgeState> {
     const frame = this.findFrame()
-    if (!frame) throw new Error('游戏 frame 尚未建立')
+    const waiting = (): BridgeState => ({ installed: false, session: 0, sessionKey: '', sessionNote: '游戏页面已关闭或尚未打开', apiAlive: false, hookedSession: -1, lastTickAt: 0, sampleEvery: 15, stats: { samples: 0, collectMsMax: 0, degradeCount: 0 } })
+    if (!frame) return waiting()
     try {
       return await frame.evaluate(`window.__ra2cState()`)
     } catch {
+      // 关闭窗口时frame未必标记detached；不能向已关闭的旧frame继续补装或求值。
+      const current = this.findFrame()
+      if (!current) return waiting()
       // 工作台刷新会重建同源游戏 iframe，init script 不覆盖该场景——此处补装后重试。
-      await this.ensureBridge(frame)
-      return await frame.evaluate(`window.__ra2cState()`)
+      await this.ensureBridge(current)
+      return await current.evaluate(`window.__ra2cState()`)
     }
   }
 

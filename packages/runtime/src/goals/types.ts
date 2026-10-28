@@ -1,4 +1,4 @@
-import type { ActionRequest, ActionResult, GoalConstraints, GoalExecution, GoalSpec, GoalView, Snapshot } from '@ra2c/contracts'
+import type { ActionRequest, ActionResult, FormationRequest, GoalConstraints, GoalExecution, GoalSpec, GoalView, Snapshot } from '@ra2c/contracts'
 import type { FormationRegistry } from '../formation.ts'
 import type { ExplorationStore } from '../exploration.ts'
 import type { GoalFacts, GoalState, Handoff, ProductionRecord, ProgramState } from '../state.ts'
@@ -35,7 +35,7 @@ export interface GoalHandler<K extends GoalKind = GoalKind> {
   observeLast?: boolean
   project(context: GoalContext<K>): GoalProjection
   /** 固定流程只提出动作；校验、预算、提交和回执仍由控制对象协调。 */
-  nativeActions?(context: GoalContext<K>): ActionRequest[]
+  nativeActions?(context: GoalContext<K>): Array<ActionRequest | FormationRequest>
   execution?(context: GoalContext<K>, projection: GoalProjection): GoalExecution | undefined
   terminalExecution?(context: GoalContext<K>): GoalExecution | undefined
   progress?(context: GoalContext<K>, view: GoalView): Pick<GoalExecution, 'progress' | 'detail'>

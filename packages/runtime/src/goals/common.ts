@@ -1,5 +1,6 @@
 import { goalOwner, ownerId, type GoalConstraints, type GoalView } from '@ra2c/contracts'
 import { assessArrival } from '../arrival.ts'
+import { coverMembers } from '../cover.ts'
 import type { GoalContext, GoalProjection, MapSize } from './types.ts'
 
 export const terminal = (status: string) => ['completed', 'partial', 'failed', 'cancelled'].includes(status)
@@ -28,5 +29,14 @@ export function movementArrival(ctx: GoalContext) {
   const destination = spec.kind === 'combat' ? spec.route?.[facts.routeIndex ?? 0] ?? spec.destination : spec.kind === 'rally' ? { x: spec.x, y: spec.y } : undefined
   if (!destination) return undefined
   const ids = new Set(spec.kind === 'combat' ? formations.membersOf(spec.formationId) : spec.kind === 'rally' ? spec.unitIds.filter(id => !formations.ownerOf(id)) : [])
-  return assessArrival(snap.self.filter(unit => ids.has(unit.id)), destination, id => ctx.locked(id))
+  const arrival = assessArrival(snap.self.filter(unit => ids.has(unit.id)), destination, id => ctx.locked(id))
+  const cover = spec.kind === 'combat' ? formations.coverOf(spec.formationId) : undefined
+  if (cover) {
+    const { members, slowest, protectedUnits, escorts } = coverMembers(cover, snap, [...ids])
+    const remaining = members.map(unit => Math.hypot(unit.rx - destination.x, unit.ry - destination.y))
+    const preparing = [...(cover.protectedSources ?? []), ...(cover.escortSources ?? []).map(source => source.goalId)].some(id => ['pending', 'active'].includes(ctx.goals.get(id)?.status ?? ''))
+    arrival.reached &&= !preparing && protectedUnits.length > 0 && escorts.every(unit => !ctx.locked(unit.id)) && slowest.every(unit => Math.hypot(unit.rx - destination.x, unit.ry - destination.y) <= arrival.radius)
+      && Math.max(0, ...remaining) - Math.min(...remaining) <= Math.max(cover.gap, Math.sqrt(members.length))
+  }
+  return arrival
 }

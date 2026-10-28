@@ -81,7 +81,8 @@ export type FormationRequest =
   | { kind: 'createFormation'; formationId: string; unitIds: number[]; force?: boolean }
   | { kind: 'transferUnits'; formationId: string; unitIds: number[] }
   | { kind: 'dissolveFormation'; formationId: string }
-export interface FormationGoal extends GoalBase { kind: 'formation'; request: FormationRequest; sourceOwners?: Array<[number, string | null]> }
+export interface CoverPolicy { runId: string; escortIds: number[]; escortSources?: Array<{ goalId: string; quantity: number }>; protectedSources?: string[]; gap: number; resumeGap: number; retryTicks: number; predictionTicks?: number; replanTicks?: number; version: string }
+export interface FormationGoal extends GoalBase { kind: 'formation'; request: FormationRequest; sourceOwners?: Array<[number, string | null]>; cover?: CoverPolicy }
 export interface ReinforceGoal extends GoalBase {
   kind: 'reinforce'
   formationId: string
@@ -134,6 +135,7 @@ export interface GoalView {
   blocked?: string
   maxUnits?: number
   arrival?: ArrivalState
+  cover?: { protectedIds: number[]; escortIds: number[]; slowestIds: number[]; heldIds: number[]; detail: string }
   relocation?: { phase: 'packing' | 'moving' | 'deploying' | 'confirming' | 'completed' | 'failed'; unitId: number; destination: { x: number; y: number }; action?: ActionRequest; detail: string }
   mining?: { actions: ActionRequest[]; knownOre: number; assigned: number; total: number; detail: string }
   building?: { actions: ActionRequest[]; completed: number; total: number; failed: number; pending: boolean; detail: string }

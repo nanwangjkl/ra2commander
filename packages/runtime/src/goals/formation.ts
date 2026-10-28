@@ -1,8 +1,10 @@
 import { alive, baseConstraints, blocked, formationExists, idsValid, projection } from './common.ts'
 import type { GoalContext, GoalHandler } from './types.ts'
+import { validateCover } from '../cover.ts'
 const members = ({ spec, formations }: GoalContext<'formation'>) => spec.request.kind === 'dissolveFormation' ? formations.membersOf(spec.request.formationId) : spec.request.unitIds
 export const formation: GoalHandler<'formation'> = {
   validateSpec(spec) {
+    if (spec.cover) validateCover(spec.cover)
     const r = spec.request
     if (!r || !r.formationId || !['createFormation', 'transferUnits', 'dissolveFormation'].includes(r.kind) || r.kind !== 'dissolveFormation' && !idsValid(r.unitIds)) throw new Error('编队请求非法')
   },
@@ -24,4 +26,5 @@ export const formation: GoalHandler<'formation'> = {
     return projection(ctx, { ...baseConstraints(ctx), management: { kind, formationId: r.formationId, allowedUnitIds: allowed, maxUnits: needed.length, exact: true, ...(kind === 'createFormation' && r.kind === 'createFormation' ? { force: !!r.force } : {}) } }, blocked(ctx))
   },
   managedMembers: members,
+  nativeActions(ctx) { return ctx.goal.status === 'active' ? [ctx.spec.request] : [] },
 }

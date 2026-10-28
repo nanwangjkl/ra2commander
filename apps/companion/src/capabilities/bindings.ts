@@ -12,6 +12,7 @@ import { bindRelocation } from '../base-relocation.ts'
 import { bindMining, releaseGlobalOrders } from '../mining.ts'
 import { bindAttack, bindClearRegion, bindAttackAll } from '../attack.ts'
 import { bindBuildingOperation } from '../building-operations.ts'
+import { bindCover } from './cover.ts'
 
 export interface BindingContext {
   ctx: CommandContext
@@ -26,6 +27,7 @@ export interface BindingContext {
   formationGoals: Map<string, FormationGoal>
   movementGoals: Map<string, CombatGoal>
   relocationIds: Map<string, string>
+  productionGoals?: Map<string, ProductionGoal[]>
 }
 export interface BoundCapability {
   skillRun?: SkillRun
@@ -94,6 +96,14 @@ function findGoal(context: BindingContext, token: string, includeCancelled = fal
 }
 
 export const bindings: Binders = {
+  'formation.cover': bindCover,
+  'formation.uncover': async (params, context) => {
+    const formationId = formationName(context.ctx, params.formationId)
+    const pending = [...context.ctx.runtime.skillRuns.values()].filter(run => run.kind === 'cover' && run.formationId === formationId && ['covering', 'preparing'].includes(run.status))
+    for (const run of pending) await context.ctx.runtime.cancelSkillRun(run.id)
+    await context.ctx.runtime.uncover(formationId)
+    return done(`${formationId} 已解除掩护，成员保留，原移动目标继续`)
+  },
   'building.repair': (params, context) => bindBuildingOperation('repair', params, context),
   'building.sell': (params, context) => bindBuildingOperation('sell', params, context),
   'base.relocate': bindRelocation,
@@ -103,6 +113,12 @@ export const bindings: Binders = {
     const { ctx, prompts } = context
     const skill = prompts.skills.get(params.skillId)
     if (!skill) throw new Error(`尚不支持这个 Skill：${params.skillId}`)
+    if ('cover' in skill.definition) {
+      const formationId = params.formationId ?? [...context.formationGoals.keys()].at(-1) ?? [...(context.productionGoals?.keys() ?? [])].at(-1)
+      if (!formationId) throw new Error('掩护需要指定编队')
+      return bindCover({ formationId, selector: params.selector ?? 'all', quantity: params.quantity ?? 'all', memberSource: params.memberSource ?? (params.useExisting === false ? 'new' : 'existing'), ...(params.unitIds ? { unitIds: params.unitIds } : {}),
+        ...(params.protectedSelector ? { protectedSelector: params.protectedSelector } : {}), ...(params.protectedQuantity ? { protectedQuantity: params.protectedQuantity } : {}), ...(params.protectedUnitIds ? { protectedUnitIds: params.protectedUnitIds } : {}) }, context)
+    }
     if ('repair' in skill.definition) return bindRepairSkill(params, context, { ...skill, definition: skill.definition })
     const values = prompts.skills.parameters(skill.definition.id, params)
     const runId = `skill-${randomUUID()}`
@@ -136,10 +152,10 @@ export const bindings: Binders = {
       skillRun: { id: runId, skillId: skill.definition.id, version: skill.definition.version, hash: skill.hash, source: skill.source, promptVersion: prompts.version, gameId: prompts.game.id, commandId: context.commandId, rawText: context.text, sessionKey: ctx.runtime.battleKey, createdAt: Date.now(), ...values, useExisting, formationId, preparationGoalId: preparation.id, exploreGoalId: explore.id, map: { id: map.mapId, schemeId: map.schemeId, schemeVersion: map.schemeVersion, geometryHash: map.id }, status: 'preparing' } }
   },
   'skill.cancel': async (params, context) => {
-    const runs = [...context.ctx.runtime.skillRuns.values()].filter(run => ['preparing', 'exploring', 'repairing'].includes(run.status) && (!params.runId || run.id === params.runId) && (!params.skillId || run.skillId === (context.prompts.skills.get(params.skillId)?.definition.id ?? params.skillId)))
+    const runs = [...context.ctx.runtime.skillRuns.values()].filter(run => ['preparing', 'exploring', 'repairing', 'covering'].includes(run.status) && (!params.runId || run.id === params.runId) && (!params.skillId || run.skillId === (context.prompts.skills.get(params.skillId)?.definition.id ?? params.skillId)))
     const selected = params.all || params.runId ? runs : runs.slice(-1)
     await Promise.all(selected.map(run => context.ctx.runtime.cancelSkillRun(run.id)))
-    return { choices: [selected.length ? `已取消${selected.length}次 Skill 及其后续步骤，其余目标继续` : '没有正在执行的匹配 Skill'], refreshOwners: selected.length ? ['global'] : [], suppressOwners: selected.map(run => `formation:${run.formationId}`) }
+    return { choices: [selected.length ? `已取消${selected.length}次 Skill 及其后续步骤，其余目标继续` : '没有正在执行的匹配 Skill'], refreshOwners: selected.some(run => run.kind !== 'cover') ? ['global'] : [], suppressOwners: selected.filter(run => run.kind !== 'cover').map(run => `formation:${run.formationId}`) }
   },
   'map.explore': async (params, context) => {
     const formationId = formationName(context.ctx, params.formationId, false, true), goalId = id()
@@ -231,10 +247,12 @@ export const bindings: Binders = {
     const region = params.bounds ? rectangle(context.ctx.runtime.snapshot!, params.bounds) : fullMap(context.ctx.runtime.snapshot!)
     const point = params.regionName || params.x !== undefined || params.y !== undefined ? await destination(context.ctx, params, context.check, context.catalog) : undefined
     if (!point && !params.bounds) throw new Error('移动缺少目的地')
+    await context.ctx.runtime.clearLostCover(formationId); context.check()
     const previous = point ? context.movementGoals.get(formationId) : undefined
     const route = previous?.destination && point ? [...(previous.route ?? [previous.destination]), point] : undefined
     const patrol = !!(params.patrol || previous?.patrol)
-    const goal: CombatGoal = { id: previous?.id ?? id(), kind: 'combat', rawText: context.text, formationId, region,
+    const covered = context.ctx.runtime.hasCover(formationId) || [...context.ctx.runtime.goals.values()].some(goal => ['pending', 'active'].includes(goal.status) && goal.spec.kind === 'formation' && goal.spec.request.formationId === formationId && goal.spec.cover)
+    const goal: CombatGoal = { id: previous?.id ?? id(), kind: 'combat', rawText: context.text, formationId, region, ...(covered ? { executionMode: 'native' as const } : {}),
       allowedActions: patrol ? ['move', 'gather', 'stop', 'attack', 'attackMove'] : ['move', 'gather', 'stop'],
       ...(point ? { destination: route?.[0] ?? point } : {}), ...(route ? { route } : {}), ...(patrol ? { patrol: true } : {}), ...(params.label ? { label: params.label } : {}) }
     const places = route ?? (point ? [point] : [])
@@ -258,12 +276,14 @@ export const bindings: Binders = {
       const x = members[0]?.rx ?? 0, y = members[0]?.ry ?? 0
       region = rectangle(snap, [Math.max(0, Math.floor(x - 8)), Math.max(0, Math.floor(y - 8)), Math.min(snap.mapWidth - 1, Math.ceil(x + 8)), Math.min(snap.mapHeight - 1, Math.ceil(y + 8))])
     }
-    const goal: CombatGoal = { id: id(), kind: 'combat', rawText: context.text, formationId, region, mode: params.mode, allowedActions: params.mode === 'move' ? ['move', 'gather', 'stop'] : params.mode === 'assault' ? ['move', 'attack', 'attackMove', 'gather', 'stop'] : ['move', 'attack', 'stop'], ...(params.label ? { label: params.label } : {}), ...(point ? { destination: point } : {}) }
+    const goal: CombatGoal = { id: id(), kind: 'combat', rawText: context.text, formationId, region, mode: params.mode, ...(ctx.runtime.hasCover(formationId) ? { executionMode: 'native' as const } : {}), allowedActions: params.mode === 'move' ? ['move', 'gather', 'stop'] : params.mode === 'assault' ? ['move', 'attack', 'attackMove', 'gather', 'stop'] : ['move', 'attack', 'stop'], ...(params.label ? { label: params.label } : {}), ...(point ? { destination: point } : {}) }
     if (params.retreatLoss !== undefined) {
       if (params.retreatX === undefined || params.retreatY === undefined) throw new Error('战损回撤缺少完整回撤点')
       checkPoint(snap, params.retreatX, params.retreatY)
       goal.retreat = { lossAbove: params.retreatLoss, x: params.retreatX, y: params.retreatY }
     } else if (params.retreatX !== undefined || params.retreatY !== undefined) throw new Error('回撤点缺少战损阈值')
+    if (await ctx.runtime.clearLostCover(formationId)) delete goal.executionMode
+    context.check()
     return bound(goal, `${formationId} ${params.mode === 'move' ? '赶路' : '守卫'}${region.name}`)
   },
   'combat.clear-region': bindClearRegion,

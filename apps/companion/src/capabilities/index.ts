@@ -6,7 +6,7 @@ import { loadGameCatalog, type GameCatalog } from './selectors.ts'
 import { skillGoalIds } from '@ra2c/runtime'
 import { randomUUID } from 'node:crypto'
 import { relocationKey } from '../base-relocation.ts'
-import { retainAttackScope } from './binding-recovery.ts'
+import { retainBindingScope } from './binding-recovery.ts'
 
 export function validateBindings(prompts: PromptLibrary): void { prompts.capabilities.assertBindings(Object.keys(bindings)) }
 export function loadCommandPrompts(): PromptLibrary { return loadPrompts({ validate: validateBindings }) }
@@ -54,6 +54,7 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
     formationGoals: new Map(),
     movementGoals: new Map(),
     relocationIds: new Map(),
+    productionGoals: new Map(),
     game: prompts.game,
     prompts,
     commandId: options.commandId ?? `cmd-${randomUUID()}`,
@@ -87,6 +88,10 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
             boundGoals++
             if (track) { state.goals.push(item.goal); state.choices.push(item.choice) }
             if (item.goal.kind === 'formation' && item.goal.request.kind !== 'dissolveFormation') context.formationGoals.set(item.goal.request.formationId, item.goal)
+            if (item.goal.kind === 'production' && item.goal.formationId) {
+              const pending = context.productionGoals!.get(item.goal.formationId) ?? []
+              context.productionGoals!.set(item.goal.formationId, [...pending.filter(goal => goal.id !== item.goal.id), item.goal])
+            }
             if (item.goal.kind === 'combat') {
               if (call.capability === 'combat.move' && item.goal.destination) context.movementGoals.set(item.goal.formationId, item.goal)
               else context.movementGoals.delete(item.goal.formationId)
@@ -114,7 +119,10 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
         for (const message of goalFailures) skip(message)
         if (result.skillRun) {
           const run = result.skillRun
-          if (skillGoalIds(run).every(id => ctx.runtime.goals.has(id))) ctx.runtime.skillRuns.set(run.id, run)
+          if (skillGoalIds(run).every(id => ctx.runtime.goals.has(id))) {
+            if (run.kind === 'cover') for (const old of ctx.runtime.skillRuns.values()) if (old.kind === 'cover' && old.formationId === run.formationId && ['preparing', 'covering'].includes(old.status)) { old.status = 'superseded'; old.detail = '已重新安排掩护' }
+            ctx.runtime.skillRuns.set(run.id, run)
+          }
           else {
             await Promise.all(skillGoalIds(run).map(id => ctx.runtime.cancelGoal(id, 'Skill 目标绑定不完整，已撤销')))
             skip('Skill 目标绑定不完整，已撤销本次 Skill')
@@ -176,7 +184,14 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
       for (const correction of corrections) {
         if (!Number.isInteger(correction.index) || !failures[correction.index] || handled.has(correction.index)) continue
         handled.add(correction.index)
-        const remaining = correction.operations.map(value => retainAttackScope(failures[correction.index]!.operation, value, prompts)).filter(value => {
+        let scoped: CapabilityCall[]
+        try { scoped = correction.operations.map(value => retainBindingScope(failures[correction.index]!.operation, value, prompts)) }
+        catch (error) {
+          skip(failures[correction.index]!.error)
+          skip(`未采用绑定修正：${String(error)}`)
+          continue
+        }
+        const remaining = scoped.filter(value => {
           try {
             const identity = (value: CapabilityCall) => {
               const call = prompts.capabilities.parse(value)

@@ -3,6 +3,7 @@
  * 非显式转编不静默抢占成员；转编先撤销旧归属；
  * 保留建队历史；任务战损基准另在任务生效时冻结。
  */
+import type { CoverPolicy } from '@ra2c/contracts'
 export interface Formation {
   id: string
   /** 当前成员。 */
@@ -10,6 +11,7 @@ export interface Formation {
   /** 建队时原始成员（历史记录，不作为新任务战损口径）。 */
   originalMemberIds: number[]
   createdAt: number
+  cover?: CoverPolicy
 }
 
 export interface CreateResult {
@@ -76,7 +78,10 @@ export class FormationRegistry {
     const owner = this.unitOwner.get(unit)
     if (!owner) return
     const f = this.formations.get(owner)
-    if (f) f.memberIds = f.memberIds.filter((u) => u !== unit)
+    if (f) {
+      f.memberIds = f.memberIds.filter((u) => u !== unit)
+      if (f.cover) f.cover.escortIds = f.cover.escortIds.filter(id => id !== unit)
+    }
     this.unitOwner.delete(unit)
   }
 
@@ -87,6 +92,14 @@ export class FormationRegistry {
   originalOf(id: string): number[] {
     return [...(this.formations.get(id)?.originalMemberIds ?? [])]
   }
+
+  setCover(id: string, cover?: CoverPolicy): void {
+    const formation = this.formations.get(id)
+    if (!formation) throw new Error('掩护编队尚不存在')
+    if (cover) formation.cover = structuredClone(cover)
+    else delete formation.cover
+  }
+  coverOf(id: string): CoverPolicy | undefined { return this.formations.get(id)?.cover }
 
   ownerOf(unit: number): string | undefined {
     return this.unitOwner.get(unit)

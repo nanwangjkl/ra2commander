@@ -122,9 +122,7 @@ async function main(): Promise<void> {
   let submitSay: ((text: string, source: 'sidebar' | 'cli', commandId: string) => Promise<string>) | undefined
   const api = new WorkbenchApi({ log: commandLog, records, ready: () => !!submitSay,
     submit: (text, commandId) => submitSay!(text, 'sidebar', commandId),
-    status: async () => {
-      try { return (await bridge?.state())?.apiAlive ? 'ready' : bridge ? 'waiting' : 'loading' } catch { return 'loading' }
-    },
+    status: async () => (await bridge?.state())?.apiAlive ? 'ready' : bridge ? 'waiting' : 'loading',
   })
   const server = await startStaticServer({
     root: GAME_DIR,
@@ -160,6 +158,7 @@ async function main(): Promise<void> {
   const runtime: TaskRuntime = new TaskRuntime({
     executor: executors.runtime, formations,
     checkpoint: () => saveStateFile(STATE_FILE, persistState(runtime)),
+    coverRanges: (pairs, snap) => gameBridge.coverRanges(pairs, snap.sessionKey),
     submit: async (actions, context, guard) => {
       const results = []
       for (const action of actions) {

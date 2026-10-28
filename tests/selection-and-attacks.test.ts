@@ -1,8 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { StepExecutor } from '../packages/js-worker/src/index.ts'
 import { checkAttackStages } from '../packages/command/src/attack-checks.ts'
-import { loadPrompts } from '../packages/command/src/index.ts'
+import { compileCommand, loadPrompts } from '../packages/command/src/index.ts'
 import { inTargetRegion, validateScriptActions, type Snapshot, type SnapshotUnit, type ScriptAction } from '../packages/contracts/src/index.ts'
 import { FormationRegistry, persistState, restoreState } from '../packages/runtime/src/index.ts'
 import { GameCatalog, type CatalogItem } from '../apps/companion/src/game-catalog.ts'
@@ -125,6 +126,46 @@ test('混编队区域清敌保留地面搜索，飞机装弹等待，目标类�
     assert.equal(await checkAttackStages(search, frame, isolated), undefined)
   } finally { await isolated.dispose() }
   runtime.releaseCommand(lease)
+})
+
+test('回放坦克围住基地却不开火：拦截行军去重错误，反馈模型重试后直接攻击', async () => {
+  const isolated = new StepExecutor()
+  const { runtime, submitted } = await harness(isolated, { formations: new FormationRegistry() })
+  try {
+    const self = [1, 2, 3, 4, 5].map(id => ({ ...unit(id, 'TANKX', 7), rx: 146 + id % 2, ry: 80 }))
+    const enemies = [{ ...unit(90, 'GACNST', 2), rx: 38, ry: 81, hitPoints: 1000 }]
+    await runtime.onSnapshot(snapshot({ seq: 2, self, enemies, mapWidth: 200, mapHeight: 200 }))
+    const result = await executeCapabilities([{ capability: 'combat.attack', params: { selector: 'tanks', quantity: 'all', target: 'base' } }], context(runtime), { text: '所有坦克摧毁敌方基地', catalog: catalog(runtime.snapshot!) })
+    assert.deepEqual(result.skipped, [])
+    const lease = runtime.beginCompile('global'), frame = runtime.compileFrame(lease)
+    const broken = readFileSync(new URL('./fixtures/ground-attack-move-dedup.js', import.meta.url), 'utf8')
+    // 真实故障只改去重条件即可继续攻击，检查不应误拒绝正确的分阶段脚本。
+    const staged = broken.replace('if (lastTarget === chosen.id && lastIds === idsKey)', "if (mem.mode === 'attack' && lastTarget === chosen.id && lastIds === idsKey)")
+    assert.notEqual(staged, broken)
+    assert.equal(await checkAttackStages(staged, frame, isolated), undefined)
+    const direct = `function step(s,m){const actions=[];for(const g of s.control.goals){
+      if(!g.attack||!g.attack.targets.length||!g.attack.readyIds.length)continue;
+      const target=g.attack.targets[0],ids=g.attack.readyIds,key='attack:'+target.id+':'+ids.join(',');
+      if(m[g.spec.id]===key)continue;
+      actions.push({goalId:g.spec.id,request:{kind:'attack',unitIds:ids,targetId:target.id}});m[g.spec.id]=key;
+    }return {actions,memory:m}}`
+    const requests: Array<Array<{ role: string; content: string }>> = []
+    const provider = { generate: async ({ messages }: { messages: Array<{ role: string; content: string }> }) => {
+      requests.push(structuredClone(messages))
+      return { text: requests.length === 1 ? broken : direct, model: 'fixture', durationMs: 0 }
+    } }
+    const compiled = await compileCommand(provider as never, frame, isolated, { maxAttempts: 2 })
+    assert.equal(compiled.attempts, 2)
+    assert.match(compiled.log[0]!.errors.join(' '), /抵达.*attack.*去重须区分动作类型/)
+    assert.match(requests[1]!.at(-1)!.content, /不能把先前 move\/attackMove 的目标记忆当成已攻击/)
+    assert.deepEqual(compiled.log[1]!.errors, [])
+    assert.equal(runtime.commitCompile(lease, compiled.code), true)
+    await runtime.onSnapshot({ ...runtime.snapshot!, seq: 3, tick: 45 })
+    assert.deepEqual(submitted, [{ kind: 'attack', unitIds: [1, 2, 3, 4, 5], targetId: 90 }], '远处已有明确基地目标时直接下达攻击，不等待进入射程')
+    await runtime.onSnapshot({ ...runtime.snapshot!, seq: 4, tick: 75 })
+    assert.equal(submitted.length, 1, '正确的攻击去重仍有效，不逐步打断游戏接近和开火')
+    assert.deepEqual(frame.snapshot.self, self, '阶段检查只改变隔离副本')
+  } finally { await isolated.dispose() }
 })
 
 test('待准备攻击保留数量上限，成员损失和准备目标取消不触发自动补入同型成员', async () => {

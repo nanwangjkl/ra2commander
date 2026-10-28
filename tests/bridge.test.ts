@@ -94,6 +94,23 @@ test('建筑维修原语幂等开启扳手，出售不接受车辆、敌人或�
   assert.equal(page.submitted.length, 2)
 })
 
+test('行军速度按本局规则读取并缓存，防空车可快于坦克，换局重新读取', () => {
+  const page = pageBridge()
+  let calls = 0
+  page.api.rules = (name, _type) => { calls++; return { unsellable: false, speed: name === 'HTK' ? 8 : 6 } }
+  page.own[0] = { ...page.own[0]!, name: 'HTK', zone: 0 }
+  page.own[0].velocity = { x: 3, y: 0, z: 7 }
+  page.sample(); assert.equal(calls, 0, 'tick 采样不查询静态规则')
+  page.poll(); const snap = page.next()
+  assert.equal(snap.self[0]!.speed, 8)
+  assert.equal(snap.self[1]!.speed, 6)
+  assert.equal(snap.self[0]!.zone, 0)
+  assert.deepEqual({ ...snap.self[0]!.velocity }, { x: 3, y: 0, z: 7 }, '移动方向直接取游戏公开向量，不通过截图或位移测速')
+  const count = calls; page.next(); assert.equal(calls, count)
+  page.setTick(1); page.sample(); page.poll(); page.next(); page.poll(); page.next()
+  assert.ok(calls > count, '换局不能复用旧 MOD 速度')
+})
+
 test('页面桥转发飞机弹药及武器冷却，供宿主识别装弹与真实发射', () => {
   const page = pageBridge()
   page.own[0] = { ...page.own[0]!, type: 1, ammo: 0, primaryWeapon: { ...page.own[0]!.primaryWeapon!, cooldownTicks: 7 } }
@@ -120,6 +137,20 @@ test('页面桥可以提交正常动作，并丢弃过期、跨局或目标已�
   page.poll()
   assert.equal(page.window.__ra2cSubmit(second.session, action, second.seq, second.sessionKey).ok, false)
   assert.equal(page.submitted.length, 3)
+})
+
+test('掩护开火用当前武器复查射程，射程不足正常等待；普通攻击仍由游戏接近', () => {
+  const page = pageBridge(), snap = page.sample(), modes: unknown[] = []
+  Object.assign(page.api, { inRange: (_unitId: number, _targetId: number, mode: unknown) => { modes.push(mode); return false } })
+  const submit = (holdPosition: boolean) => page.window.__ra2cSubmit(snap.session, { kind: 'attack', unitIds: [1], targetId: 99, holdPosition }, snap.seq, snap.sessionKey)
+  assert.equal(submit(true).submitted, 0)
+  assert.equal(page.submitted.length, 0)
+  assert.deepEqual(modes, ['current'])
+  assert.equal(submit(false).ok, true)
+  assert.equal(page.submitted.length, 1)
+  Object.assign(page.api, { inRange: () => true })
+  assert.equal(submit(true).ok, true)
+  assert.equal(page.submitted.length, 2)
 })
 
 test('换局后重新采样，兼容游戏 API 对象被复用', () => {
@@ -186,8 +217,9 @@ test('建筑按画面上左下找合法位置；指定方向无地可放时保�
 
 test('宿主桥保留动作来源对局，不查询当前会话替换它；撤权后不排入 evaluate', async () => {
   const calls: unknown[] = []
-  const page = { evaluate: async (_fn: unknown, args: unknown) => { calls.push(args); return { ok: true } } }
-  const bridge = new WerhdBridge({ pages: () => [{ mainFrame: () => page }] } as never)
+  const page = { name: () => '', isDetached: () => false, page: () => ({ isClosed: () => false }),
+    evaluate: async (_fn: unknown, args: unknown) => { calls.push(args); return { ok: true } } }
+  const bridge = new WerhdBridge({ pages: () => [{ isClosed: () => false, mainFrame: () => page }] } as never)
   const context = snapshot()
   await bridge.submit({ kind: 'stop', unitIds: [1] }, context)
   assert.equal(calls.length, 1)
@@ -200,7 +232,7 @@ test('完整目录批量读取公开规则，同局缓存、换局失效，不�
   let reads = 0, evaluations = 0
   const state = { __ra2cSessionKey: 'first', werhd: { rules: (name: string, type: number) => { reads++; return { name, type, prerequisite: [] } } } }
   const bridge = new WerhdBridge({} as never)
-  bridge.bindGameFrame({ isDetached: () => false, evaluate: async (fn: Function, arg: unknown) => { evaluations++; return runInNewContext(`(${fn.toString()})(args)`, { window: state, args: arg }) } } as never)
+  bridge.bindGameFrame({ isDetached: () => false, page: () => ({ isClosed: () => false }), evaluate: async (fn: Function, arg: unknown) => { evaluations++; return runInNewContext(`(${fn.toString()})(args)`, { window: state, args: arg }) } } as never)
   const requests = Array.from({ length: 65 }, (_, n) => ({ name: `UNIT_${n}`, type: 7 }))
   assert.equal((await bridge.rulesMany(requests, 'first')).length, 65)
   assert.equal(reads, 65)
@@ -216,13 +248,13 @@ test('完整目录批量读取公开规则，同局缓存、换局失效，不�
 test('工作台中的查询和动作指向已绑定游戏 frame，忽略外层与其他游戏的快照', async () => {
   const url = 'https://127.0.0.1:8787/'
   const calls: Array<{ frame: string; args: unknown }> = []
-  const frame = (name: string, address: string) => ({ name: () => name, url: () => address, isDetached: () => false,
+  const frame = (name: string, address: string) => ({ name: () => name, url: () => address, isDetached: () => false, page: () => ({ isClosed: () => false }),
     evaluate: async (_fn: unknown, args: unknown) => { if (args !== undefined) calls.push({ frame: name, args }); return 4 } })
   const outer = frame('workbench', url + 'commander/')
   const game = frame('ra2c-game', url)
   const other = frame('other-game', url)
   let receive!: (source: unknown, value: ReturnType<typeof snapshot>) => void
-  const context = { pages: () => [{ frames: () => [outer, game] }, { frames: () => [other] }],
+  const context = { pages: () => [{ isClosed: () => false, frames: () => [outer, game] }, { isClosed: () => false, frames: () => [other] }],
     exposeBinding: async (_name: string, callback: typeof receive) => { receive = callback }, addInitScript: async () => {} }
   const bridge = new WerhdBridge(context as never, url)
   bridge.bindGameFrame(game as never)
@@ -237,4 +269,31 @@ test('工作台中的查询和动作指向已绑定游戏 frame，忽略外层�
   await bridge.submit({ kind: 'stop', unitIds: [1] }, current)
   assert.equal(calls.length, 2)
   assert.ok(calls.every(call => call.frame === 'ra2c-game'))
+})
+
+test('关闭窗口后不访问未标记detached的旧frame，重新打开工作台会重绑并清理旧快照', async () => {
+  const url = 'https://127.0.0.1:8787/'
+  let closed = false, opened = true, receives!: (source: unknown, value: ReturnType<typeof snapshot>) => void, oldReads = 0
+  const old = { name: () => 'ra2c-game', url: () => url, isDetached: () => false, page: () => ({ isClosed: () => closed }),
+    evaluate: async () => { oldReads++; if (closed) throw new Error('Target page, context or browser has been closed'); return { apiAlive: true } } }
+  const fresh = { name: () => 'ra2c-game', url: () => url, isDetached: () => false, page: () => ({ isClosed: () => false }), evaluate: async () => ({ apiAlive: true }) }
+  const context = { pages: () => !opened ? [] : [{ isClosed: () => false, frames: () => closed ? [fresh] : [old] }],
+    exposeBinding: async (_name: string, callback: typeof receives) => { receives = callback }, addInitScript: async () => {} }
+  const bridge = new WerhdBridge(context as never, url)
+  bridge.bindGameFrame(old as never); await bridge.install()
+  receives({ frame: old }, snapshot())
+  assert.ok(bridge.latest)
+  closed = true; opened = false
+  const reads = oldReads
+  assert.equal((await bridge.state()).apiAlive, false)
+  assert.equal(bridge.latest, undefined)
+  assert.equal(oldReads, reads, '不在关闭的页面上反复执行ensureBridge和evaluate')
+  opened = true
+  assert.equal((await bridge.state()).apiAlive, true)
+  assert.equal(bridge.frame, fresh)
+  receives({ frame: old }, snapshot({ sessionKey: 'stale' }))
+  assert.equal(bridge.latest, undefined)
+  const next = snapshot({ sessionKey: 'new' })
+  receives({ frame: fresh }, next)
+  assert.equal(bridge.latest, next)
 })

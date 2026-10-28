@@ -1,5 +1,5 @@
 // 由 prompts/capabilities/*.md 生成；修改定义后运行 pnpm capabilities:generate。
-export const CAPABILITY_CONTRACT_VERSION = '838539fa731560722f059f0266257ee6acddbb71a19813758b01ed959f32dc41'
+export const CAPABILITY_CONTRACT_VERSION = '244d19e0e52536a0abedd57610af7e7edc33ef672ee32095e2a610ffa55eabcb'
 export interface CapabilityParameters {
   "base.deploy": Record<string, never>
   "base.relocate": { regionName?: string; x?: number; y?: number; unitId?: number }
@@ -15,9 +15,11 @@ export interface CapabilityParameters {
   "control.stop": { scope?: "formation" | "global" | "all" | "units"; formationId?: string; selector?: string; unitIds?: number[] }
   "economy.gather": { regionName: string; quantity?: number | 'all'; unitIds?: number[]; formationId?: string }
   "formation.assign": { formationId: string; selector?: string; quantity?: number | 'all'; unitIds?: number[] }
+  "formation.cover": { formationId: string; selector?: string; quantity?: number | 'all'; memberSource?: "existing" | "auto" | "new"; unitIds?: number[]; protectedSelector?: string; protectedQuantity?: number; protectedUnitIds?: number[] }
   "formation.create": { formationId: string; selector?: string; unitIds?: number[]; force?: boolean }
   "formation.dissolve": { formationId: string }
   "formation.transfer": { formationId: string; selector?: string; quantity?: number | 'all'; unitIds?: number[]; sourceFormationId?: string }
+  "formation.uncover": { formationId: string }
   "goal.cancel": { goalId: string }
   "goal.edit": { goalId: string; quantity: number }
   "management.rally": { selector?: string; unitIds?: number[]; regionName?: string; x?: number; y?: number }
@@ -26,7 +28,7 @@ export interface CapabilityParameters {
   "production.power": { reserve?: number }
   "production.produce": { target: string; quantity?: number; formationId?: string; placementDirections?: Array<"up" | "down" | "left" | "right" | "up-left" | "up-right" | "down-left" | "down-right">; placementAnchor?: string; placementRegion?: string; afterRelocation?: boolean; queues?: number[] }
   "skill.cancel": { runId?: string; skillId?: string; all?: boolean }
-  "skill.run": { skillId: string; quantity?: number; memberSource?: "auto" | "existing" | "new"; useExisting?: boolean; formationId?: string; followFormationId?: string; regionName?: string }
+  "skill.run": { skillId: string; quantity?: number; memberSource?: "auto" | "existing" | "new"; useExisting?: boolean; formationId?: string; followFormationId?: string; regionName?: string; selector?: string; unitIds?: number[]; protectedSelector?: string; protectedQuantity?: number; protectedUnitIds?: number[] }
   "transport.enter": { unitIds: number[]; transportId: number }
   "vehicle.repair": { formationId: string; followFormationId?: string; targetId?: number }
 }
@@ -45,9 +47,11 @@ export interface ResolvedCapabilityParameters {
   "control.stop": { scope: "formation" | "global" | "all" | "units"; formationId?: string; selector: string; unitIds?: number[] }
   "economy.gather": { regionName: string; quantity: number | 'all'; unitIds?: number[]; formationId?: string }
   "formation.assign": { formationId: string; selector: string; quantity: number | 'all'; unitIds?: number[] }
+  "formation.cover": { formationId: string; selector: string; quantity: number | 'all'; memberSource: "existing" | "auto" | "new"; unitIds?: number[]; protectedSelector?: string; protectedQuantity?: number; protectedUnitIds?: number[] }
   "formation.create": { formationId: string; selector: string; unitIds?: number[]; force: boolean }
   "formation.dissolve": { formationId: string }
   "formation.transfer": { formationId: string; selector: string; quantity: number | 'all'; unitIds?: number[]; sourceFormationId?: string }
+  "formation.uncover": { formationId: string }
   "goal.cancel": { goalId: string }
   "goal.edit": { goalId: string; quantity: number }
   "management.rally": { selector: string; unitIds?: number[]; regionName?: string; x?: number; y?: number }
@@ -56,7 +60,7 @@ export interface ResolvedCapabilityParameters {
   "production.power": { reserve: number }
   "production.produce": { target: string; quantity: number; formationId?: string; placementDirections?: Array<"up" | "down" | "left" | "right" | "up-left" | "up-right" | "down-left" | "down-right">; placementAnchor?: string; placementRegion?: string; afterRelocation?: boolean; queues: number[] }
   "skill.cancel": { runId?: string; skillId?: string; all: boolean }
-  "skill.run": { skillId: string; quantity?: number; memberSource?: "auto" | "existing" | "new"; useExisting?: boolean; formationId?: string; followFormationId?: string; regionName?: string }
+  "skill.run": { skillId: string; quantity?: number; memberSource?: "auto" | "existing" | "new"; useExisting?: boolean; formationId?: string; followFormationId?: string; regionName?: string; selector?: string; unitIds?: number[]; protectedSelector?: string; protectedQuantity?: number; protectedUnitIds?: number[] }
   "transport.enter": { unitIds: number[]; transportId: number }
   "vehicle.repair": { formationId: string; followFormationId?: string; targetId?: number }
 }

@@ -9,6 +9,8 @@ index 是 failures 中的下标。最多返回8个调用，仅修正失败部分
 
 攻击修正必须保留原 formationId、selector、unitIds、target/targetId 和 regionName。编队还在创建时等待交接，不能通过删除 formationId 改成全部作战编队。按兵种攻击可用 combat.attack，禁止额外建数字编队或把其他小队带入行动。
 
+掩护修正必须保留同队掩护职责、原来的编队、双方成员、数量和来源，不能改成只生产、普通编队或其他 Skill。明确新造可使用formation.cover或cover Skill的memberSource=new；auto补足差额，existing不擅自生产。本句已接受的生产会被掩护关联，不能重放或仅补造后丢掉掩护角色。没有明确生产要求又没有现有成员时保留未执行。
+
 当前基础能力：
 {{capabilities}}
 

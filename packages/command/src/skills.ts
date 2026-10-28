@@ -24,7 +24,11 @@ export interface RepairSkillDefinition extends SkillBase {
   ]
   repair: { retryTicks: number; stallTicks: number }
 }
-export type SkillDefinition = ScoutSkillDefinition | RepairSkillDefinition
+export interface CoverSkillDefinition extends SkillBase {
+  steps: [{ id: string; capability: 'formation.assign' }, { id: string; capability: 'formation.cover' }]
+  cover: { gap: number; resumeGap: number; retryTicks: number; predictionTicks?: number; replanTicks?: number }
+}
+export type SkillDefinition = ScoutSkillDefinition | RepairSkillDefinition | CoverSkillDefinition
 export interface SkillDocument<D extends SkillDefinition = SkillDefinition> { definition: D; instructions: string; source: string; hash: string; file: string }
 export class SkillCatalog {
   private readonly documents: SkillDocument[]
@@ -32,6 +36,7 @@ export class SkillCatalog {
   ids(): string[] { return this.documents.map(doc => doc.definition.id) }
   get(id: 'scout'): SkillDocument<ScoutSkillDefinition> | undefined
   get(id: 'repair-vehicle'): SkillDocument<RepairSkillDefinition> | undefined
+  get(id: 'cover'): SkillDocument<CoverSkillDefinition> | undefined
   get(id: string): SkillDocument | undefined
   get(id: string): SkillDocument | undefined {
     const normalized = id.normalize('NFKC').trim().toLowerCase()
@@ -69,6 +74,17 @@ export function readSkills(directory: URL, capabilityIds: readonly string[], gam
         aliases.add(key)
       }
       const repair = 'repair' in d
+      if ('cover' in d) {
+        if (d.id !== 'cover' || !['formation.assign', 'formation.cover'].every(id => d.requires.includes(id)) || !Array.isArray(d.steps) || d.steps.length !== 2 || d.steps[0].capability !== 'formation.assign' || d.steps[1].capability !== 'formation.cover') throw new Error('掩护须声明编入与同队掩护流程')
+        if (!Number.isFinite(d.cover.gap) || !Number.isFinite(d.cover.resumeGap) || d.cover.resumeGap <= 0 || d.cover.gap <= d.cover.resumeGap || !Number.isSafeInteger(d.cover.retryTicks) || d.cover.retryTicks < 1) throw new Error('掩护间距和重试参数非法')
+        if ([d.cover.predictionTicks, d.cover.replanTicks].some(value => value !== undefined && (!Number.isSafeInteger(value) || value < 15))) throw new Error('掩护预测周期非法')
+        if (!d.parameters || Object.keys(d.parameters).sort().join(',') !== 'memberSource,quantity' || d.parameters.quantity?.type !== 'integer' || !d.parameters.quantity.allowAll || d.parameters.memberSource?.enum?.join(',') !== 'auto,existing,new'
+          || d.steps.some(step => !step.id?.trim()) || new Set(d.steps.map(step => step.id)).size !== 2) throw new Error('掩护参数或流程标识非法')
+        for (const [key, rule] of Object.entries(d.parameters)) parameterValue(rule.default, rule, `${d.id}.${key}`)
+        const instructions = source.replace(blocks[0]![0], '').trim()
+        if (!instructions) throw new Error('缺少 Skill 正文')
+        return { definition: d, source, instructions, hash: createHash('sha256').update(source).digest('hex'), file: `${name}/SKILL.md` }
+      }
       if ((d.id === 'scout' && repair) || (d.id === 'repair-vehicle' && !repair)) throw new Error('内置 Skill ID 与流程类型不符')
       if (!(repair ? ['production.produce', 'formation.assign', 'transport.enter', 'vehicle.repair'] : ['production.produce', 'formation.assign', 'map.explore']).every(id => d.requires.includes(id))) throw new Error('Skill 缺少依赖能力声明')
       if (!d.parameters || Object.keys(d.parameters).sort().join(',') !== 'memberSource,quantity' || d.parameters.quantity?.type !== 'integer' || d.parameters.memberSource?.type !== 'string' || d.parameters.memberSource.enum?.join(',') !== 'auto,existing,new') throw new Error('首版参数须声明 quantity 与 memberSource（auto/existing/new）')

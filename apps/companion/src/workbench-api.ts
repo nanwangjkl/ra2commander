@@ -93,7 +93,11 @@ export class WorkbenchApi {
       return true
     }
     if (req.method !== 'GET') { json(405, { error: '请使用 GET' }); return true }
-    if (path === '/commander/status') { json(200, { game: await this.options.status() }); return true }
+    if (path === '/commander/status') {
+      try { json(200, { game: await this.options.status() }) }
+      catch (error) { json(503, { error: `游戏连接暂时不可用：${String(error)}` }) }
+      return true
+    }
     if (path === '/commander/commands') {
       try { json(200, this.options.records?.currentCommands() ?? { battleId: null, sessionKey: null, events: this.options.log.since(0), feedback: [], warning: '' }) }
       catch (error) { json(500, { error: `读取当前命令失败：${String(error)}` }) }

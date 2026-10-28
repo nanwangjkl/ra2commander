@@ -3,6 +3,7 @@ import { initialAttack, planAttack, recordAttack } from '../attack.ts'
 import { attackRoster, validateAttackSources } from '../attack-selection.ts'
 import { baseConstraints, formationExists, idsValid, paused, projection, stringsValid, world } from './common.ts'
 import type { GoalContext, GoalHandler } from './types.ts'
+import { validateCoverMotion, emptyCoverMotion } from '../cover.ts'
 
 function roster(ctx: GoalContext<'attack'>) { return attackRoster(ctx.spec, ctx.goals, ctx.production, ctx.snap, ctx.goal.facts.attack) }
 function members(ctx: GoalContext<'attack'>) {
@@ -26,6 +27,7 @@ export const attack: GoalHandler<'attack'> = {
     validateAttackSources(ctx.spec, ctx.goals)
   },
   validateFacts({ facts, activeSpec }) {
+    validateCoverMotion(facts.coverMotion)
     const state = facts.attack
     if (state && (!Array.isArray(state.members) || new Set(state.members.map(member => member.unitId)).size !== state.members.length || state.members.some(member => !Number.isSafeInteger(member.unitId) || typeof member.aircraft !== 'boolean' || !['pending', 'ready', 'attacking', 'fired', 'lost', 'released'].includes(member.phase) || [member.lastAmmo, member.lastCooldown, member.acceptedAt, member.firedAt].some(value => value !== undefined && !Number.isFinite(value))))) throw new Error('攻击与投弹进度非法')
     if (activeSpec && !state) throw new Error('攻击缺少执行进度')
@@ -44,13 +46,20 @@ export const attack: GoalHandler<'attack'> = {
   execution(_ctx, { view }) {
     const attack = view.attack!
     const waiting = !attack.readyIds.length && !attack.attackingIds.length && (attack.pendingIds.length > 0 || attack.preparing)
-    return { state: waiting ? 'pending' : attack.groundIds.length ? 'continuous' : 'running', detail: attack.detail, ...(attack.totalAircraft ? { progress: { completed: attack.firedIds.length, total: attack.totalAircraft, label: '已实际发射一次' } } : {}) }
+    return { state: waiting ? 'pending' : attack.groundIds.length ? 'continuous' : 'running', detail: `${attack.detail}${view.cover ? `；${view.cover.detail}` : ''}`, ...(attack.totalAircraft ? { progress: { completed: attack.firedIds.length, total: attack.totalAircraft, label: '已实际发射一次' } } : {}) }
   },
   terminalExecution({ goal }) {
     const aircraft = goal.facts.attack?.members.filter(member => member.aircraft) ?? []
     return { state: goal.status as 'completed' | 'partial' | 'failed', detail: goal.facts.outcomeDetail ?? '本次飞机已实际发射，返航与装弹交给游戏', ...(aircraft.length ? { progress: { completed: aircraft.filter(member => member.phase === 'fired').length, total: aircraft.length, label: '已实际发射一次' } } : {}) }
   },
   managedMembers: members,
+  nativeActions(ctx) {
+    const planned = plan(ctx), target = planned.view.targets[0]
+    if (!target) return []
+    const motion = ctx.goal.facts.coverMotion ??= emptyCoverMotion()
+    const ids = planned.view.readyIds.filter(id => motion.orders[id]?.kind !== 'attack' || motion.orders[id]?.targetId !== target.id || ctx.snap.self.find(unit => unit.id === id)?.isIdle)
+    return ids.length ? [{ kind: 'attack', unitIds: ids, targetId: target.id }] : []
+  },
   stopMembers: ctx => members(ctx).filter(id => !ctx.goal.facts.attack?.members.some(member => member.unitId === id && member.phase === 'fired')),
   afterSubmit({ goal, snap }, request, results) { recordAttack(goal.facts.attack ??= initialAttack(), request, results, snap) },
 }

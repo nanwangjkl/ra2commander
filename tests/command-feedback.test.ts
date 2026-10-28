@@ -306,3 +306,18 @@ test('工作台接收同一命令 ID，重启游标不漏新消息，退出主�
   log.emit({ commandId, source: 'sidebar', stage: 'understood', summary: '不再写入已退出连接' })
   assert.equal(stream.chunks.length, count)
 })
+
+test('状态查询失败返回连接错误，后续查询恢复，不把失败报告为游戏加载中', async () => {
+  let failed = true
+  const api = new WorkbenchApi({ log: new CommandLog(), ready: () => true, submit: async () => {},
+    status: async () => { if (failed) throw new Error('Target page has been closed'); return 'ready' } })
+  const disconnected = new Response()
+  await api.handle(request('/commander/status'), disconnected as never)
+  assert.equal(disconnected.status, 503)
+  assert.match(JSON.parse(disconnected.chunks.join('')).error, /游戏连接暂时不可用/)
+  failed = false
+  const connected = new Response()
+  await api.handle(request('/commander/status'), connected as never)
+  assert.equal(connected.status, 200)
+  assert.deepEqual(JSON.parse(connected.chunks.join('')), { game: 'ready' })
+})

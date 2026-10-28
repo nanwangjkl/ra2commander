@@ -11,7 +11,7 @@ import type { SnapshotUnit, CommandEvent } from '../packages/contracts/src/index
 import { ProgramController } from '../apps/companion/src/controller.ts'
 import { runTranscript } from '../apps/companion/src/transcript.ts'
 import { executeCapabilities } from '../apps/companion/src/capabilities/index.ts'
-import { retainAttackScope } from '../apps/companion/src/capabilities/binding-recovery.ts'
+import { retainBindingScope } from '../apps/companion/src/capabilities/binding-recovery.ts'
 import { normalizeOperations } from '../apps/companion/src/transcript-plan.ts'
 import { loadGameCatalog } from '../apps/companion/src/game-catalog.ts'
 import { loadIceMap } from '../apps/companion/src/map-binding.ts'
@@ -141,9 +141,9 @@ test('绑定修正不能去掉指定队/单位/目标范围；找不到的队保
     assert.match(result, /编队不存在/)
     assert.equal(f.runtime.goals.size, 0)
     const original = { capability: 'combat.attack', params: { selector: 'aircraft', unitIds: [11], target: 'base', targetId: 90, regionName: '三楼右下' } }
-    assert.deepEqual(retainAttackScope(original, { capability: 'combat.attack', params: {} }, loadPrompts()).params,
+    assert.deepEqual(retainBindingScope(original, { capability: 'combat.attack', params: {} }, loadPrompts()).params,
       loadPrompts().capabilities.parse(original).params)
-    assert.throws(() => retainAttackScope(original, { capability: 'formation.assign', params: { formationId: '1队' } }, loadPrompts()), /不能改成建队/)
+    assert.throws(() => retainBindingScope(original, { capability: 'formation.assign', params: { formationId: '1队' } }, loadPrompts()), /不能改成建队/)
   } finally { await f.dispose() }
 })
 

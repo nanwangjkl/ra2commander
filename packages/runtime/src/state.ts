@@ -13,6 +13,7 @@ export interface CommonGoalFacts {
 /** 保持 v4 字段兼容，按目标类型列明进度归属。 */
 export interface GoalProgress {
   routeIndex?: number
+  coverMotion?: import('./cover.ts').CoverMotion
   /** 已完成生产被追加总量时，保留前次完成事实供待生效/失败状态展示。 */
   completedQuantity?: number
   placementBlocked?: boolean
@@ -24,12 +25,12 @@ export interface GoalProgress {
   building?: import('./building.ts').BuildingState
 }
 export interface GoalFactKeys {
-  combat: 'routeIndex'
+  combat: 'routeIndex' | 'coverMotion'
   production: 'completedQuantity' | 'placementBlocked' | 'cancelProduction'
   repair: 'repair'
   relocate: 'relocation'
   mining: 'mining'
-  attack: 'attack'
+  attack: 'attack' | 'coverMotion'
   building: 'building'
   explore: never
   deploy: never

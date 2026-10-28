@@ -9,7 +9,7 @@
 // 且带性能护栏（超预算自动降频）。
 (() => {
   'use strict';
-  var BRIDGE_VERSION = 13;
+  var BRIDGE_VERSION = 17;
   if (window.__ra2cInstalled && window.__ra2cVersion === BRIDGE_VERSION) return;
   var upgrading = false;
   if (window.__ra2cInstalled && window.__ra2cSessionKey && typeof window.__ra2cSubmit === 'function') {
@@ -113,8 +113,12 @@
   var identities = upgrading && window.__ra2cUnitIdentities || {};
   window.__ra2cUnitIdentities = identities;
 
+  var speedSession = '', moveSpeeds = {}, speedRequests = {};
   function mapUnit(u) {
     var t = u.tile || {};
+    var speedKey = u.type + ':' + u.name;
+    if (speedSession !== window.__ra2cSessionKey) { speedSession = window.__ra2cSessionKey; moveSpeeds = {}; speedRequests = {} }
+    if (!Object.prototype.hasOwnProperty.call(moveSpeeds, speedKey)) speedRequests[speedKey] = { name: u.name, type: u.type };
     return {
       id: u.id,
       name: u.name,
@@ -126,6 +130,9 @@
       maxHitPoints: u.maxHitPoints,
       elevation: u.elevation,
       isIdle: u.isIdle,
+      speed: moveSpeeds[speedKey],
+      velocity: u.velocity ? { x: u.velocity.x, y: u.velocity.y, z: u.velocity.z } : undefined,
+      zone: u.zone,
       canDeploy: u.canDeploy,
       ammo: u.ammo,
       hasWrenchRepair: u.hasWrenchRepair,
@@ -321,6 +328,11 @@
         case 'attack': {
           var visible = w.units('hostile') || [];
           if (!visible.some(function (u) { return u.id === action.targetId })) return { ok: false, reason: 'invisible-target', submitted: 0, session: session };
+          if (action.holdPosition) {
+            var ready = ids.filter(function (id) { try { return w.inRange(id, action.targetId, 'current'); } catch (e) { return false; } });
+            if (!ready.length) return { ok: true, reason: 'cover-out-of-range', submitted: 0, session: session };
+            w.attack(ready, action.targetId); break;
+          }
           w.attack(ids, action.targetId); break;
         }
         case 'stop': w.stop(ids); break;
@@ -348,5 +360,12 @@
     if (hasApi && (hookedSession !== currentSession() || Date.now() - lastTickAt > 4000)) {
       hook();
     }
+    // 规则查询放在 tick 采样之外；按兵种缓存，避免整队初始化拖慢游戏回调。
+    if (hasApi && speedSession === window.__ra2cSessionKey) Object.keys(speedRequests).slice(0, 32).forEach(function (key) {
+      var request = speedRequests[key];
+      try { var rule = typeof window.werhd.rules === 'function' && window.werhd.rules(request.name, request.type); moveSpeeds[key] = rule && Number.isFinite(rule.speed) ? rule.speed : undefined }
+      catch (_) { moveSpeeds[key] = undefined }
+      delete speedRequests[key];
+    });
   }, 500);
 })();

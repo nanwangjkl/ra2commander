@@ -234,7 +234,7 @@ interface SkillRunBase {
   commandId: string; rawText: string; sessionKey: string; createdAt: number
   quantity: number; useExisting: boolean; formationId: string
   memberSource?: 'auto' | 'existing' | 'new'
-  status: 'preparing' | 'exploring' | 'repairing' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'superseded'
+  status: 'preparing' | 'exploring' | 'repairing' | 'covering' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'superseded'
   detail?: string
 }
 export interface ScoutSkillRun extends SkillRunBase {
@@ -242,5 +242,6 @@ export interface ScoutSkillRun extends SkillRunBase {
   map: { id: string; schemeId: string; schemeVersion: string; geometryHash: string }
 }
 export interface RepairSkillRun extends SkillRunBase { kind: 'repair-vehicle'; preparationGoalIds: string[]; repairGoalId: string }
-export type SkillRun = ScoutSkillRun | RepairSkillRun
-export const skillGoalIds = (run: SkillRun): string[] => run.kind === 'repair-vehicle' ? [...run.preparationGoalIds, run.repairGoalId] : [run.preparationGoalId, run.exploreGoalId]
+export interface CoverSkillRun extends SkillRunBase { kind: 'cover'; preparationGoalIds: string[]; escortIds: number[]; cover?: import('@ra2c/contracts').CoverPolicy; assignedEscortIds?: number[]; ownedPreparationGoalIds?: string[] }
+export type SkillRun = ScoutSkillRun | RepairSkillRun | CoverSkillRun
+export const skillGoalIds = (run: SkillRun): string[] => run.kind === 'cover' ? run.preparationGoalIds : run.kind === 'repair-vehicle' ? [...run.preparationGoalIds, run.repairGoalId] : [run.preparationGoalId, run.exploreGoalId]

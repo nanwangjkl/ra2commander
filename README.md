@@ -28,6 +28,8 @@ M1（公共 API 桥）与 M2 单队循环已实测：文本命令经云模型（
 | [工作台、侧栏与语音开发计划](doc/roadmap/browser-workbench-and-voice.md) | 如何分阶段加入游戏右侧命令栏和真实语音，逐阶段由玩家验收？ |
 | [探路 Skill](doc/spec/scouting-skills.md) | 如何配置、调用、取消和恢复探路，以及如何确认真实探索覆盖？ |
 | [维修车 Skill](doc/spec/repair-vehicle-skill.md) | 如何生产、组装维修车，按坦克血量选择目标并让多车并行维修？ |
+| [掩护 Skill 开发计划](doc/roadmap/cover-skill.md) | 同队掩护、生产接入、协同行动及防空优先（合并后续阶段，待整体验收） |
+| [掩护 Skill](doc/spec/cover-skill.md) | 当前如何安排同队角色、处理两种速度差、取消和恢复协同行军？ |
 | [基础能力、提示词与 Skill 改造方案](doc/roadmap/capabilities-prompts-and-skills.md) | 如何统一能力入口、将提示词外置为 Markdown，并组合“探路”等常规操作？（A～C 已验收，探路流程已实机认可） |
 | [玩家基础能力](doc/spec/player-capabilities.md) | 已接通哪些能力，Markdown 参数如何连接模型、类型与宿主，如何新增能力？ |
 | [生产取消](doc/spec/production-cancellation.md) | 如何撤销一个目标剩余的游戏队列，保留产物并继续其他生产？ |

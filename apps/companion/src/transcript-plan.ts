@@ -43,6 +43,13 @@ export function normalizeOperations(text: string, operations: CapabilityCall[], 
     operations = replaced ? result : [replacement, ...result]
   }
   const clauses = raw.split(/[，,。；;\n]/)
+  // “造5辆坦克，编入1队，2个IFV掩护”承接本句的新造语境；明确使用现有时不补造。
+  if (/造|生产|制造/.test(raw) && !/现有|已有|不要.*(?:生产|造)|不用.*(?:生产|造)/.test(raw)) operations = operations.map(call => {
+    const cover = call.capability === 'formation.cover' || call.capability === 'skill.run' && call.params.skillId === 'cover'
+    if (!cover || call.params.memberSource === 'new' || call.params.unitIds) return call
+    const matchingProduction = operations.some(item => item.capability === 'production.produce' && item.params.formationId && formationAlias(item.params.formationId) === formationAlias(call.params.formationId ?? formationId))
+    return matchingProduction ? { ...call, params: { ...call.params, memberSource: 'auto' } } as CapabilityCall : call
+  })
   for (const clause of clauses) {
     const target = clause.match(/(?:编入|编到|归入|加入)([\d一二三四五六七八九十两]+)队/)
     if (!target) continue

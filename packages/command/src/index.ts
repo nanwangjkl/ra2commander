@@ -7,7 +7,7 @@ export {
 export { loadPrompts, readPrompts, PromptLoader, PromptLibrary } from './prompt-loader.ts'
 export type { PromptLoadOptions } from './prompt-loader.ts'
 export { SkillCatalog, readSkills } from './skills.ts'
-export type { SkillDocument, SkillDefinition, ScoutSkillDefinition, RepairSkillDefinition } from './skills.ts'
+export type { SkillDocument, SkillDefinition, ScoutSkillDefinition, RepairSkillDefinition, CoverSkillDefinition } from './skills.ts'
 export { GameProfile } from './game-profile.ts'
 export { importGameData, parseRulesIni, parseCsf, readGameData, validateGameData } from './game-data.ts'
 export type { GameData, GameDataEntry } from './game-data.ts'

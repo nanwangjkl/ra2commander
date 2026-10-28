@@ -28,6 +28,11 @@ export interface SnapshotUnit {
   maxHitPoints?: number;
   elevation?: number;
   isIdle: boolean;
+  /** 本局公开规则中的移动速度，不代表实际地形上的瞬时速度。 */
+  speed?: number;
+  /** 引擎公开的移动向量，世界坐标 x/z 为地面方向；预测速度仍使用规则 speed。 */
+  velocity?: { x: number; y: number; z: number };
+  zone?: number;
   canDeploy?: boolean;
   ammo?: number;
   hasWrenchRepair?: boolean;
@@ -83,7 +88,7 @@ export type ActionRequest =
   | { kind: 'move'; unitIds: number[]; x: number; y: number }
   | { kind: 'attackMove'; unitIds: number[]; x: number; y: number }
   | { kind: 'gather'; unitIds: number[]; x: number; y: number }
-  | { kind: 'attack'; unitIds: number[]; targetId: number }
+  | { kind: 'attack'; unitIds: number[]; targetId: number; holdPosition?: boolean }
   | { kind: 'enterTransport'; unitIds: number[]; targetId: number }
   /** 对友方车辆使用当前维修武器；页面桥提交普通 Attack，不能强制攻击。 */
   | { kind: 'repair'; unitIds: number[]; targetId: number }
@@ -114,6 +119,8 @@ export interface ActionResult {
 export interface StepConstraints {
   allowedUnitIds: number[];
   enemyIds: number[];
+  /** 掩护成员可就近对空自卫；不能扩大受护成员的原攻击目标。 */
+  coverFire?: { unitIds: number[]; enemyIds: number[] };
   mapWidth: number;
   mapHeight: number;
   maxActions?: number;

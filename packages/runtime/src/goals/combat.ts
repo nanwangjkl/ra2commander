@@ -1,6 +1,7 @@
 import { attackObjective, matchingAttackTargets, validTargetRegion } from '@ra2c/contracts'
 import { alive, baseConstraints, blocked, formationExists, movementArrival, point, projection } from './common.ts'
 import type { GoalContext, GoalHandler } from './types.ts'
+import { coverMoves, emptyCoverMotion, validateCoverMotion } from '../cover.ts'
 
 const members = (ctx: GoalContext<'combat'>) => alive(ctx, ctx.formations.membersOf(ctx.spec.formationId))
 function initialize(ctx: GoalContext<'combat'>) {
@@ -20,6 +21,27 @@ export const combat: GoalHandler<'combat'> = {
   },
   validateLive(ctx) { if (!formationExists(ctx, ctx.spec.formationId, true)) throw new Error('编队不存在，请先建队') },
   initialize,
+  validateFacts(goal) {
+    validateCoverMotion(goal.facts.coverMotion)
+  },
+  nativeActions(ctx) {
+    if (!ctx.formations.coverOf(ctx.spec.formationId) && ctx.spec.allowedActions.includes('attack')) {
+      const target = matchingAttackTargets(ctx.spec, ctx.snap.enemies)[0]
+      if (target) {
+        const motion = ctx.goal.facts.coverMotion ??= emptyCoverMotion()
+        const ids = members(ctx).filter(id => motion.orders[id]?.kind !== 'attack' || motion.orders[id]?.targetId !== target.id || ctx.snap.self.find(unit => unit.id === id)?.isIdle)
+        return ids.length ? [{ kind: 'attack', unitIds: ids, targetId: target.id }] : []
+      }
+    }
+    const destination = ctx.spec.route?.[ctx.goal.facts.routeIndex ?? 0] ?? ctx.spec.destination
+    if (!destination) return []
+    const ids = members(ctx)
+    if (ctx.formations.membersOf(ctx.spec.formationId).some(id => ctx.locked(id))) return []
+    const policy = ctx.formations.coverOf(ctx.spec.formationId)
+    const result = coverMoves(policy ?? { runId: 'ordinary', version: '1', escortIds: [], gap: Number.MAX_SAFE_INTEGER, resumeGap: 1, retryTicks: 90 }, ctx.snap, ids, destination, ctx.goal.facts.coverMotion ?? emptyCoverMotion())
+    ctx.goal.facts.coverMotion = result.state
+    return result.actions
+  },
   track(ctx) {
     initialize(ctx)
     const { spec, goal: { facts }, snap } = ctx, converted: number[] = [], occupied = new Set(facts.members.map(member => member.id))
@@ -52,11 +74,13 @@ export const combat: GoalHandler<'combat'> = {
       ...(spec.retreat ? { retreat: { x: spec.retreat.x, y: spec.retreat.y, active: facts.retreatTriggered } } : {}) }
 
     const arrival = movementArrival(ctx)
-    return projection(ctx, constraints, { spec: spec.route ? { ...spec, destination: spec.route[Math.min(facts.routeIndex ?? 0, spec.route.length - 1)]! } : spec, ...(arrival ? { arrival } : {}), ...blocked(ctx), ...(!formationExists(ctx, spec.formationId) ? { blocked: `等待 ${spec.formationId} 编队完成` } : {}) })
+    const policy = ctx.formations.coverOf(spec.formationId), destination = spec.route?.[facts.routeIndex ?? 0] ?? spec.destination
+    const cover = policy && destination && !spec.patrol && !spec.allowedActions.includes('attack') ? coverMoves(policy, snap, members(ctx), destination, facts.coverMotion ?? emptyCoverMotion()).view : undefined
+    return projection(ctx, constraints, { spec: spec.route ? { ...spec, destination: spec.route[Math.min(facts.routeIndex ?? 0, spec.route.length - 1)]! } : spec, ...(arrival ? { arrival } : {}), ...(cover ? { cover } : {}), ...blocked(ctx), ...(!formationExists(ctx, spec.formationId) ? { blocked: `等待 ${spec.formationId} 编队完成` } : {}) })
   },
   progress({ spec, goal }, view) {
     if (['partial', 'failed'].includes(goal.status)) return {}
-    return spec.route ? { progress: { completed: goal.status === 'completed' ? spec.route.length : goal.facts.routeIndex ?? 0, total: spec.route.length, label: '已到达路点' }, ...(view.spec.kind === 'combat' && goal.status !== 'completed' ? { detail: `当前目的地：${view.spec.destination?.name ?? `${view.spec.destination?.x},${view.spec.destination?.y}`}` } : {}) } : {}
+    return spec.route ? { progress: { completed: goal.status === 'completed' ? spec.route.length : goal.facts.routeIndex ?? 0, total: spec.route.length, label: '已到达路点' }, ...(view.spec.kind === 'combat' && goal.status !== 'completed' ? { detail: `当前目的地：${view.spec.destination?.name ?? `${view.spec.destination?.x},${view.spec.destination?.y}`}；${view.cover?.detail ?? ''}` } : {}) } : view.cover ? { detail: view.cover.detail } : {}
   },
   continuous: ({ spec }) => spec.mode === 'hold' || spec.mode === 'assault' || (!spec.destination && !spec.attackRegion),
   stopMembers: members,

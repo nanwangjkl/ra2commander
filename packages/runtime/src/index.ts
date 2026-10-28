@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import {
-  validateScriptActions, liveScriptActions, inRegion, goalExecutionMode, goalOwner, normalizeAttackGoal, attackObjective, ownerId, directionLabels,
+  validateScriptActions, liveScriptActions, inRegion, inTargetRegion, goalExecutionMode, goalOwner, normalizeAttackGoal, attackObjective, ownerId, directionLabels,
   type ActionRequest, type ActionResult, type ActionContext, type Snapshot, type StepConstraints,
-  type GoalConstraints, type GoalSpec, type GoalView, type ScriptAction, type ScriptOwner, type FormationRequest, type GoalExecution,
+  type GoalConstraints, type GoalSpec, type GoalView, type ScriptAction, type ScriptOwner, type FormationRequest, type GoalExecution, type CoverPolicy,
 } from '@ra2c/contracts'
 import { codeHash, type StepExecutor } from '@ra2c/js-worker'
 import { FormationRegistry } from './formation.ts'
@@ -12,6 +12,8 @@ import { cancellationDetail, observeCancellations, pendingProduction, prepareCan
 import { ExplorationStore, skillGoalIds, type SkillRun } from './exploration.ts'
 import { RecoveryMonitor } from './recovery.ts'
 import { handlerFor, validateGoalSpec, validateGoalFacts } from './goals/index.ts'
+import { validateCover, emptyCoverMotion, recordCoverOrder, coverMembers, coverMoves, type CoverMotion } from './cover.ts'
+import { coverCombat, coverRangePairs, airborne, type CoverIntent, type CoverRange } from './cover-combat.ts'
 import type { GoalContext, GoalProjection } from './goals/types.ts'
 export { initialMining, miningBatch, observeOre } from './mining.ts'
 export { skillGoalIds } from './exploration.ts'
@@ -45,6 +47,7 @@ export interface RuntimeDeps {
   onProgramFaulted?: (ownerId: string) => void
   onProgramStalled?: (ownerId: string, reason: string) => void
   recovery?: { stallTicks?: number; cooldownTicks?: number }
+  coverRanges?: (pairs: Array<{ unitId: number; targetId: number }>, snap: Snapshot) => Promise<CoverRange[]>
   log?: (message: string) => void
 }
 
@@ -55,6 +58,7 @@ export class TaskRuntime {
   private latest?: Snapshot
   private draining: Promise<void> | undefined
   private cancelling: Promise<void> | undefined
+  private coverIdleOrders = new Map<string, CoverMotion>()
   /** 新快照不重置下一位，避免前面的控制对象反复抢先。 */
   private nextProgram = 0
   private pending = new Map<string, { lease: CompileLease; abort: AbortController }>()
@@ -119,7 +123,16 @@ export class TaskRuntime {
 
   async cancelSkillRun(id: string, superseded = false): Promise<void> {
     const run = this.skillRuns.get(id)
-    if (!run || !['preparing', 'exploring', 'repairing'].includes(run.status)) return
+    if (!run || !['preparing', 'exploring', 'repairing', 'covering'].includes(run.status)) return
+    if (run.kind === 'cover') {
+      if (this.formations.coverOf(run.formationId)?.runId === run.id) await this.uncover(run.formationId)
+      run.status = superseded ? 'superseded' : 'cancelled'
+      for (const goalId of run.ownedPreparationGoalIds ?? run.preparationGoalIds.filter(id => this.goals.get(id)?.spec.skill?.runId === run.id)) {
+        if (this.goals.get(goalId)?.spec.kind === 'production') await this.cancelProductionGoal(goalId)
+        else await this.cancelGoal(goalId, '玩家取消掩护准备')
+      }
+      return
+    }
     run.status = superseded ? 'superseded' : 'cancelled'
     run.detail = superseded ? '编队已接受新命令，停止原 Skill 后续步骤' : '玩家取消 Skill；已进入游戏队列的生产不回退'
     await Promise.all(skillGoalIds(run).map(goalId => {
@@ -130,7 +143,29 @@ export class TaskRuntime {
 
   private syncSkillRuns(): void {
     for (const run of this.skillRuns.values()) {
-      if (!['preparing', 'exploring', 'repairing'].includes(run.status)) continue
+      if (!['preparing', 'exploring', 'repairing', 'covering'].includes(run.status)) continue
+      if (run.kind === 'cover') {
+        let profile = this.formations.coverOf(run.formationId)
+        if (run.cover && this.formations.list().some(formation => formation.id === run.formationId)) {
+          const assigned = new Set(run.assignedEscortIds ?? (profile?.runId === run.id ? profile.escortIds : []))
+          const candidates = [...run.escortIds, ...(run.cover.escortSources ?? []).flatMap(source => this.production.filter(record => record.goalId === source.goalId && record.name === (this.goals.get(source.goalId)?.spec as { target?: string })?.target).flatMap(record => record.observedIds).slice(0, source.quantity))]
+          const incoming = candidates.filter(id => !assigned.has(id) && this.latest?.self.some(unit => unit.id === id) && this.formations.ownerOf(id) === run.formationId && !this.locked(id))
+          const kept = profile?.runId === run.id ? profile.escortIds.filter(id => this.formations.ownerOf(id) === run.formationId && this.latest?.self.some(unit => unit.id === id)) : []
+          const desired = { ...run.cover, escortIds: [...new Set([...kept, ...incoming])] }
+          if (JSON.stringify(profile) !== JSON.stringify(desired)) this.setCover(run.formationId, desired)
+          run.assignedEscortIds = [...new Set([...assigned, ...incoming])]
+          run.escortIds = [...new Set([...run.escortIds, ...incoming])]
+          profile = this.formations.coverOf(run.formationId)
+        }
+        if (profile?.runId === run.id) {
+          const escorts = this.latest?.self.filter(unit => profile.escortIds.includes(unit.id) && this.formations.ownerOf(unit.id) === run.formationId).length ?? 0
+          const total = this.latest?.self.filter(unit => this.formations.ownerOf(unit.id) === run.formationId).length ?? 0
+          const preparing = run.preparationGoalIds.some(id => ['pending', 'active'].includes(this.goals.get(id)?.status ?? ''))
+          run.status = escorts && total > escorts ? 'covering' : preparing ? 'preparing' : 'covering'
+          run.detail = `同属${run.formationId}：被掩护${total - escorts}、掩护${escorts}${preparing ? '；等待本次生产和交接，其余可用成员先行动' : escorts ? '；协同行动' : '；掩护成员已损失或准备结束，未追加生产'}`
+        } else if (run.status === 'covering' || run.preparationGoalIds.some(id => this.goals.get(id)?.status === 'cancelled')) { run.status = 'superseded'; run.detail = '掩护已解除或被重新安排' }
+        continue
+      }
       if (run.kind === 'repair-vehicle') {
         const repair = this.goals.get(run.repairGoalId)
         if (repair?.status === 'cancelled') { void this.cancelSkillRun(run.id, true).catch(error => this.deps.log?.(String(error))); continue }
@@ -171,12 +206,70 @@ export class TaskRuntime {
     return program
   }
 
+  setCover(formationId: string, cover: CoverPolicy): void {
+    validateCover(cover)
+    const previous = this.formations.coverOf(formationId)
+    if (previous && previous.runId !== cover.runId) {
+      const old = this.skillRuns.get(previous.runId)
+      if (old) { old.status = 'superseded'; old.detail = '已重新安排掩护' }
+    }
+    this.formations.setCover(formationId, cover)
+    this.coverIdleOrders.delete(formationId)
+    const program = this.program({ kind: 'formation', formationId })
+    program.generation++
+    for (const id of program.activeGoalIds) if (this.goals.get(id)?.facts.coverMotion) this.goals.get(id)!.facts.coverMotion!.orders = {}
+  }
+  hasCover(formationId: string): boolean {
+    return !!this.formations.coverOf(formationId) || [...this.skillRuns.values()].some(run => run.kind === 'cover' && run.formationId === formationId && ['preparing', 'covering'].includes(run.status))
+  }
+  /** 原受护对象已全部失效时，玩家的新行动不能被旧角色永久挡住。 */
+  async clearLostCover(formationId: string): Promise<boolean> {
+    const policy = this.formations.coverOf(formationId)
+    if (!policy || this.latest?.self.some(unit => this.formations.ownerOf(unit.id) === formationId && !policy.escortIds.includes(unit.id))
+      || policy.protectedSources?.some(id => ['pending', 'active'].includes(this.goals.get(id)?.status ?? ''))) return false
+    const run = this.skillRuns.get(policy.runId)
+    if (run?.kind === 'cover') await this.cancelSkillRun(run.id)
+    else await this.uncover(formationId)
+    return true
+  }
+  async uncover(formationId: string): Promise<void> {
+    const previous = this.formations.coverOf(formationId)
+    if (!previous) return
+    const snap = this.latest, program = this.programs.get(`formation:${formationId}`)
+    this.formations.setCover(formationId)
+    this.coverIdleOrders.delete(formationId)
+    const run = this.skillRuns.get(previous.runId)
+    if (run) { run.status = 'cancelled'; run.detail = '掩护已解除，成员保留在原队' }
+    if (program) {
+      program.generation++; program.memory = {}
+      for (const id of program.activeGoalIds) delete this.goals.get(id)!.facts.coverMotion
+    }
+    const generation = program?.generation
+    const ids = snap ? previous.escortIds.filter(id => this.formations.ownerOf(id) === formationId && snap.self.some(unit => unit.id === id)) : []
+    if (snap && ids.length) await this.deps.submit([{ kind: 'stop', unitIds: ids }], snap,
+      () => this.latest === snap && this.sessionKey === snap.sessionKey && !this.formations.coverOf(formationId) && program?.generation === generation && ids.every(id => this.formations.ownerOf(id) === formationId))
+  }
+
   private goalContext(spec: GoalSpec, snap: Snapshot): GoalContext {
     return { spec, snap, goal: this.goals.get(spec.id) ?? { ownerId: ownerId(goalOwner(spec)), spec, status: 'pending', facts: emptyFacts() },
       goals: this.goals, programs: this.programs, formations: this.formations, production: this.production, pausedQueues: this.pausedQueues,
       handoffs: this.handoffs, exploration: this.exploration, locked: id => this.locked(id), hasPlannedFormation: id => this.hasPlannedFormation(id) }
   }
-  private project(spec: GoalSpec, snap: Snapshot): GoalProjection { return handlerFor(spec).project(this.goalContext(spec, snap)) }
+  private project(spec: GoalSpec, snap: Snapshot): GoalProjection {
+    const result = handlerFor(spec).project(this.goalContext(spec, snap))
+    if ((spec.kind === 'combat' || spec.kind === 'attack') && spec.formationId) {
+      const policy = this.formations.coverOf(spec.formationId)
+      if (policy) {
+        const escorts = policy.escortIds.filter(id => this.formations.ownerOf(id) === spec.formationId && snap.self.some(unit => unit.id === id) && !this.locked(id))
+        result.constraints.allowedUnitIds = [...new Set([...result.constraints.allowedUnitIds, ...escorts])]
+        const targetRegion = attackObjective(spec)?.target.region
+        result.constraints.coverFire = { unitIds: escorts, enemyIds: snap.enemies.filter(unit => airborne(unit) && (!targetRegion || inTargetRegion(unit.rx, unit.ry, targetRegion))).map(unit => unit.id) }
+        const members = coverMembers(policy, snap, result.constraints.allowedUnitIds)
+        result.view.cover = { protectedIds: members.protectedUnits.map(u => u.id), escortIds: escorts, slowestIds: members.slowest.map(u => u.id), heldIds: this.goals.get(spec.id)?.facts.coverMotion?.heldIds ?? [], detail: this.goals.get(spec.id)?.facts.coverMotion?.detail ?? '掩护配置生效，协调行军与近身支援' }
+      }
+    }
+    return result
+  }
   private validateGoal(spec: GoalSpec): void {
     if (!this.latest) throw new Error('目标缺少当前对局')
     validateGoalSpec(spec, this.latest)
@@ -446,6 +539,11 @@ export class TaskRuntime {
     if (program) {
       if (this.latest) for (const spec of this.activeSpecs(program)) handlerFor(spec).pause?.(this.goalContext(spec, this.latest))
       program.status = 'paused'; program.generation++
+      if (program.owner.kind === 'formation' && this.formations.coverOf(program.owner.formationId) && this.latest) {
+        const snap = this.latest, generation = program.generation, formationId = program.owner.formationId
+        const ids = this.formations.membersOf(formationId).filter(id => snap.self.some(unit => unit.id === id))
+        void this.deps.submit([{ kind: 'stop', unitIds: ids }], snap, () => program.status === 'paused' && program.generation === generation && this.sessionKey === snap.sessionKey && ids.every(id => this.formations.ownerOf(id) === formationId)).catch(error => this.deps.log?.(String(error)))
+      }
     }
   }
   resume(id: string): void {
@@ -454,6 +552,7 @@ export class TaskRuntime {
     const program = this.programs.get(id)
     if (program && (program.script || this.activeSpecs(program).length) && program.status === 'paused') { program.status = 'active'; program.stats.errors = 0; program.generation++ }
     if (program) for (const spec of this.activeSpecs(program)) delete this.goals.get(spec.id)!.facts.nativeError
+    if (program) for (const spec of this.activeSpecs(program)) if (this.goals.get(spec.id)!.facts.coverMotion) this.goals.get(spec.id)!.facts.coverMotion!.orders = {}
   }
   async stopUnits(ids: number[]): Promise<void> {
     const owners = new Set(ids.map(id => this.formations.ownerOf(id)).filter((x): x is string => !!x).map(formationId => ownerId({ kind: 'formation', formationId })))
@@ -492,7 +591,7 @@ export class TaskRuntime {
     }
     const constraints: StepConstraints = { allowedUnitIds: [], enemyIds: snap.enemies.map(u => u.id), mapWidth: snap.mapWidth, mapHeight: snap.mapHeight, goals, ignoreInactiveGoals: running }
     const regional = specs.length > 0 && specs.every(spec => !!attackObjective(spec)?.target.region)
-    const targetIds = new Set(Object.values(goals).flatMap(goal => goal.enemyIds))
+    const targetIds = new Set(Object.values(goals).flatMap(goal => [...goal.enemyIds, ...(goal.coverFire?.enemyIds ?? [])]))
     return { snapshot: { ...snap, enemies: regional ? snap.enemies.filter(enemy => targetIds.has(enemy.id)) : snap.enemies, constraints, control: { owner: program.owner, goals: views, formations: this.formations.list().map(f => ({ id: f.id, memberIds: [...f.memberIds] })) } }, constraints }
   }
 
@@ -540,7 +639,7 @@ export class TaskRuntime {
         this.retiredSessions.add(this.sessionKey)
         this.cancelAllCommands()
         this.programs.clear(); this.goals.clear(); this.formations.clear()
-        this.exploration.clear(); this.skillRuns.clear()
+        this.exploration.clear(); this.skillRuns.clear(); this.coverIdleOrders.clear()
         this.recovery.clear()
         this.production.length = 0; this.handoffs.length = 0; this.seenUnitIds.clear(); this.pausedQueues.clear()
       }
@@ -571,6 +670,7 @@ export class TaskRuntime {
         if (this.latest !== snap) break
         const index = (start + offset) % programs.length
         const program = programs[index]!
+        if (program.status === 'idle' && program.owner.kind === 'formation' && this.formations.coverOf(program.owner.formationId)) await this.coverStandby(program, snap)
         // 在 await 前交棒；当前计算若被新快照抢占，下一轮也不会从它重新开始。
         this.nextProgram = (index + 1) % programs.length
         if (program.status === 'active') {
@@ -581,7 +681,7 @@ export class TaskRuntime {
           if (this.latest === snap && program.status === 'active' && !this.hasPendingCommand(program.id)) {
             const frame = this.frame(program, this.activeSpecs(program).filter(spec => goalExecutionMode(spec) === 'script'), snap, true)
             const waiting = new Set(this.handoffs.map(handoff => handoff.goalId))
-            for (const goal of frame.snapshot.control!.goals) if (this.goals.get(goal.spec.id)?.facts.placementBlocked) waiting.add(goal.spec.id)
+            for (const goal of frame.snapshot.control!.goals) if (this.goals.get(goal.spec.id)?.facts.placementBlocked || goal.cover) waiting.add(goal.spec.id)
             const stalled = this.recovery.observe(program.id, this.recoveryKey(program), snap, frame.snapshot.control!.goals, frame.constraints.goals!, waiting)
             if (stalled) this.deps.onProgramStalled?.(program.id, stalled)
           }
@@ -590,6 +690,52 @@ export class TaskRuntime {
         if (this.latest === snap && (offset + 1) % 8 === 0 && offset + 1 < programs.length) await new Promise<void>(resolve => setImmediate(resolve))
       }
     }
+  }
+
+  private async coverStandby(program: ProgramState, snap: Snapshot): Promise<void> {
+    if (program.owner.kind !== 'formation') return
+    const formationId = program.owner.formationId, policy = this.formations.coverOf(formationId), revision = this.formations.revision, generation = program.generation
+    if (!policy || this.formations.membersOf(formationId).some(id => this.locked(id))) return
+    const ids = this.formations.membersOf(formationId), previous = this.coverIdleOrders.get(formationId) ?? emptyCoverMotion()
+    const intent: CoverIntent = { targets: [], threats: snap.enemies, region: { name: '掩护待命', x1: 0, y1: 0, x2: snap.mapWidth - 1, y2: snap.mapHeight - 1 }, waiting: false }
+    const ranges = await this.deps.coverRanges?.(coverRangePairs(policy, snap, ids, intent, previous), snap).catch(() => []) ?? []
+    const plan = coverCombat(policy, snap, ids, intent, previous, ranges)
+    const guard = () => this.latest === snap && this.sessionKey === snap.sessionKey && program.status === 'idle' && program.generation === generation && this.formations.revision === revision && this.formations.coverOf(formationId) === policy
+    if (!guard()) return
+    this.coverIdleOrders.set(formationId, plan.state)
+    for (const request of plan.actions.slice(0, 20)) {
+      const results = await this.deps.submit([request], snap, guard)
+      if (!guard()) return
+      recordCoverOrder(plan.state, request, snap.tick, results)
+    }
+  }
+
+  private async coverActions(spec: GoalSpec, snap: Snapshot): Promise<ActionRequest[] | undefined> {
+    if ((spec.kind !== 'combat' && spec.kind !== 'attack') || !spec.formationId) return undefined
+    const policy = this.formations.coverOf(spec.formationId)
+    if (!policy) return undefined
+    const goal = this.goals.get(spec.id)!, projected = this.project(spec, snap), ids = projected.constraints.allowedUnitIds
+    if (this.formations.membersOf(spec.formationId).some(id => this.locked(id))) return []
+    const previous = goal.facts.coverMotion ?? emptyCoverMotion()
+    if (spec.kind === 'combat' && goal.facts.retreatTriggered && spec.retreat) {
+      const plan = coverMoves(policy, snap, ids, spec.retreat, previous, { directDestination: true })
+      goal.facts.coverMotion = plan.state
+      return plan.actions
+    }
+    const targetRegion = attackObjective(spec)?.target.region
+    const threats = snap.enemies.filter(unit => !targetRegion || inTargetRegion(unit.rx, unit.ry, targetRegion))
+    let targets = snap.enemies.filter(unit => projected.constraints.enemyIds.includes(unit.id))
+    if (spec.kind === 'combat' && !spec.allowedActions.includes('attack')) targets = []
+    if (spec.kind === 'combat' && spec.patrol) targets = targets.filter(target => snap.self.some(unit => ids.includes(unit.id) && Math.hypot(unit.rx - target.rx, unit.ry - target.ry) <= Math.max(unit.primaryWeapon?.maxRange ?? 0, unit.secondaryWeapon?.maxRange ?? 0) + policy.gap))
+    const intent: CoverIntent = {
+      targets, threats, region: projected.constraints.region!,
+      destination: spec.kind === 'combat' ? spec.route?.[goal.facts.routeIndex ?? 0] ?? spec.destination : attackObjective(spec)?.search.destination,
+      waiting: !policy.escortIds.some(id => snap.self.some(unit => unit.id === id)) && (policy.escortSources ?? []).some(source => ['pending', 'active'].includes(this.goals.get(source.goalId)?.status ?? '')),
+    }
+    const ranges = await this.deps.coverRanges?.(coverRangePairs(policy, snap, ids, intent, previous), snap).catch(() => []) ?? []
+    const plan = coverCombat(policy, snap, ids, intent, previous, ranges)
+    if (this.latest === snap && this.formations.coverOf(spec.formationId) === policy) goal.facts.coverMotion = plan.state
+    return plan.actions
   }
 
   private async flushHandoffs(snap: Snapshot): Promise<void> {
@@ -612,7 +758,10 @@ export class TaskRuntime {
           const goal = this.goals.get(handoff.goalId)
           if (goal) {
             delete goal.facts.blocked
-            if (goal.status !== 'cancelled' && goal.spec.kind === 'formation') this.complete(goal)
+            if (goal.status !== 'cancelled' && goal.spec.kind === 'formation') {
+              if (goal.spec.cover) this.setCover(goal.spec.request.formationId, goal.spec.cover)
+              this.complete(goal)
+            }
           }
         } else if (this.goals.get(handoff.goalId)) this.goals.get(handoff.goalId)!.facts.blocked = '成员交接停车尚未确认'
       } catch (err) { if (this.goals.get(handoff.goalId)) this.goals.get(handoff.goalId)!.facts.blocked = `成员交接失败: ${String(err).slice(0, 120)}` }
@@ -632,6 +781,14 @@ export class TaskRuntime {
       ids = request.unitIds
     } else {
       ids = [...this.formations.membersOf(request.formationId)]
+      for (const run of this.skillRuns.values()) if (run.kind === 'cover' && run.formationId === request.formationId && ['preparing', 'covering'].includes(run.status)) await this.cancelSkillRun(run.id, true)
+      // 明确解散后，独立生产继续但不再重建这个队。掩护自身新增的准备已在上面取消。
+      for (const pending of this.goals.values()) if (pending.spec.kind === 'production' && pending.spec.formationId === request.formationId && ['pending', 'active'].includes(pending.status)) {
+        delete pending.spec.formationId
+        if (pending.activeSpec?.kind === 'production') delete pending.activeSpec.formationId
+        const producing = this.programs.get(pending.ownerId)
+        if (producing) { producing.revision++; this.cancelCommand(producing.id) }
+      }
       const program = this.programs.get(ownerId({ kind: 'formation', formationId: request.formationId }))
       if (program) {
         this.cancelCommand(program.id)
@@ -671,7 +828,8 @@ export class TaskRuntime {
       const goal = this.goals.get(spec.id)!
       if (goal.facts.nativeError) continue
       try {
-        const actions = handlerFor(spec).nativeActions!(this.goalContext(spec, snap)).slice(0, available).map(request => ({ goalId: spec.id, request }))
+        const requests = await this.coverActions(spec, snap) ?? handlerFor(spec).nativeActions!(this.goalContext(spec, snap))
+        const actions = requests.slice(0, available).map(request => ({ goalId: spec.id, request }))
         const before = budget.remaining
         await this.submitActions(program, snap, actions, 'native', valid, budget)
         available -= before - budget.remaining
@@ -687,6 +845,13 @@ export class TaskRuntime {
     const valid = () => authorized() && this.latest === snap && formationRevision === this.formations.revision
     const specs = this.activeSpecs(program).filter(spec => goalExecutionMode(spec) === 'script')
     if (!specs.length || !budget.remaining) return
+    if (program.owner.kind === 'formation' && this.formations.coverOf(program.owner.formationId) && specs.every(spec => spec.kind === 'combat' || spec.kind === 'attack' && !spec.aircraftIds.length)) {
+      for (const spec of specs) {
+        const actions = (await this.coverActions(spec, snap) ?? []).map(request => ({ goalId: spec.id, request }))
+        if (!await this.submitActions(program, snap, actions, 'script', valid, budget)) return
+      }
+      return
+    }
     const frame = this.frame(program, specs, snap, true)
     for (const spec of specs) {
       if (spec.kind !== 'combat' || this.goals.get(spec.id)!.facts.retreatTriggered) continue
@@ -764,6 +929,7 @@ export class TaskRuntime {
         handler.beforeSubmit?.(this.goalContext(goal.activeSpec, snap), request)
         phase = 'submit'
         const results = await this.deps.submit([request], snap, guard)
+        if (goal.facts.coverMotion) recordCoverOrder(goal.facts.coverMotion, request, snap.tick, results)
         phase = 'receipt'
         if (handler.afterSubmit?.(this.goalContext(goal.activeSpec, snap), request, results)) continue
         if (mode === 'script') this.recovery.trace(program.id, this.recoveryKey(program), snap.tick, { goalId: item.goalId, request, results })

@@ -32,7 +32,8 @@ async function bindOrder(order: AttackOrder, context: BindingContext): Promise<B
   const hasAircraft = !!formation && (ctx.runtime.snapshot!.self.some(unit => unit.type === 1 && (ctx.formations.ownerOf(unit.id) === formation || pendingIds.includes(unit.id)))
     || sources.some(goal => { const source = goal.spec; return source.kind === 'production' && (source.targetType ?? catalog.all.find(item => item.name === source.target)?.type) === 1 }))
   if (order.wholeFormation && formation && !hasAircraft) {
-    const goal: CombatGoal = { id: id(), kind: 'combat', rawText: context.text, formationId: formation, region: fullMap(ctx.runtime.snapshot!), objective,
+    await ctx.runtime.clearLostCover(formation); context.check()
+    const goal: CombatGoal = { id: id(), kind: 'combat', rawText: context.text, formationId: formation, region: fullMap(ctx.runtime.snapshot!), objective, ...(ctx.runtime.hasCover(formation) ? { executionMode: 'native' as const } : {}),
       allowedActions: ['move', 'attackMove', 'attack', 'stop'], ...(destination ? { destination } : {}), ...(region ? { attackRegion: objective.target.region! } : {}) }
     return { goals: [{ goal: normalizeAttackGoal(goal), choice: region ? `${formation} 前往并清理${region.name}区域内的敌人` : `编队 ${formation} 全图进攻` }] }
   }
@@ -53,8 +54,10 @@ async function bindOrder(order: AttackOrder, context: BindingContext): Promise<B
   const ammoCapacity = Object.fromEntries(catalog.all.filter(item => item.type === 1).map(item => [item.name, item.ammo ?? 1]))
   context.check()
   for (const [formationId, unitIds] of groups) {
+    if (formationId) { await ctx.runtime.clearLostCover(formationId); context.check() }
     const aircraftIds = members.filter(unit => unitIds.includes(unit.id) && unit.type === 1).map(unit => unit.id)
     const goal: AttackGoal = { id: id(), kind: 'attack', rawText: context.text, unitIds, aircraftIds, ammoCapacity, preparationGoalIds, objective,
+      ...(formationId && ctx.runtime.hasCover(formationId) && !aircraftIds.length && !hasAircraft ? { executionMode: 'native' as const } : {}),
       membership: prepared ? { kind: 'prepared', goalIds: sourceIds, names, ...(params.quantity !== 'all' ? { limit: params.quantity } : {}) } : { kind: 'selected' },
       targetKind: params.target, targetNames, ...(formationId ? { formationId } : {}), ...(params.targetId !== undefined ? { targetId: params.targetId } : {}), ...(region ? { targetRegion: objective.target.region! } : {}) }
     const target = params.targetId !== undefined ? `敌人#${params.targetId}` : ({ enemies: '敌人', base: '敌方基地', units: '敌方单位', buildings: '敌方建筑' }[params.target])
