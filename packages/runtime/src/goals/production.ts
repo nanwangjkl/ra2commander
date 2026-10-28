@@ -49,7 +49,7 @@ export const production: GoalHandler<'production'> = {
   observe(ctx) {
     const { spec, snap, goal } = ctx
     const progress = productionProgress(spec, ctx.production, snap)
-    const assigned = !spec.formationId || (progress.observed[spec.target] ?? []).filter(id => snap.self.some(u => u.id === id)).every(id => ctx.formations.ownerOf(id) === spec.formationId && !ctx.locked(id))
+    const assigned = (progress.observed[spec.target] ?? []).filter(id => snap.self.some(u => u.id === id)).every(id => !ctx.locked(id) && (!spec.formationId || ctx.formations.ownerOf(id) === spec.formationId))
     if (!spec.maintainPower && assigned && (progress.observed[spec.target]?.length ?? 0) >= spec.quantity && !progress.uncertain.includes(spec.target)) {
       if (progress.placement && progress.placement.completed < spec.quantity) {
         goal.status = 'partial'; goal.facts.outcomeDetail = `已生产${spec.quantity}座，按指定${spec.placementRegion ? '分区及位置' : '方位'}建成${progress.placement.completed}座；位置未达标的建筑：${progress.placement.mismatchedIds.join('、') || '尚未确认'}，未额外补造`
@@ -65,6 +65,7 @@ export const production: GoalHandler<'production'> = {
       missingPrerequisites,
       unmetConditions: snap.production?.available.includes(spec.target) ? [] : (spec.unlockConditions ?? []).filter(condition => !condition.requiresExisting || !snap.self.some(unit => unit.type === 2 && unit.name === condition.name)),
       pendingPrerequisites: missingPrerequisites.filter(name => (progress.sent[name] ?? 0) > (progress.observed[name]?.length ?? 0)),
+      pendingRallyIds: (progress.observed[spec.target] ?? []).filter(id => snap.self.some(unit => unit.id === id) && ctx.locked(id)),
       availableToProduce: (constraints.allowedProduce ?? []).filter(name => (constraints.produceRemaining?.[name] ?? 0) > 0 && snap.production?.available.includes(name) && (constraints.queueSpace?.[constraints.productionQueueTypes?.[name] ?? 0] ?? 1) > 0),
       ...(progress.placement ? { placement: { ...progress.placement, ...(constraints.placements?.[spec.target] ? { next: constraints.placements[spec.target] } : {}) } } : {}),
       readyToPlace: (constraints.allowedPlace ?? []).filter(name => snap.production?.queues.some(queue => queue.status === 3 && queue.items.some(item => item.name === name))),
@@ -76,6 +77,10 @@ export const production: GoalHandler<'production'> = {
     return projection(ctx, constraints, view)
   },
   continuous: ({ spec }) => !!spec.maintainPower,
+  execution(ctx, { view }) {
+    const pending = view.productionPlan?.pendingRallyIds ?? []
+    if (pending.length) return { state: 'pending', detail: `已生产${view.observed[ctx.spec.target]?.length ?? 0}个，其中${pending.length}个等待抵达集结点及交接；不补造、不提前停车`, progress: { completed: view.observed[ctx.spec.target]?.length ?? 0, total: ctx.spec.quantity, label: '已生产，等待集结交接' } }
+  },
   progress({ spec, goal }, view) {
     if (['completed', 'partial', 'failed'].includes(goal.status)) return {}
     return !spec.maintainPower ? { progress: { completed: Math.min(spec.quantity, view.productionPlan?.placement?.completed ?? view.observed[spec.target]?.length ?? 0), total: spec.quantity, ...(spec.placementRegion ? { label: '按指定分区及位置建成' } : spec.placement ? { label: '按指定方位建成' } : {}) } } : {}

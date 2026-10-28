@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 export { PlayableAreaIndex, loadPlayableArea } from './playable-area.ts'
+export { StaticObstacleIndex, loadStaticObstacles } from './static-obstacles.ts'
 
 /** 地图原生格子坐标；不是屏幕像素或经纬度。 */
 export type MapPoint = [number, number]

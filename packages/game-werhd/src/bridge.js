@@ -9,7 +9,7 @@
 // 且带性能护栏（超预算自动降频）。
 (() => {
   'use strict';
-  var BRIDGE_VERSION = 17;
+  var BRIDGE_VERSION = 19;
   if (window.__ra2cInstalled && window.__ra2cVersion === BRIDGE_VERSION) return;
   var upgrading = false;
   if (window.__ra2cInstalled && window.__ra2cSessionKey && typeof window.__ra2cSubmit === 'function') {
@@ -113,11 +113,11 @@
   var identities = upgrading && window.__ra2cUnitIdentities || {};
   window.__ra2cUnitIdentities = identities;
 
-  var speedSession = '', moveSpeeds = {}, speedRequests = {};
+  var speedSession = '', moveSpeeds = {}, moveRules = {}, speedRequests = {};
   function mapUnit(u) {
     var t = u.tile || {};
     var speedKey = u.type + ':' + u.name;
-    if (speedSession !== window.__ra2cSessionKey) { speedSession = window.__ra2cSessionKey; moveSpeeds = {}; speedRequests = {} }
+    if (speedSession !== window.__ra2cSessionKey) { speedSession = window.__ra2cSessionKey; moveSpeeds = {}; moveRules = {}; speedRequests = {} }
     if (!Object.prototype.hasOwnProperty.call(moveSpeeds, speedKey)) speedRequests[speedKey] = { name: u.name, type: u.type };
     return {
       id: u.id,
@@ -130,6 +130,8 @@
       maxHitPoints: u.maxHitPoints,
       elevation: u.elevation,
       isIdle: u.isIdle,
+      harvester: moveRules[speedKey] && moveRules[speedKey].harvester,
+      naval: moveRules[speedKey] && moveRules[speedKey].naval,
       speed: moveSpeeds[speedKey],
       velocity: u.velocity ? { x: u.velocity.x, y: u.velocity.y, z: u.velocity.z } : undefined,
       zone: u.zone,
@@ -297,6 +299,18 @@
     if (!ids.length) return { ok: false, reason: 'invalid-units', submitted: 0, session: session };
     try {
       switch (action.kind) {
+        case 'setRallyPoint': {
+          if (!Number.isSafeInteger(action.x) || !Number.isSafeInteger(action.y)) return { ok: false, reason: 'invalid-rally-point', submitted: 0, session: session };
+          var rallySize = w.map.size();
+          if (action.x < 0 || action.y < 0 || action.x >= rallySize.width || action.y >= rallySize.height) return { ok: false, reason: 'invalid-rally-point', submitted: 0, session: session };
+          for (var ri = 0; ri < ids.length; ri++) {
+            var factory = own.find(function (unit) { return unit.id === ids[ri] });
+            var rule = factory && factory.type === 2 && w.rules(factory.name, 2);
+            if (!rule || [2, 3, 4].indexOf(rule.factory) < 0 || rule.undeploysInto) return { ok: false, reason: 'not-rally-factory', submitted: 0, session: session };
+          }
+          if (!w.order(ids, { type: 0, target: { x: action.x, y: action.y } })) return { ok: false, reason: 'rally-order-rejected', submitted: 0, session: session };
+          break;
+        }
         case 'move': w.move(ids, action.x, action.y); break;
         case 'attackMove': w.attackMove(ids, action.x, action.y); break;
         case 'gather': w.gather(ids, action.x, action.y); break;
@@ -363,8 +377,8 @@
     // 规则查询放在 tick 采样之外；按兵种缓存，避免整队初始化拖慢游戏回调。
     if (hasApi && speedSession === window.__ra2cSessionKey) Object.keys(speedRequests).slice(0, 32).forEach(function (key) {
       var request = speedRequests[key];
-      try { var rule = typeof window.werhd.rules === 'function' && window.werhd.rules(request.name, request.type); moveSpeeds[key] = rule && Number.isFinite(rule.speed) ? rule.speed : undefined }
-      catch (_) { moveSpeeds[key] = undefined }
+      try { var rule = typeof window.werhd.rules === 'function' && window.werhd.rules(request.name, request.type); moveSpeeds[key] = rule && Number.isFinite(rule.speed) ? rule.speed : undefined; moveRules[key] = rule ? { harvester: !!rule.harvester, naval: !!rule.naval } : {} }
+      catch (_) { delete moveSpeeds[key]; delete moveRules[key] }
       delete speedRequests[key];
     });
   }, 500);

@@ -16,6 +16,8 @@
 
 production：spec 含 target、quantity、prerequisites、queues、targetType。该脚本同时协调所有生产目标。对每个目标先处理尚未出现的必要前置，再处理目标本身。
 - spec.formationId 表示把本目标新造单位编入指定队。新造身份由 observed[spec.target] 提供，当前可交接的成员是本目标 unitIds；仅将这些成员按 snapshot.constraints.goals[id].management 提供的 kind（createFormation 或 transferUnits）、formationId 提交编队管理动作，不操作其他已有单位。建队后继续转入后续新造成员；生产完成仍要把剩余成员编入队。
+- observed 中的坦克和步兵可能仍在出厂或前往集结点；productionPlan.pendingRallyIds 表示尚未可交接成员。必须等待宿主将其放入本步 unitIds，不能从 observed 或 self 绕过等待自行编队、停车、攻击、上车或安排掩护。产物已经记账，等待期间不补造、不删除目标，不把本步没有可交接成员记成永久 done。
+- 每次单位 produce 入队前，宿主会检查集结点及周围地形、建筑占地，必要时先换点。没有新开阔位置时本次生产暂缓且没有预占额度，其他目标继续；下步继续按宿主 produceRemaining 提出请求，不将本次已返回动作数组当成已经提交，不自行另设集结点或追加替代产量。
 - spec.maintainPower 表示玩家明确要求持续保持电量健康。宿主已结合实时电力、待完成建筑耗电和在建电厂算好 produceRemaining；直接使用该剩余额度，不能按 spec.quantity 或 observed.length 自行结束目标。补电与其他建设共用建筑队列，优先处理就绪建筑，不额外堆积电厂。
 - 生产动作 request={kind:'produce',name,quantity}。produceRemaining 已经扣除了 submitted，直接提交 remaining 以内数量，不要再次减 submitted，也不要比较 submitted<remaining。为0时不再 produce，但建筑仍要检查队列就绪并 place。uncertain 表示结果待确认，等待并保留目标。
 - 建筑：队列 Ready（status=3）后 request={kind:'place',name}；不带坐标，宿主自动选址。明确方位的 spec.placement 及 productionPlan.placement 由宿主按待放置建筑注入实际放置要求，不手工计算 x/y、方向或覆盖 placement；没有该字段的目标与前置继续默认选址。后续检查 observed[name] 或 self，未确认落地持续重试 place，不要取消或重复 produce。暂时无空位、cannot-place/no-spot 不代表建筑丢失，不用重造；只有观察到实际落地后才停止放置重试，不能用 memory 的“已调用 place”标记宣布完成。

@@ -1,4 +1,4 @@
-import { loadRegionScheme, loadPlayableArea } from './index.ts'
+import { loadRegionScheme, loadPlayableArea, loadStaticObstacles } from './index.ts'
 
 const [file, rx, ry] = process.argv.slice(2)
 try {
@@ -11,6 +11,9 @@ try {
   if (!file) {
     const area = await loadPlayableArea(new URL('../../../maps/ice/playable-area.json', import.meta.url), map)
     console.log(`探索有效范围：${area.width}×${area.height}，来源哈希与原生地图一致`)
+    const obstacles = await loadStaticObstacles(new URL('../../../maps/ice/static-obstacles.json', import.meta.url), map)
+    if (obstacles.width !== area.width || obstacles.height !== area.height) throw new Error('静态障碍与地图范围不一致')
+    console.log(`静态障碍：${obstacles.size} 格，地图、规则与素材来源已记录`)
   }
   if (rx !== undefined) console.log(`(${rx}, ${ry}) → ${index.regionsAt(Number(rx), Number(ry)).map(r => r.name).join(' / ') || '分区图外'}`)
 } catch (error) {

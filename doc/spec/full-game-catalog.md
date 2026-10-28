@@ -4,9 +4,9 @@
 
 ## 数据来源
 
-`pnpm game-data:import` 读取本地游戏站点的 `res/overlay/rules.ini` 和 `ra2.csf`，输出 `prompts/games/catalogs/ra2web-gonghui.json`。当前导入 446 条类型记录，其中 439 条有实际规则定义，125 条科技等级非负；类型清单中的过时占位也保留标记，不能视为可生产项目。数据不包含贴图、声音、地图对象位置或游戏存档。
+`pnpm game-data:import` 读取本地游戏站点的 `res/overlay/rules.ini`、`ra2.csf` 和 `art.ini`，输出 `prompts/games/catalogs/ra2web-gonghui.json`。当前导入 446 条类型记录，其中 439 条有实际规则定义，125 条科技等级非负；类型清单中的过时占位也保留标记，不能视为可生产项目。`art.ini` 仅提取建筑矩形 `Foundation` 占地，按规则 `Image` 或原生 ID 关联，用于集结点避让建筑和计算出口；自定义且无法解析的占地保持缺省，不猜测。数据不包含贴图、声音、地图对象位置或游戏存档。
 
-目录保存原生 ID、类型、中文和英文名称、前置及覆盖前置、国家限制、科技等级、工厂类别和必要角色事实；同时导入 `POWER/PROC/BARRACKS/FACTORY/RADAR/TECH` 类别以及国家清单。数据版本由两个来源文件的 SHA-256 计算，记录来源文件名与哈希，导入不添加时间戳，结果可重复生成。
+目录保存原生 ID、类型、中文和英文名称、前置及覆盖前置、国家限制、科技等级、工厂类别和必要角色事实；同时导入 `POWER/PROC/BARRACKS/FACTORY/RADAR/TECH` 类别以及国家清单。数据版本由三个来源文件的 SHA-256 计算，记录来源文件名与哈希，导入不添加时间戳，结果可重复生成；未包含占地的旧目录仍兼容。
 
 `current-mod.md` 的 `catalogFile` 选择这份数据。它与 Markdown 模板、角色、战术和 Skill 共同计算提示版本，加载错误保留上一套完整定义。Markdown 维护常用别名、角色与策略；完整建造依赖不按单位逐条维护。
 

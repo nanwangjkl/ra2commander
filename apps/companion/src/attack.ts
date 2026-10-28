@@ -46,7 +46,7 @@ async function bindOrder(order: AttackOrder, context: BindingContext): Promise<B
   if (!members.length && !prepared) throw new Error('没有匹配的现有作战单位，未新建编队或追加生产')
   const groups = new Map<string, number[]>()
   for (const unit of members) {
-    const owner = formation ?? ctx.formations.ownerOf(unit.id) ?? ''
+    const owner = formation ?? ctx.runtime.plannedFormationOf(unit.id) ?? ''
     groups.set(owner, [...(groups.get(owner) ?? []), unit.id])
   }
   if (prepared && !groups.has(formation!)) groups.set(formation!, [])

@@ -21,7 +21,7 @@ export interface BridgeState {
  * install() 必须在打开任何页面之前调用（exposeBinding/addInitScript 是 context 级）。
  */
 /** 桥版本（与 bridge.js 的 BRIDGE_VERSION 保持一致；升级后对已开页面重装）。 */
-const BRIDGE_VERSION = 17
+const BRIDGE_VERSION = 19
 
 export function isGameDocument(url: string, gameUrl: string): boolean {
   try {
@@ -108,6 +108,16 @@ export class WerhdBridge {
       if (win.__ra2cSessionKey !== sessionKey) throw new Error('地图观察对局已变化')
       return { seen, impassable, ore }
     }, { cells, width, sessionKey })
+  }
+
+  /** 集结候选地形副本；不能证明引擎寻路可达。 */
+  async rallyTiles(points: Array<{ x: number; y: number }>, sessionKey: string): Promise<Array<{ x: number; y: number; z: number; landType: number }>> {
+    if (points.length > 128) throw new Error('集结点查询批次过大')
+    return this.frame.evaluate(({ points, sessionKey }) => {
+      const win = window as unknown as { __ra2cSessionKey?: string; werhd?: { map: { tile(x: number, y: number): { z: number; landType: number } | undefined } } }
+      if (win.__ra2cSessionKey !== sessionKey || !win.werhd) throw new Error('集结点查询对局已变化')
+      return points.flatMap(point => { const tile = win.werhd!.map.tile(point.x, point.y); return tile ? [{ ...point, z: tile.z, landType: tile.landType }] : [] })
+    }, { points, sessionKey })
   }
 
   private findFrame(): Frame | undefined {

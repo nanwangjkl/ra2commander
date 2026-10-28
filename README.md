@@ -33,6 +33,8 @@ M1（公共 API 桥）与 M2 单队循环已实测：文本命令经云模型（
 | [基础能力、提示词与 Skill 改造方案](doc/roadmap/capabilities-prompts-and-skills.md) | 如何统一能力入口、将提示词外置为 Markdown，并组合“探路”等常规操作？（A～C 已验收，探路流程已实机认可） |
 | [玩家基础能力](doc/spec/player-capabilities.md) | 已接通哪些能力，Markdown 参数如何连接模型、类型与宿主，如何新增能力？ |
 | [生产取消](doc/spec/production-cancellation.md) | 如何撤销一个目标剩余的游戏队列，保留产物并继续其他生产？ |
+| [生产建筑集结点与出口疏通计划](doc/roadmap/factory-rally-and-exit.md) | 默认集结、到点后交接、静态障碍避让与有限出口疏通已通过用户验收 |
+| [生产建筑集结点](doc/spec/factory-rally.md) | 如何指定出厂目的地，自动分散重工集结点，以及同局保存和提交状态的限制？ |
 | [建筑方位要求](doc/spec/building-placement.md) | 如何保留明确的上、下、左、右要求，选择合法落点并确认实际位置？ |
 | [建筑维修与出售](doc/spec/building-operations.md) | 如何直接使用原生扳手维修，或出售指定己方建筑，并确认实际效果？ |
 | [基地搬迁与区域建造](doc/spec/base-relocation.md) | 如何收起基地、搬至分区重新展开，并等待搬迁后在区域内建造？ |

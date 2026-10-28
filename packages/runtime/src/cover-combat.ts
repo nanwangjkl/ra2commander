@@ -36,8 +36,9 @@ export function coverCombat(policy: CoverPolicy, snap: Snapshot, ids: number[], 
   const moving = !!destination && !intent.waiting
   const inRange = (unit: SnapshotUnit, target: SnapshotUnit) => ranges.some(range => range.unitId === unit.id && range.targetId === target.id && range.canAttack && range.inRange)
   const engaged = protectedUnits.some(unit => intent.targets.some(target => inRange(unit, target)))
-  const nearbyThreat = !!threat && distance(center, threat) <= Math.max(0, ...members.map(unit => Math.max(unit.primaryWeapon?.maxRange ?? 0, unit.secondaryWeapon?.maxRange ?? 0))) + policy.gap
-  const marching = moving && !engaged && !nearbyThreat
+  // 看见敌人但主战成员仍未进入射程时，慢成员必须继续领行；
+  // 不能先让掩护停车，再让主战成员跟随一个停止的预测点。
+  const marching = moving && !engaged
   const plan = coverMoves(policy, snap, ids, destination ?? { x: Math.round(center.rx), y: Math.round(center.ry) }, previous, { region: intent.region, ...(threat ? { threat } : {}) })
   const state = plan.state, desired = new Map<number, ActionRequest>(), held = new Set(state.heldIds)
   state.positions = Object.fromEntries(members.map(unit => {
@@ -63,7 +64,7 @@ export function coverCombat(policy: CoverPolicy, snap: Snapshot, ids: number[], 
     for (const unit of protectedUnits) {
       if (unit.rx < intent.region.x1 || unit.rx > intent.region.x2 || unit.ry < intent.region.y1 || unit.ry > intent.region.y2) { offer(unit, { kind: 'move', unitIds: [unit.id], ...clip(unit.rx, unit.ry) }); continue }
       const target = intent.targets.filter(enemy => inRange(unit, enemy)).sort((a, b) => distance(unit, a) - distance(unit, b) || a.id - b.id)[0]
-      if (target) offer(unit, { kind: 'attack', unitIds: [unit.id], targetId: target.id, holdPosition: true })
+      if (target) offer(unit, { kind: 'attack', unitIds: [unit.id], targetId: target.id })
       else if (moving) {
         const action = plan.actions.find(action => 'unitIds' in action && action.unitIds.includes(unit.id))
         if (action && 'unitIds' in action) offer(unit, { ...action, unitIds: [unit.id] })

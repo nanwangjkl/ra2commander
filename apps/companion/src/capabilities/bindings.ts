@@ -13,6 +13,7 @@ import { bindMining, releaseGlobalOrders } from '../mining.ts'
 import { bindAttack, bindClearRegion, bindAttackAll } from '../attack.ts'
 import { bindBuildingOperation } from '../building-operations.ts'
 import { bindCover } from './cover.ts'
+import { bindFactoryRally } from '../factory-rally.ts'
 
 export interface BindingContext {
   ctx: CommandContext
@@ -102,6 +103,7 @@ function findGoal(context: BindingContext, token: string, includeCancelled = fal
 }
 
 export const bindings: Binders = {
+  'production.rally': bindFactoryRally,
   'formation.cover': bindCover,
   'formation.uncover': async (params, context) => {
     const formationId = formationName(context.ctx, params.formationId)

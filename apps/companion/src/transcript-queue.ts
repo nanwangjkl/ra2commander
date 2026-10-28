@@ -98,7 +98,7 @@ export function interruptTranscripts(ctx: CommandContext, call: CapabilityCall, 
         const value = operation.params as { formationId?: string; unitIds?: number[]; selector?: string }
         if (value.formationId && prompts.capabilities.definitions().find(item => item.id === operation.capability)?.owner !== 'global') return formations.some(id => sameFormation(id, value.formationId!))
         if (value.unitIds) return value.unitIds.some(id => ids.has(id))
-        if (!['combat.attack', 'economy.gather', 'management.rally', 'building.repair', 'building.sell'].includes(operation.capability)) return false
+        if (!['combat.attack', 'economy.gather', 'management.rally', 'building.repair', 'building.sell', 'production.rally'].includes(operation.capability)) return false
         return selectUnitSet(ctx, value, catalog, prompts.game).selected.some(unit => ids.has(unit.id) && (!operation.capability.startsWith('building.') || unit.type === 2))
       }, reason, signal)
       return

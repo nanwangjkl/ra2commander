@@ -70,6 +70,27 @@ test('Markdown 参数同时驱动类型、模型说明和校验，能力绑定�
   assert.throws(() => prompts.capabilities.assertBindings([]), /缺少实现/)
 })
 
+test('重复作战指令即使模型返回已有目标的空操作，也重新绑定并刷新行动；不同原话不复用', async () => {
+  const f = await fixture()
+  try {
+    const text = 'A队去指定位置'
+    await f.voice([{ capability: 'combat.move', params: { formationId: 'A', x: 8, y: 8 } }], text)
+    const first = [...f.runtime.goals.values()].find(goal => goal.spec.rawText === text)!
+    // 新 CommandLog 从当前局归档取得原意，验证 Companion 重启后的同一入口。
+    f.ctx.commandLog = new CommandLog()
+    const repeated = await f.voice([], text)
+    assert.doesNotMatch(repeated, /未执行|已有相同/)
+    const goals = [...f.runtime.goals.values()].filter(goal => goal.spec.rawText === text)
+    assert.equal(goals.length, 2)
+    assert.equal(first.status, 'cancelled')
+    assert.notEqual(goals.at(-1)!.spec.id, first.spec.id)
+    assert.equal(goals.at(-1)!.status, 'active')
+    const before = f.runtime.goals.size
+    await f.voice([], '完全不同的句子')
+    assert.equal(f.runtime.goals.size, before)
+  } finally { await f.dispose() }
+})
+
 test('终端与模拟语音用同一能力编入现有步兵，实际交接不产生生产', async () => {
   for (const entry of ['cli', 'voice']) {
     const f = await fixture()

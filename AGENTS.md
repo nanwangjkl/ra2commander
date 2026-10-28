@@ -38,11 +38,17 @@ RTS 优先快速反应。能理解行动目标时，Agent 应结合当前战况�
 
 用户于 2026-10-27 批准[掩护 Skill 开发计划](doc/roadmap/cover-skill.md)，要求同时考虑掩护者更快和更慢，不能把防空车假设为慢成员。阶段 1 实测发现新造成员未获得角色后，用户明确授权将后续阶段一起实现，不再等待逐阶段验收；本轮接通新造后掩护、完整掩护作战及生命周期，整体交付后由用户验收。此授权仅适用于掩护计划。已交付行为及入口见[掩护 Skill](doc/spec/cover-skill.md)。
 
-用户随后明确要求掩护采用预测行军：最慢成员直接向终点持续移动，其余成员按游戏设定速度和公开方向追随预测点，位置反馈只用于纠偏；不再以日常反复停车维持节奏，严重脱队或接敌时才调整。当前为 `cover@0.2.2`，规则速度按每格256内部单位换算，不通过位移测速猜测。实际流畅度待用户验收。
+用户随后明确要求掩护采用预测行军：最慢成员直接向终点持续移动，其余成员按游戏设定速度和公开方向追随预测点，位置反馈只用于纠偏；不再以日常反复停车维持节奏，严重脱队或接敌时才调整。当前为 `cover@0.2.3`，规则速度按每格256内部单位换算，不通过位移测速猜测。主战成员尚未进入射程时不能仅因敌人在附近就停止慢领行者；主战发普通攻击，掩护仍按当前射程限制追击。实际流畅度待用户验收。
 
 用户于2026-10-28明确修订战损规则：全队没有存活成员且明确生产、交接已结束时，结束原作战任务并保留队名；掩护或受护任一侧耗尽且没有该侧待准备成员时，自动解除掩护，剩余单位作为普通编队继续当前任务，保留目的地、攻击范围、路线进度和暂停／停止状态，不自动撤退或补兵。同局重启保留转换，不恢复失效角色；新补入成员不复活已经结束的旧任务。
 
 用户同日批准[命令并发修复](doc/spec/command-concurrency.md)：每条指令独立并行理解，普通绑定按收到顺序，脚本生成不占用绑定队列；停止／暂停与取消优先，按范围使旧操作失效，不丢弃无关命令，防止迟到结果恢复任务。此为现有命令链路修正，不自动启动其他路线图阶段。
+
+用户于同日批准实施[生产建筑集结点与出口疏通计划](doc/roadmap/factory-rally-and-exit.md)阶段 1；随后按实测反馈要求修正过早编队并处理仍存在的堵门，继续实施阶段 2。用户明确把放行条件改为：坦克与步兵出厂后抵达出生时的集结点，才允许编队及后续操作，不能只判断已离开建筑；矿车保留原生采矿。新增兵营默认集结、统一等待状态、有限出口疏通及同局恢复，连同后续静态障碍与到达修正，已于同日通过用户验收并获准提交推送。
+
+用户随后批准修复掩护接敌停滞和重复作战指令被模型忽略，并要求每次提交单位生产前检查集结点是否仍开阔；新建筑占据或已知地形不合适时先换点再入队。玩家指定远处区域时就近保留该区域，未知黑幕不单独视为障碍；换点失败不预占产量，其他可执行生产继续。真实障碍导致换点时，尚未就绪且仍去旧点的产物同步改点，已就绪成员不召回。
+
+用户继续批准冰天雪地静态树石补丁：统一排除集结点周围 3×3 的初始障碍，不追踪摧毁；同局恢复也复查旧点并迁移未就绪成员。到达放宽至四格，仍须脱离建筑及出口通道并空闲或短暂停稳；有限重试耗尽明确显示原因。实现与边界见[生产集结点](doc/spec/factory-rally.md)，用户已于同日实机验收并要求提交推送；不据此启动其他阶段。
 
 ## 开发环境
 
@@ -108,6 +114,7 @@ pnpm maps:check maps/ice/schemes/nanwang-0.1.0.json 39 82
 ```sh
 python3 packages/maps/tools/verify_native_alignment.py --pack ~/Downloads/full-pack --map .runtime/maps/ice/mp32s8.map --image mp32s83.png --out .runtime/maps/ice/native-texture-check.json
 python3 packages/maps/tools/export_playable_area.py --map .runtime/maps/ice/mp32s8.map --map-id ra2:mp32s8 --out maps/ice/playable-area.json
+python3 packages/maps/tools/export_static_obstacles.py --map .runtime/maps/ice/mp32s8.map --rules ~/my/code/ra2web.github.io/res/overlay/rules.ini --art ~/my/code/ra2web.github.io/res/overlay/art.ini --map-id ra2:mp32s8 --out maps/ice/static-obstacles.json
 python3 packages/maps/tools/import_regions.py --map .runtime/maps/ice/mp32s8.map --image mp32s83.png --annotations maps/ice/import/annotations.json --out maps/ice/schemes/nanwang-0.1.0.json --diagnostics .runtime/maps/ice/generated
 ```
 

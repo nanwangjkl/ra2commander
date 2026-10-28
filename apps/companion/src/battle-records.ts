@@ -151,12 +151,16 @@ export class BattleRecords {
     const snap = runtime.snapshot
     if (!snap) return
     const previous = this.fingerprints.get(snap.sessionKey)
-    const stages = JSON.stringify([[...runtime.goals].map(([id, goal]) => [id, goal.status]), [...runtime.programs].map(([id, program]) => [id, program.status, program.compileError, program.stats.errors, program.stats.lastError])])
+    const stages = JSON.stringify([[...runtime.goals].map(([id, goal]) => [id, goal.status]), [...runtime.programs].map(([id, program]) => [id, program.status, program.compileError, program.stats.errors, program.stats.lastError]), runtime.factoryRallies.state.settings])
     const full = force || !previous || previous.stages !== stages
     if (!full && snap.tick - previous.tick < 60) return
     const facts = {
       goals: [...runtime.goals].map(([id, goal]) => ({ id, ...goal, execution: runtime.goalExecution(id) })),
       formations: runtime.formations.list(), production: runtime.production,
+      factoryRallies: runtime.factoryRallies.state,
+      productionExits: runtime.productionExits.state.units,
+      factoryBlockages: runtime.productionExits.state.blockages,
+      exitYields: runtime.productionExits.state.yields,
       skillRuns: [...runtime.skillRuns.values()].map(({ source, ...run }) => run),
       exploration: [...runtime.exploration.progress.values()].map(progress => {
         const goal = runtime.goals.get(progress.goalId)?.spec, map = runtime.exploration.maps.get(progress.mapId)
@@ -167,10 +171,10 @@ export class BattleRecords {
       programs: [...runtime.programs.values()].map(program => ({ id: program.id, status: program.status, goalIds: program.goalIds, activeGoalIds: program.activeGoalIds,
         script: program.script, compileError: program.compileError, errors: program.stats.errors, rejected: program.stats.rejected, lastError: program.stats.lastError })),
     }
-    if (!full && !facts.goals.length && !facts.programs.length) return
+    if (!full && !facts.goals.length && !facts.programs.length && !facts.factoryRallies.settings.length) return
     const observation = { credits: snap.credits,
       map: { width: snap.mapWidth, height: snap.mapHeight }, power: snap.production?.power, queues: snap.production?.queues,
-      self: snap.self.map(unit => ({ id: unit.id, name: unit.name, rx: unit.rx, ry: unit.ry, speed: unit.speed, velocity: unit.velocity, zone: unit.zone, hitPoints: unit.hitPoints, maxHitPoints: unit.maxHitPoints, ammo: unit.ammo, hasWrenchRepair: unit.hasWrenchRepair, transport: unit.transport })), visibleEnemies: snap.enemies,
+      self: snap.self.map(unit => ({ id: unit.id, name: unit.name, type: unit.type, rx: unit.rx, ry: unit.ry, elevation: unit.elevation, isIdle: unit.isIdle, harvester: unit.harvester, naval: unit.naval, speed: unit.speed, velocity: unit.velocity, zone: unit.zone, hitPoints: unit.hitPoints, maxHitPoints: unit.maxHitPoints, ammo: unit.ammo, hasWrenchRepair: unit.hasWrenchRepair, transport: unit.transport })), visibleEnemies: snap.enemies,
       ...facts,
     }
     // 比较实际保存的战场内容；时间戳和采样序号不产生重复观察。

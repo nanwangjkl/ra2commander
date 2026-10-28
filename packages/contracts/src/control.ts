@@ -147,6 +147,7 @@ export interface GoalView {
     follow?: { x: number; y: number }; waiting: boolean
   }
   productionPlan?: {
+    pendingRallyIds?: number[]
     missingPrerequisites: string[]
     pendingPrerequisites: string[]
     availableToProduce: string[]

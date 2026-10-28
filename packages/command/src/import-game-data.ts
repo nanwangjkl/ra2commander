@@ -8,7 +8,7 @@ const root = resolve(fileURLToPath(new URL('../../../', import.meta.url)))
 try {
   const game = process.argv[2] ?? process.env.RA2C_GAME_DIR ?? join(homedir(), 'my/code/ra2web.github.io')
   const out = process.argv[3] ?? join(root, 'prompts/games/catalogs/ra2web-gonghui.json')
-  const data = importGameData(readFileSync(join(game, 'res/overlay/rules.ini')), readFileSync(join(game, 'res/overlay/ra2.csf')), process.argv[4] ?? 'ra2web-gonghui')
+  const data = importGameData(readFileSync(join(game, 'res/overlay/rules.ini')), readFileSync(join(game, 'res/overlay/ra2.csf')), process.argv[4] ?? 'ra2web-gonghui', readFileSync(join(game, 'res/overlay/art.ini')))
   validateGameData(data)
   mkdirSync(dirname(out), { recursive: true })
   // 每条事实一行，便于审阅导入后哪些项目发生变化。

@@ -1,5 +1,5 @@
 // 由 prompts/capabilities/*.md 生成；修改定义后运行 pnpm capabilities:generate。
-export const CAPABILITY_CONTRACT_VERSION = '244d19e0e52536a0abedd57610af7e7edc33ef672ee32095e2a610ffa55eabcb'
+export const CAPABILITY_CONTRACT_VERSION = '86193767a24a5cd717bb54dbb78fe3ace86752169d90e3c5de5b3c523f012c68'
 export interface CapabilityParameters {
   "base.deploy": Record<string, never>
   "base.relocate": { regionName?: string; x?: number; y?: number; unitId?: number }
@@ -27,6 +27,7 @@ export interface CapabilityParameters {
   "map.explore": { formationId: string; regionName?: string }
   "production.power": { reserve?: number }
   "production.produce": { target: string; quantity?: number; formationId?: string; placementDirections?: Array<"up" | "down" | "left" | "right" | "up-left" | "up-right" | "down-left" | "down-right">; placementAnchor?: string; placementRegion?: string; afterRelocation?: boolean; queues?: number[] }
+  "production.rally": { selector?: string; unitIds?: number[]; quantity?: number | 'all'; regionName?: string; x?: number; y?: number }
   "skill.cancel": { runId?: string; skillId?: string; all?: boolean }
   "skill.run": { skillId: string; quantity?: number; memberSource?: "auto" | "existing" | "new"; useExisting?: boolean; formationId?: string; followFormationId?: string; regionName?: string; selector?: string; unitIds?: number[]; protectedSelector?: string; protectedQuantity?: number; protectedUnitIds?: number[] }
   "transport.enter": { unitIds: number[]; transportId: number }
@@ -59,6 +60,7 @@ export interface ResolvedCapabilityParameters {
   "map.explore": { formationId: string; regionName?: string }
   "production.power": { reserve: number }
   "production.produce": { target: string; quantity: number; formationId?: string; placementDirections?: Array<"up" | "down" | "left" | "right" | "up-left" | "up-right" | "down-left" | "down-right">; placementAnchor?: string; placementRegion?: string; afterRelocation?: boolean; queues: number[] }
+  "production.rally": { selector: string; unitIds?: number[]; quantity: number | 'all'; regionName?: string; x?: number; y?: number }
   "skill.cancel": { runId?: string; skillId?: string; all: boolean }
   "skill.run": { skillId: string; quantity?: number; memberSource?: "auto" | "existing" | "new"; useExisting?: boolean; formationId?: string; followFormationId?: string; regionName?: string; selector?: string; unitIds?: number[]; protectedSelector?: string; protectedQuantity?: number; protectedUnitIds?: number[] }
   "transport.enter": { unitIds: number[]; transportId: number }

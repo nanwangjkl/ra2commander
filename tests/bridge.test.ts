@@ -42,6 +42,25 @@ function pageBridge() {
   return { window, api, submitted, sample, next, poll: () => poll(), install, own, enemy, setTick: (value: number) => { tick = value } }
 }
 
+test('生产建筑集结原语走公开 Move 订单，拒绝车辆、建造厂、机场及失效目标', () => {
+  const page = pageBridge()
+  page.own[0] = { ...page.own[0]!, name: 'GAWEAP', type: 2 }
+  let factory = 3
+  page.api.rules = () => ({ factory } as never)
+  const snap = page.sample()
+  const submit = (x = 50, y = 60) => page.window.__ra2cSubmit(snap.session, { kind: 'setRallyPoint', unitIds: [page.own[0]!.id], x, y }, snap.seq, snap.sessionKey)
+  assert.equal(submit().ok, true)
+  assert.deepEqual(JSON.parse(JSON.stringify(page.submitted)), [[[page.own[0]!.id], { type: 0, target: { x: 50, y: 60 } }]])
+  for (const kind of [0, 1, 5]) { factory = kind; assert.equal(submit().reason, 'not-rally-factory') }
+  factory = 3; page.own[0]!.type = 7
+  assert.equal(submit().reason, 'not-rally-factory')
+  page.own[0]!.type = 2
+  assert.equal(submit(100, 60).reason, 'invalid-rally-point')
+  page.api.order = () => false
+  assert.equal(submit().reason, 'rally-order-rejected')
+  assert.equal(page.submitted.length, 1)
+})
+
 test('撤销生产只按本步真实同名队列数量提交，不影响其他项目', () => {
   const page = pageBridge()
   let queued = 2

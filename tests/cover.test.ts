@@ -269,7 +269,8 @@ test('掩护进攻使用同一协调器：主力打基地，IFV优先近处空�
   assert.ok(submitted.some(a => a.kind === 'attack' && a.unitIds.includes(1) && a.targetId === 90))
   assert.ok(submitted.some(a => a.kind === 'attack' && a.unitIds.includes(2) && a.targetId === 91), '基地目标不妨碍近身防空自卫')
   assert.equal(submitted.some(a => a.kind === 'attack' && a.unitIds.includes(3)), false)
-  assert.ok(submitted.filter(a => a.kind === 'attack').every(a => a.holdPosition), '由桥重新确认当前射程，不发远程追击')
+  assert.ok(submitted.filter(a => a.kind === 'attack').filter(a => a.unitIds.includes(2)).every(a => a.holdPosition), '掩护成员由桥复查当前射程，不远程追击')
+  assert.ok(submitted.some(a => a.kind === 'attack' && a.unitIds.includes(1) && !a.holdPosition), '主战成员使用普通攻击，接近和开火交给游戏')
   submitted.length = 0; own.forEach(u => { u.isIdle = false }); await tick([base])
   assert.ok(submitted.some(a => a.kind === 'attack' && a.unitIds.includes(2) && a.targetId === 90), '空军消失后支援主力已经提交的攻击目标')
   submitted.length = 0; own[1]!.rx = 30; await tick([base])
@@ -286,6 +287,25 @@ test('掩护进攻使用同一协调器：主力打基地，IFV优先近处空�
   assert.ok(submitted.some(a => a.kind === 'attack' && a.unitIds.includes(2) && a.targetId === 90 && !a.holdPosition), '受护成员全灭后，原掩护成员按普通编队继续攻击原目标')
   assert.equal(await runtime.clearLostCover('1队'), false, '已经自动解除，无需等待玩家补发命令')
   assert.equal(formations.coverOf('1队'), undefined)
+})
+
+test('复现动员兵领行停在基地射程外：慢掩护继续带队接敌，进入射程后坦克攻击', () => {
+  const tankPositions = [[45, 75], [44, 75], [44, 74], [42, 75], [42, 74]]
+  const own: SnapshotUnit[] = tankPositions.map(([rx, ry], index) => ({ ...snapshot().self[0]!, id: index + 1, name: 'HTNK', rx: rx!, ry: ry!, elevation: 10, speed: 23.6, isIdle: true }))
+  own.push(...Array.from({ length: 10 }, (_, index) => ({ ...own[0]!, id: 10 + index, name: 'E2', type: 3, rx: 42, ry: 76 + index % 2, speed: 10.24 })))
+  const enemy = { ...snapshot().enemies[0]!, id: 90, name: 'NACNST', type: 2, rx: 38, ry: 81, elevation: 10 }
+  const p = { ...policy, escortIds: own.filter(unit => unit.type === 3).map(unit => unit.id) }, ids = own.map(unit => unit.id)
+  const state = emptyCoverMotion()
+  for (const unit of own) state.orders[unit.id] = unit.type === 3 ? { kind: 'stop', tick: 22000 } : { kind: 'move', x: unit.rx, y: unit.ry, tick: 22000 }
+  state.prediction = { guideId: 10, x: 38, y: 81, dx: -Math.SQRT1_2, dy: Math.SQRT1_2 }
+  const intent = { targets: [enemy], threats: [enemy], region: { name: '全图', x1: 0, y1: 0, x2: 199, y2: 199 }, waiting: false }
+  const snap = snapshot({ seq: 2, tick: 29642, self: own, enemies: [enemy], mapWidth: 200, mapHeight: 200 })
+  const first = coverCombat(p, snap, ids, intent, state, ids.map(unitId => ({ unitId, targetId: 90, canAttack: true, inRange: false })))
+  assert.ok(first.actions.some(action => action.kind === 'move' && action.unitIds.includes(10) && action.x === 38 && action.y === 81), '靠近敌人不能提前停掉最慢领行者')
+  assert.ok(!first.actions.some(action => action.kind === 'stop' && action.unitIds.includes(10)))
+  const second = coverCombat(p, { ...snap, tick: 29657 }, ids, intent, first.state, ids.map(unitId => ({ unitId, targetId: 90, canAttack: true, inRange: unitId <= 5 })))
+  assert.ok(second.actions.some(action => action.kind === 'attack' && action.unitIds.includes(1) && !action.holdPosition))
+  assert.ok(!second.actions.some(action => action.kind === 'attack' && action.unitIds.some(id => id >= 10)), '射程外掩护不抢着追击')
 })
 
 test('任一侧全灭后普通编队接续路线，保留进度与暂停状态，重启不恢复失效掩护', async () => {

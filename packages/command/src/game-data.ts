@@ -7,6 +7,7 @@ export interface GameDataEntry {
   techLevel: number; power: number; factory: string; buildCat: string
   deploysInto?: string; undeploysInto?: string
   harvester: boolean; naval: boolean; refinery: boolean; constructionYard: boolean; engineer: boolean
+  foundation?: { width: number; height: number }
 }
 export interface GameData {
   schemaVersion: 1; gameId: string; version: string
@@ -51,8 +52,9 @@ export function parseCsf(data: Buffer): Map<string, string> {
   return result
 }
 
-export function importGameData(rules: Buffer, strings: Buffer, gameId: string): GameData {
+export function importGameData(rules: Buffer, strings: Buffer, gameId: string, art?: Buffer): GameData {
   const ini = parseRulesIni(rules.toString('utf8')), csf = parseCsf(strings)
+  const artIni = art && parseRulesIni(art.toString('utf8'))
   const list = (value = '') => value.split(',').map(item => item.trim()).filter(Boolean)
   const entries: GameDataEntry[] = []
   const seen = new Set<string>()
@@ -63,18 +65,20 @@ export function importGameData(rules: Buffer, strings: Buffer, gameId: string): 
       seen.add(name)
       const flag = (key: string) => /^(yes|true|1)$/i.test(rule[key] ?? '')
       const numeric = (key: string, fallback: number) => rule[key] === undefined ? fallback : Number(rule[key])
+      const size = type === 2 && artIni?.get((rule.IMAGE || name).toUpperCase())?.FOUNDATION?.match(/^(\d+)x(\d+)$/i)
+      const foundation = size && Number(size[1]) > 0 && Number(size[2]) > 0 ? { width: Number(size[1]), height: Number(size[2]) } : undefined
       entries.push({ name, type, defined: !!definition, label: csf.get(rule.UINAME?.toUpperCase() ?? '') || rule.NAME || name, englishName: rule.NAME || name, uiName: rule.UINAME ?? '',
         prerequisite: list(rule.PREREQUISITE), prerequisiteOverride: list(rule.PREREQUISITEOVERRIDE), owner: list(rule.OWNER), requiredHouses: list(rule.REQUIREDHOUSES), forbiddenHouses: list(rule.FORBIDDENHOUSES),
         techLevel: numeric('TECHLEVEL', -1), power: numeric('POWER', 0), factory: rule.FACTORY ?? '', buildCat: rule.BUILDCAT ?? '',
         ...(rule.DEPLOYSINTO ? { deploysInto: rule.DEPLOYSINTO } : {}), ...(rule.UNDEPLOYSINTO ? { undeploysInto: rule.UNDEPLOYSINTO } : {}),
-        harvester: flag('HARVESTER'), naval: flag('NAVAL'), refinery: flag('REFINERY'), constructionYard: flag('CONSTRUCTIONYARD'), engineer: flag('ENGINEER') })
+        harvester: flag('HARVESTER'), naval: flag('NAVAL'), refinery: flag('REFINERY'), constructionYard: flag('CONSTRUCTIONYARD'), engineer: flag('ENGINEER'), ...(foundation ? { foundation } : {}) })
     }
   }
   const general = ini.get('GENERAL') ?? {}, categories: Record<string, string[]> = {}
   for (const [key, value] of Object.entries(general)) if (/^PREREQUISITE(POWER|FACTORY|BARRACKS|RADAR|TECH|PROC)$/.test(key)) categories[key.slice('PREREQUISITE'.length)] = list(value)
   const countries = Object.values(ini.get('COUNTRIES') ?? {}).map(id => { const country = ini.get(id.toUpperCase()) ?? {}; return { id, label: csf.get(country.UINAME?.toUpperCase() ?? '') || country.NAME || id, side: country.SIDE ?? '' } })
   const hash = (data: Buffer) => createHash('sha256').update(data).digest('hex')
-  return { schemaVersion: 1, gameId, version: `sha256:${hash(Buffer.concat([rules, strings])).slice(0, 16)}`, sources: [{ file: 'rules.ini', sha256: hash(rules) }, { file: 'ra2.csf', sha256: hash(strings) }], categories, countries, entries }
+  return { schemaVersion: 1, gameId, version: `sha256:${hash(Buffer.concat([rules, strings, ...(art ? [art] : [])])).slice(0, 16)}`, sources: [{ file: 'rules.ini', sha256: hash(rules) }, { file: 'ra2.csf', sha256: hash(strings) }, ...(art ? [{ file: 'art.ini', sha256: hash(art) }] : [])], categories, countries, entries }
 }
 
 export function validateGameData(data: GameData): void {
@@ -83,6 +87,7 @@ export function validateGameData(data: GameData): void {
   for (const item of data.entries) {
     if (!item || !/^[A-Za-z0-9_]+$/.test(item.name) || names.has(item.name) || ![1, 2, 3, 7].includes(item.type) || !item.label || !Number.isFinite(item.techLevel) || !Number.isFinite(item.power) || [item.prerequisite, item.prerequisiteOverride, item.owner, item.requiredHouses, item.forbiddenHouses].some(list => !Array.isArray(list) || list.some(value => typeof value !== 'string'))) throw new Error(`游戏目录条目非法：${item?.name}`)
     names.add(item.name)
+    if (item.foundation && (item.type !== 2 || ![item.foundation.width, item.foundation.height].every(value => Number.isSafeInteger(value) && value > 0 && value <= 32))) throw new Error(`建筑占地非法：${item.name}`)
   }
   for (const [category, entries] of Object.entries(data.categories)) if (!entries.length || entries.some(name => !names.has(name))) throw new Error(`前置类别引用不存在：${category}`)
   for (const item of data.entries) for (const name of item.prerequisite) if (!names.has(name) && !data.categories[name.toUpperCase()]) throw new Error(`前置引用不存在：${item.name} → ${name}`)

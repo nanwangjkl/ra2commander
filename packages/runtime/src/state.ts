@@ -20,6 +20,7 @@ export interface GoalProgress {
   /** 已完成生产被追加总量时，保留前次完成事实供待生效/失败状态展示。 */
   completedQuantity?: number
   placementBlocked?: boolean
+  rallyBlocked?: boolean
   cancelProduction?: boolean
   repair?: import('./repair.ts').RepairState
   relocation?: import('./relocation.ts').RelocationState
@@ -29,7 +30,7 @@ export interface GoalProgress {
 }
 export interface GoalFactKeys {
   combat: 'routeIndex' | 'coverMotion' | 'coverEnded'
-  production: 'completedQuantity' | 'placementBlocked' | 'cancelProduction'
+  production: 'completedQuantity' | 'placementBlocked' | 'rallyBlocked' | 'cancelProduction'
   repair: 'repair'
   relocate: 'relocation'
   mining: 'mining'

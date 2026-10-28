@@ -188,10 +188,15 @@ export function validateActions(value: unknown, c: StepConstraints, snapshot?: S
       if (snapshot && !snapshot.production?.queues.some(q => q.type === a.queueType)) return '队列状态不可观测，无法安全操作'
       continue
     }
-    if (!['move', 'attackMove', 'gather', 'attack', 'stop', 'deploy', 'scatter', 'guard', 'repair', 'enterTransport', 'repairBuilding', 'sellBuilding'].includes(a.kind)) return '未知动作类型'
+    if (!['setRallyPoint', 'move', 'attackMove', 'gather', 'attack', 'stop', 'deploy', 'scatter', 'guard', 'repair', 'enterTransport', 'repairBuilding', 'sellBuilding'].includes(a.kind)) return '未知动作类型'
     const coverFire = a.kind === 'attack' && c.coverFire?.enemyIds.includes(a.targetId) && a.unitIds.every(id => c.coverFire!.unitIds.includes(id))
     if (a.kind !== 'stop' && !c.allowedActions?.includes(a.kind) && !coverFire) return `未授权动作: ${a.kind}`
     if (!Array.isArray(a.unitIds) || !a.unitIds.length || a.unitIds.some(id => !Number.isSafeInteger(id) || !allowed.has(id))) return '引用未授权或失效单位'
+    if (a.kind === 'setRallyPoint') {
+      if (!tile(a.x, a.y, c)) return '集结点坐标非法'
+      if (a.unitIds.some(id => !c.factoryRallyIds?.includes(id) || snapshot && !snapshot.self.some(unit => unit.id === id && unit.type === 2))) return '集结点只能设置到选定的己方生产建筑'
+      continue
+    }
     if (a.kind === 'repairBuilding' || a.kind === 'sellBuilding') {
       if (snapshot && a.unitIds.some(id => !snapshot.self.some(unit => unit.id === id && unit.type === 2))) return '建筑操作只能指向己方建筑'
       continue

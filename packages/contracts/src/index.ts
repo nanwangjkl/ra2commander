@@ -28,6 +28,8 @@ export interface SnapshotUnit {
   maxHitPoints?: number;
   elevation?: number;
   isIdle: boolean;
+  harvester?: boolean;
+  naval?: boolean;
   /** 本局公开规则中的移动速度，不代表实际地形上的瞬时速度。 */
   speed?: number;
   /** 引擎公开的移动向量，世界坐标 x/z 为地面方向；预测速度仍使用规则 speed。 */
@@ -85,6 +87,8 @@ export interface Snapshot {
 
 /** 游戏动作请求；脚本返回时外包 goalId，页面桥仍只接收此原语。 */
 export type ActionRequest =
+  /** 对生产建筑设置集结点；底层 Move 的建筑语义，不移动现有部队。 */
+  | { kind: 'setRallyPoint'; unitIds: number[]; x: number; y: number }
   | { kind: 'move'; unitIds: number[]; x: number; y: number }
   | { kind: 'attackMove'; unitIds: number[]; x: number; y: number }
   | { kind: 'gather'; unitIds: number[]; x: number; y: number }
@@ -118,6 +122,7 @@ export interface ActionResult {
 /** 任务脚本执行侧约束：执行器第一道把关（宿主提交前还有会话/存活复查）。 */
 export interface StepConstraints {
   allowedUnitIds: number[];
+  factoryRallyIds?: number[];
   enemyIds: number[];
   /** 掩护成员可就近对空自卫；不能扩大受护成员的原攻击目标。 */
   coverFire?: { unitIds: number[]; enemyIds: number[] };

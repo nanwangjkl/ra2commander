@@ -16,6 +16,11 @@ import { formationPreparing, presentUnitIds } from './goals/common.ts'
 import { validateCover, emptyCoverMotion, recordCoverOrder, coverMembers, coverMoves, type CoverMotion } from './cover.ts'
 import { coverCombat, coverRangePairs, airborne, type CoverIntent, type CoverRange } from './cover-combat.ts'
 import type { GoalContext, GoalProjection } from './goals/types.ts'
+import { FactoryRallies, type FactorySite, type FactoryRallyDeps } from './factory-rally.ts'
+import { ProductionExits, insideFactory, exitPoint, type ExitYield } from './production-exit.ts'
+export type { ProductionExitState } from './production-exit.ts'
+export { rallyCandidates } from './factory-rally.ts'
+export type { FactorySite, RallySetting, FactoryRallyState } from './factory-rally.ts'
 export { initialMining, miningBatch, observeOre } from './mining.ts'
 export { skillGoalIds } from './exploration.ts'
 export { ExplorationStore } from './exploration.ts'
@@ -49,6 +54,9 @@ export interface RuntimeDeps {
   onProgramStalled?: (ownerId: string, reason: string) => void
   recovery?: { stallTicks?: number; cooldownTicks?: number }
   coverRanges?: (pairs: Array<{ unitId: number; targetId: number }>, snap: Snapshot) => Promise<CoverRange[]>
+  factorySites?: (snap: Snapshot) => Promise<FactorySite[]>
+  rallyTiles?: FactoryRallyDeps['tiles']
+  rallyClear?: FactoryRallyDeps['clear']
   log?: (message: string) => void
 }
 
@@ -72,11 +80,24 @@ export class TaskRuntime {
   readonly handoffs: Handoff[] = []
   readonly exploration = new ExplorationStore()
   readonly skillRuns = new Map<string, SkillRun>()
+  readonly factoryRallies: FactoryRallies
+  readonly productionExits = new ProductionExits()
+  private lastUnitOrders = new Map<number, { goalId: string; request: ActionRequest; owner: string; revision: number; generation: number }>()
+  private exitOrders = { seq: -1, ids: new Set<number>() }
   private readonly recovery: RecoveryMonitor
 
   constructor(private readonly deps: RuntimeDeps) {
     this.formations = deps.formations ?? new FormationRegistry()
     this.recovery = new RecoveryMonitor(deps.recovery?.stallTicks, deps.recovery?.cooldownTicks)
+    this.factoryRallies = new FactoryRallies({ current: () => this.latest,
+      sites: snap => deps.factorySites?.(snap) ?? Promise.resolve([]),
+      tiles: (points, snap) => deps.rallyTiles?.(points, snap) ?? Promise.resolve([]),
+      clear: point => deps.rallyClear?.(point) ?? true,
+      submit: (action, snap, guard) => deps.submit([action], snap, guard), checkpoint: () => deps.checkpoint(),
+      automaticAllowed: () => !['paused', 'stopped'].includes(this.programs.get('global')?.status ?? ''),
+      notify: setting => deps.log?.(`[companion] ${setting.name} #${setting.factoryId} 默认集结点${setting.status === 'submitted' ? `指令已提交至 (${setting.point!.x},${setting.point!.y})` : `未设置：${setting.reason ?? setting.status}`}`),
+      relocated: (factoryId, before, after, snap) => this.productionExits.relocatePending(factoryId, before, after, snap),
+    })
   }
   recoveryContext(id: string) { return this.recovery.context(id) }
   private recoveryKey(program: ProgramState): string { return `${this.sessionKey}:${program.revision}:${program.script?.version ?? 0}` }
@@ -84,6 +105,15 @@ export class TaskRuntime {
   get snapshot(): Snapshot | undefined { return this.latest }
   hasPendingCommand(id: string): boolean { return this.pending.has(id) }
   pendingCommandIds(): string[] { return [...this.pending.keys()] }
+  /** 等待集结的产物还没有实际归属，但新命令应指向它已经约定的编队。 */
+  plannedFormationOf(id: number): string | undefined {
+    const existing = this.formations.ownerOf(id)
+    if (existing) return existing
+    for (const record of this.production) {
+      const goal = this.goals.get(record.goalId)
+      if (record.observedIds.includes(id) && goal && ['active', 'pending'].includes(goal.status) && goal.spec.kind === 'production' && goal.spec.formationId) return goal.spec.formationId
+    }
+  }
   hasPlannedFormation(id: string): boolean {
     return [...this.goals.values()].some(goal => !['cancelled', 'completed', 'partial', 'failed'].includes(goal.status) && (
       goal.spec.kind === 'formation' && goal.spec.request.kind === 'createFormation' && goal.spec.request.formationId === id && goal.spec.request.unitIds.some(unit => this.latest?.self.some(item => item.id === unit))
@@ -112,7 +142,10 @@ export class TaskRuntime {
     const ctx = this.goalContext(spec, this.latest), projected = this.project(spec, this.latest), view = projected.view
     const activeHandler = handlerFor(spec)
     const execution = activeHandler.execution?.(ctx, projected)
-    const notice = goal.facts.coverEnded
+    const exitIds = new Set(spec.kind === 'production' ? view.observed[spec.target] ?? [] : [])
+    const factories = new Set(this.productionExits.state.units.filter(unit => exitIds.has(unit.unitId)).map(unit => unit.factoryId))
+    const exitNotices = this.productionExits.state.blockages.filter(block => factories.has(block.factoryId) && block.state !== 'recovered').map(block => block.detail)
+    const notice = [goal.facts.coverEnded, ...exitNotices].filter(Boolean).join('；')
     if (execution) return { ...execution, ...(notice ? { detail: [notice, execution.detail].filter(Boolean).join('；') } : {}) }
     const currentProgress = activeHandler.progress?.(ctx, view) ?? {}
     const unmet = view.productionPlan?.unmetConditions ?? []
@@ -311,6 +344,11 @@ export class TaskRuntime {
         result.view.cover = { protectedIds: members.protectedUnits.map(u => u.id), escortIds: escorts, slowestIds: members.slowest.map(u => u.id), heldIds: this.goals.get(spec.id)?.facts.coverMotion?.heldIds ?? [], detail: this.goals.get(spec.id)?.facts.coverMotion?.detail ?? '掩护配置生效，协调行军与近身支援' }
       }
     }
+    result.constraints.allowedUnitIds = result.constraints.allowedUnitIds.filter(id => !this.productionExits.locked(id))
+    if (result.constraints.friendlyTargetIds) result.constraints.friendlyTargetIds = result.constraints.friendlyTargetIds.filter(id => !this.productionExits.locked(id))
+    if (result.constraints.management) result.constraints.management.allowedUnitIds = result.constraints.management.allowedUnitIds.filter(id => !this.productionExits.locked(id))
+    result.view.unitIds = result.view.unitIds.filter(id => !this.productionExits.locked(id))
+    if (spec.kind === 'formation' && spec.request.kind !== 'dissolveFormation' && spec.request.unitIds.some(id => this.productionExits.waiting(id))) result.view.blocked = '等待新造成员抵达集结点后编队'
     return result
   }
   private validateGoal(spec: GoalSpec): void {
@@ -325,6 +363,7 @@ export class TaskRuntime {
     spec = { ...normalizeAttackGoal(spec), executionMode: goalExecutionMode(spec) }
     if (spec.kind === 'rally') spec = { ...spec, unitIds: [...new Set(spec.unitIds)].filter(id => !this.formations.ownerOf(id) && this.latest?.self.some(u => u.id === id)) }
     this.validateGoal(spec)
+    if (!this.goals.has(spec.id)) this.productionExits.unhalt('unitIds' in spec ? spec.unitIds : spec.kind === 'formation' && spec.request.kind !== 'dissolveFormation' ? spec.request.unitIds : [])
     if (spec.kind === 'formation' && !spec.sourceOwners) {
       const ids = spec.request.kind === 'dissolveFormation' ? this.formations.membersOf(spec.request.formationId) : spec.request.unitIds
       spec = { ...spec, sourceOwners: ids.map(id => [id, this.formations.ownerOf(id) ?? null]) }
@@ -603,13 +642,15 @@ export class TaskRuntime {
     if (program) for (const spec of this.activeSpecs(program)) if (this.goals.get(spec.id)!.facts.coverMotion) this.goals.get(spec.id)!.facts.coverMotion!.orders = {}
   }
   async stopUnits(ids: number[]): Promise<void> {
+    this.productionExits.halt(ids)
     const owners = new Set(ids.map(id => this.formations.ownerOf(id)).filter((x): x is string => !!x).map(formationId => ownerId({ kind: 'formation', formationId })))
     const cancel: string[] = []
     for (const goal of this.goals.values()) {
       const spec = goal.activeSpec ?? goal.spec
       if (['cancelled', 'completed', 'partial', 'failed'].includes(goal.status)) continue
       const members = this.latest ? handlerFor(spec).managedMembers?.(this.goalContext(spec, this.latest)) ?? [] : []
-      if (members.some(id => ids.includes(id))) cancel.push(spec.id)
+      const selected = 'unitIds' in spec ? spec.unitIds : spec.kind === 'formation' && spec.request.kind !== 'dissolveFormation' ? spec.request.unitIds : []
+      if ([...members, ...selected].some(id => ids.includes(id))) cancel.push(spec.id)
     }
     await Promise.all([...owners].map(id => this.stop(id)).concat(cancel.map(id => this.cancelGoal(id))))
   }
@@ -622,7 +663,7 @@ export class TaskRuntime {
     record.state = result === 'sent' ? 'submitted' : 'rejected'
   }
 
-  private locked(id: number): boolean { return this.handoffs.some(h => h.unitIds.includes(id)) }
+  private locked(id: number): boolean { return this.productionExits.locked(id) || this.exitOrders.seq === this.latest?.seq && this.exitOrders.ids.has(id) || this.handoffs.some(h => h.unitIds.includes(id)) }
   private activeSpecs(program: ProgramState): GoalSpec[] {
     return program.activeGoalIds.map(id => this.goals.get(id)).filter((g): g is GoalState => !!g && g.status === 'active' && !!g.activeSpec).map(g => g.activeSpec!)
   }
@@ -655,6 +696,7 @@ export class TaskRuntime {
       try { for (const id of handlerFor(spec).track?.(ctx) ?? []) converted.add(id) }
       catch (error) { if (goalExecutionMode(spec) !== 'native') throw error; this.nativeFault(goal, error) }
     }
+    if (this.deps.factorySites) this.productionExits.observe(snap, this.factoryRallies.knownSites, this.factoryRallies.state.settings, this.seenUnitIds, this.production, converted, !this.exitAllowed(), this.factoryRallies.clear)
     observeProduction(this.production, this.seenUnitIds, snap, converted)
     observeCancellations(this.production, snap)
     // 先解除失效角色，再结算攻击；剩余掩护成员可在同轮接续原任务。
@@ -691,6 +733,9 @@ export class TaskRuntime {
         this.programs.clear(); this.goals.clear(); this.formations.clear()
         this.exploration.clear(); this.skillRuns.clear(); this.coverIdleOrders.clear()
         this.recovery.clear()
+        this.factoryRallies.reset()
+        this.productionExits.reset(); this.lastUnitOrders.clear()
+        this.exitOrders = { seq: -1, ids: new Set() }
         this.production.length = 0; this.handoffs.length = 0; this.seenUnitIds.clear(); this.pausedQueues.clear()
       }
       this.session = snap.session; this.sessionKey = snap.sessionKey
@@ -709,6 +754,17 @@ export class TaskRuntime {
     while (this.latest && consumed !== this.latest) {
       const snap = this.latest
       consumed = snap
+      if ([...this.goals.values()].some(goal => ['active', 'pending'].includes(goal.status) && goal.spec.kind === 'production' && (goal.spec.targetType === 7 || goal.spec.targetType === 3))) this.factoryRallies.state.enabled = true
+      if (this.productionExits.state.units.some(unit => unit.phase !== 'ready')) this.factoryRallies.state.enabled = true
+      if (this.deps.factorySites) {
+        try { await this.factoryRallies.poll(snap) }
+        catch (error) { this.deps.log?.(`[companion] 集结点设置暂不可用：${String(error).slice(0, 140)}`) }
+        if (this.latest !== snap) continue
+        this.productionExits.observe(snap, this.factoryRallies.knownSites, this.factoryRallies.state.settings, this.seenUnitIds, this.production, new Set(), !this.exitAllowed(), this.factoryRallies.clear)
+        try { await this.advanceProductionExits(snap) }
+        catch (error) { this.deps.log?.(`[companion] 出厂交接暂不可用：${String(error).slice(0, 140)}`) }
+        if (this.latest !== snap) continue
+      }
       if (this.production.some(record => pendingProduction(record) > 0 && this.goals.get(record.goalId)?.facts.cancelProduction)) {
         await this.flushProductionCancellations()
         if (this.latest !== snap) continue
@@ -731,7 +787,7 @@ export class TaskRuntime {
           if (this.latest === snap && program.status === 'active' && !this.hasPendingCommand(program.id)) {
             const frame = this.frame(program, this.activeSpecs(program).filter(spec => goalExecutionMode(spec) === 'script'), snap, true)
             const waiting = new Set(this.handoffs.map(handoff => handoff.goalId))
-            for (const goal of frame.snapshot.control!.goals) if (this.goals.get(goal.spec.id)?.facts.placementBlocked || goal.cover) waiting.add(goal.spec.id)
+            for (const goal of frame.snapshot.control!.goals) if (this.goals.get(goal.spec.id)?.facts.placementBlocked || this.goals.get(goal.spec.id)?.facts.rallyBlocked || goal.cover) waiting.add(goal.spec.id)
             const stalled = this.recovery.observe(program.id, this.recoveryKey(program), snap, frame.snapshot.control!.goals, frame.constraints.goals!, waiting)
             if (stalled) this.deps.onProgramStalled?.(program.id, stalled)
           }
@@ -739,6 +795,115 @@ export class TaskRuntime {
         // 每个片段最多访问 8 个对象；剩余对象可在同一快照继续，不丢步、不重复执行。
         if (this.latest === snap && (offset + 1) % 8 === 0 && offset + 1 < programs.length) await new Promise<void>(resolve => setImmediate(resolve))
       }
+    }
+  }
+
+  private exitAllowed(id?: number): boolean {
+    if (['paused', 'stopped'].includes(this.programs.get('global')?.status ?? '')) return false
+    if (id === undefined) return true
+    const job = this.productionExits.state.units.find(job => job.unitId === id)
+    if (job?.halted) return false
+    const stamp = this.exitStamp(id)
+    return !['paused', 'stopped'].includes(this.programs.get(stamp.owner)?.status ?? '')
+  }
+
+  private exitStamp(id: number): Pick<ExitYield, 'owner' | 'revision' | 'generation'> {
+    const formation = this.plannedFormationOf(id)
+    const owner = formation ? `formation:${formation}` : 'global', program = this.programs.get(owner)
+    return { owner, revision: program?.revision ?? 0, generation: program?.generation ?? 0 }
+  }
+
+  private sameExitOwner(order: Pick<ExitYield, 'unitId' | 'owner' | 'revision' | 'generation'>): boolean {
+    const current = this.exitStamp(order.unitId)
+    return this.exitAllowed(order.unitId) && current.owner === order.owner && current.revision === order.revision && current.generation === order.generation
+  }
+
+  private canYieldExit(id: number, snap: Snapshot): boolean {
+    const unit = snap.self.find(unit => unit.id === id)
+    if (!unit || ![3, 7].includes(unit.type) || unit.zone === 1 || unit.harvester || unit.naval || !this.exitAllowed(id) || this.handoffs.some(handoff => handoff.unitIds.includes(id))) return false
+    if (!unit.isIdle && !this.productionExits.waiting(id)) return false
+    if (snap.enemies.some(enemy => Math.hypot(enemy.rx - unit.rx, enemy.ry - unit.ry) <= Math.max(unit.primaryWeapon?.maxRange ?? 0, unit.secondaryWeapon?.maxRange ?? 0))) return false
+    for (const goal of this.goals.values()) {
+      const spec = goal.activeSpec
+      if (!spec || goal.status !== 'active' || !['mining', 'repair', 'relocate', 'transport', 'deploy'].includes(spec.kind)) continue
+      const ids = spec.kind === 'repair' ? this.formations.membersOf(spec.formationId) : spec.kind === 'relocate' ? [spec.unitId] : 'unitIds' in spec ? spec.unitIds : []
+      if (ids.includes(id)) return false
+    }
+    return true
+  }
+
+  private exitPointAllowed(id: number, point: { x: number; y: number }): boolean {
+    const owner = this.exitStamp(id).owner
+    return [...this.goals.values()].every(goal => goal.ownerId !== owner || goal.status !== 'active' || goal.activeSpec?.kind !== 'combat' || inRegion(point.x, point.y, goal.activeSpec.region))
+  }
+
+  private async advanceProductionExits(snap: Snapshot): Promise<void> {
+    const store = this.productionExits, sites = this.factoryRallies.knownSites
+    if (this.exitOrders.seq !== snap.seq) this.exitOrders = { seq: snap.seq, ids: new Set() }
+    // 临时让路不改变归属；抵达后只恢复仍属于同一有效任务的动作。
+    for (const order of [...store.state.yields]) {
+      const unit = snap.self.find(unit => unit.id === order.unitId)
+      const validOwner = this.sameExitOwner(order)
+      const arrived = unit && Math.hypot(unit.rx - order.point.x, unit.ry - order.point.y) <= 2
+      if (unit && validOwner && !arrived && snap.time - order.sentAt < 4) continue
+      store.state.yields = store.state.yields.filter(item => item !== order)
+      if (!unit || !validOwner || !order.resume || store.waiting(unit.id)) continue
+      const goal = this.goals.get(order.resume.goalId)
+      if (!goal?.activeSpec || goal.status !== 'active') continue
+      const program = this.programs.get(goal.ownerId)
+      if (!program || program.status !== 'active') continue
+      const item: ScriptAction = { goalId: goal.spec.id, request: order.resume.request }
+      const frame = this.frame(program, [goal.activeSpec], snap, true), live = liveScriptActions([item], frame.constraints, frame.snapshot)
+      if (!live.length || validateScriptActions(live, frame.constraints, frame.snapshot)) continue
+      const results = await this.deps.submit([live[0]!.request as ActionRequest], snap, () => this.latest === snap && this.sameExitOwner(order) && goal.status === 'active' && program.status === 'active')
+      if (results.length && results.every(result => result.ok)) this.exitOrders.ids.add(unit.id)
+    }
+    if (!this.exitAllowed()) return
+    let budget = 6
+    for (const block of store.state.blockages) {
+      if (!this.exitAllowed(block.unitId) || block.state === 'recovered' || block.state === 'unresolved' || block.lastAttempt !== undefined && snap.time - block.lastAttempt < 3) continue
+      const factory = sites.find(site => site.id === block.factoryId)
+      if (!factory) continue
+      if (block.attempts >= 3) { block.state = 'unresolved'; block.detail = '出口疏通已有限尝试3次，仍未恢复；保留产物与目标，等待新命令或障碍变化'; continue }
+      const exit = exitPoint(factory)
+      const blockers = snap.self.filter(unit => unit.id !== block.unitId && this.canYieldExit(unit.id, snap) && !store.state.yields.some(order => order.unitId === unit.id) && (insideFactory(unit, factory) || Math.hypot(unit.rx - exit.x, unit.ry - exit.y) <= 2))
+        .sort((a, b) => Math.hypot(a.rx - exit.x, a.ry - exit.y) - Math.hypot(b.rx - exit.x, b.ry - exit.y)).slice(0, 4)
+      block.attempts++; block.lastAttempt = snap.time; block.state = 'clearing'
+      block.detail = blockers.length ? `正在疏散${blockers.length}个出口阻挡单位（第${block.attempts}次）` : '没有可让路的己方阻挡者，有限尝试让厂内单位驶向集结点'
+      const moved: number[] = []
+      for (const blocker of blockers) {
+        const point = await this.factoryRallies.point(factory, sites, snap, store.state.yields.map(order => order.point))
+        if (!point || !this.exitPointAllowed(blocker.id, point) || this.latest !== snap) continue
+        const stamp = this.exitStamp(blocker.id), previous = this.lastUnitOrders.get(blocker.id)
+        const resume = previous && previous.owner === stamp.owner && previous.revision === stamp.revision && previous.generation === stamp.generation ? { goalId: previous.goalId, request: structuredClone(previous.request) } : undefined
+        const order: ExitYield = { unitId: blocker.id, factoryId: factory.id, point, sentAt: snap.time, ...stamp, ...(resume ? { resume } : {}) }
+        store.state.yields.push(order)
+        const guard = () => this.latest === snap && this.sameExitOwner(order) && store.state.yields.includes(order) && block.state === 'clearing'
+        await this.deps.checkpoint()
+        if (!guard()) { store.state.yields = store.state.yields.filter(item => item !== order); continue }
+        const result = await this.deps.submit([{ kind: 'move', unitIds: [blocker.id], ...point }], snap, guard)
+        if (!result.length || result.some(item => !item.ok)) store.state.yields = store.state.yields.filter(item => item !== order)
+        else moved.push(blocker.id)
+        if (--budget <= 0) return
+      }
+      if (!moved.length && !blockers.length) {
+        const job = store.state.units.find(unit => unit.unitId === block.unitId)
+        if (job?.point && this.exitAllowed(job.unitId)) {
+          const stamp = { unitId: job.unitId, ...this.exitStamp(job.unitId) }
+          await this.deps.submit([{ kind: 'move', unitIds: [job.unitId], ...job.point }], snap, () => this.latest === snap && this.sameExitOwner(stamp) && store.waiting(job.unitId))
+          job.sentAt = snap.time
+        }
+      }
+    }
+    for (const job of store.state.units) {
+      if (job.phase !== 'rallying' || !job.point || job.halted || store.state.yields.some(order => order.unitId === job.unitId) || !this.exitAllowed(job.unitId) || snap.time - job.progressAt < 3 || job.sentAt !== undefined && snap.time - job.sentAt < 3 || job.attempts >= 3) continue
+      const stamp = { unitId: job.unitId, ...this.exitStamp(job.unitId) }
+      job.attempts++; job.sentAt = snap.time
+      await this.deps.checkpoint()
+      const results = await this.deps.submit([{ kind: 'move', unitIds: [job.unitId], ...job.point }], snap, () => this.latest === snap && this.sameExitOwner(stamp) && store.waiting(job.unitId))
+      if (job.attempts >= 3) job.detail = '集结受阻，重试已用尽'
+      else if (!results.length || results.some(result => !result.ok)) job.detail = '集结移动回执未确认，保留准备状态'
+      if (--budget <= 0) break
     }
   }
 
@@ -801,6 +966,11 @@ export class TaskRuntime {
     for (const handoff of [...this.handoffs]) {
       const guard = () => this.sessionKey === snap.sessionKey && this.handoffs.includes(handoff) && handoff.owners.every(([id, owner]) => (this.formations.ownerOf(id) ?? null) === owner)
       const ids = handoff.unitIds.filter(id => snap.self.some(u => u.id === id))
+      if (ids.some(id => this.productionExits.locked(id))) {
+        const goal = this.goals.get(handoff.goalId)
+        if (goal) goal.facts.blocked = '等待新造成员抵达集结点后交接，未发送停车指令'
+        continue
+      }
       try {
         const results = ids.length ? await this.deps.submit([{ kind: 'stop', unitIds: ids }], snap, guard) : [{ ok: true }]
         if (guard() && results.length && results.every(r => r.ok)) {
@@ -821,6 +991,7 @@ export class TaskRuntime {
 
   private async manage(goal: GoalState, request: FormationRequest, snap: Snapshot): Promise<void> {
     if (this.handoffs.some(h => h.goalId === goal.spec.id)) return
+    if (request.kind !== 'dissolveFormation' && request.unitIds.some(id => this.productionExits.locked(id))) return
     let ids: number[]
     if (request.kind === 'createFormation') {
       const result = this.formations.create(request.formationId, request.unitIds, { force: !!request.force })
@@ -926,6 +1097,7 @@ export class TaskRuntime {
   }
   /** 两种动作来源只在这里接入游戏；预算、即时校验、台账和回执共享。 */
   private async submitActions(program: ProgramState, snap: Snapshot, actions: ScriptAction[], mode: 'script' | 'native', valid: () => boolean, budget: { remaining: number }): Promise<boolean> {
+    let deferred = false
     const failure = async (goal: GoalState, error: string) => {
       if (mode === 'native') this.nativeFault(goal, error)
       else await this.fault(program, error, snap)
@@ -952,6 +1124,17 @@ export class TaskRuntime {
       }
       let record: ProductionRecord | undefined
       if (request.kind === 'produce') {
+        if (this.deps.factorySites) {
+          try {
+            const checked = await this.factoryRallies.beforeProduction(fresh.constraints.goals![item.goalId]!.productionQueueTypes![request.name]!, snap, () => valid() && goal.status === 'active' && goal.activeSpec === activeSpec)
+            if (!valid() || goal.status !== 'active' || goal.activeSpec !== activeSpec) return false
+            if (!checked.ok) { goal.facts.rallyBlocked = true; goal.facts.blocked = checked.reason ?? '等待可用集结点后生产'; deferred = true; continue }
+            if (goal.facts.rallyBlocked) { delete goal.facts.rallyBlocked; delete goal.facts.blocked }
+          } catch (error) {
+            if (!valid() || goal.status !== 'active' || goal.activeSpec !== activeSpec) return false
+            goal.facts.rallyBlocked = true; goal.facts.blocked = `生产前集结点检查未完成：${String(error).slice(0, 120)}`; deferred = true; continue
+          }
+        }
         const spec = goal.activeSpec
         // 同一句话明确要求的建筑也可能先被其他目标当作前置生产；统一记到该建设目标，避免换代码后再造一遍。
         const target = spec.kind === 'production' && request.name !== spec.target ? [...this.goals.values()].find(candidate => {
@@ -980,6 +1163,9 @@ export class TaskRuntime {
         handler.beforeSubmit?.(this.goalContext(goal.activeSpec, snap), request)
         phase = 'submit'
         const results = await this.deps.submit([request], snap, guard)
+        if ('unitIds' in request && ['move', 'attackMove', 'attack', 'guard'].includes(request.kind) && results.length && results.every(result => result.ok)) {
+          for (const unitId of request.unitIds) this.lastUnitOrders.set(unitId, { goalId: item.goalId, request: { ...request, unitIds: [unitId] }, owner: program.id, revision: program.revision, generation: program.generation })
+        }
         if (goal.facts.coverMotion) recordCoverOrder(goal.facts.coverMotion, request, snap.tick, results)
         phase = 'receipt'
         if (handler.afterSubmit?.(this.goalContext(goal.activeSpec, snap), request, results)) continue
@@ -1012,7 +1198,7 @@ export class TaskRuntime {
         return false
       }
     }
-    return true
+    return !deferred
   }
 
 }

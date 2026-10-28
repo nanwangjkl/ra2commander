@@ -13,8 +13,12 @@ function members(ctx: GoalContext<'attack'>) {
     && (goal.facts.coverReleasedIds?.includes(unit.id) || (membership.kind === 'selected' ? goal.spec.kind !== 'attack' || goal.spec.unitIds.includes(unit.id) : membership.names.includes(unit.name) && !!(unit.primaryWeapon || unit.secondaryWeapon)))).map(unit => unit.id)
 }
 function plan(ctx: GoalContext<'attack'>) {
-  const preparing = ctx.spec.preparationGoalIds.some(id => { const goal = ctx.goals.get(id); return goal && ['pending', 'active'].includes(goal.status) })
   const retained = attackMembership(ctx.spec).kind === 'selected' && ctx.goal.spec.kind === 'attack' ? [...new Set([...ctx.goal.spec.unitIds, ...(ctx.goal.facts.coverReleasedIds ?? [])])] : roster(ctx)
+  const waitingAssignment = (id: number) => !!ctx.spec.formationId && !ctx.formations.ownerOf(id) && ctx.production.some(record => {
+    const source = ctx.goals.get(record.goalId)
+    return record.observedIds.includes(id) && source && ['active', 'pending'].includes(source.status) && source.spec.kind === 'production' && source.spec.formationId === ctx.spec.formationId
+  })
+  const preparing = ctx.spec.preparationGoalIds.some(id => { const goal = ctx.goals.get(id); return goal && ['pending', 'active'].includes(goal.status) }) || retained.some(id => ctx.snap.self.some(unit => unit.id === id) && (ctx.locked(id) || waitingAssignment(id)))
   return planAttack(ctx.spec, ctx.snap, members(ctx), ctx.goal.facts.attack ?? initialAttack(), preparing, retained)
 }
 export const attack: GoalHandler<'attack'> = {

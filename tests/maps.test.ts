@@ -1,11 +1,24 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { MapRegionIndex, loadRegionScheme, PlayableAreaIndex, loadPlayableArea, type MapPoint, type RegionScheme } from '../packages/maps/src/index.ts'
+import { MapRegionIndex, loadRegionScheme, PlayableAreaIndex, loadPlayableArea, StaticObstacleIndex, loadStaticObstacles, type MapPoint, type RegionScheme } from '../packages/maps/src/index.ts'
 
 const url = new URL('../maps/ice/schemes/nanwang-0.1.0.json', import.meta.url)
 const scheme: RegionScheme = JSON.parse(await readFile(url, 'utf8'))
 const index = await loadRegionScheme(url)
+
+test('冰天雪地静态补丁排除实际树石周围九格，地图来源不符或数据重复时拒绝加载', async () => {
+  const file = new URL('../maps/ice/static-obstacles.json', import.meta.url)
+  const obstacles = await loadStaticObstacles(file, scheme.map)
+  assert.equal(obstacles.clear3x3(129, 86), false, '最新反馈中的集结点旁有 TREE11')
+  assert.equal(obstacles.clear3x3(100, 59), false, 'OverlayPack 中的 TROCK04')
+  assert.equal(obstacles.clear3x3(99, 58), false, '周围八格也排除')
+  assert.equal(obstacles.clear3x3(0, 50), false)
+  const data = JSON.parse(await readFile(file, 'utf8'))
+  assert.throws(() => new StaticObstacleIndex(data, { ...scheme.map, sha256: 'other' }), /不匹配/)
+  data.cells.push(data.cells[0])
+  assert.throws(() => new StaticObstacleIndex(data, scheme.map), /重复/)
+})
 
 test('原生地形有效范围排除图外边缘，地图哈希不匹配时拒绝混用', async () => {
   const file = new URL('../maps/ice/playable-area.json', import.meta.url), area = await loadPlayableArea(file, scheme.map)

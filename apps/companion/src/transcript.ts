@@ -27,6 +27,7 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     promptVersions: { interpret: undefined as string | undefined, compile: {} as Record<string, string> },
     plan: undefined as { summary: string; operations: unknown[] } | undefined,
     modelPlan: undefined as { summary: string; operations: unknown[] } | undefined,
+    repeatedFrom: undefined as string | undefined,
     bindingRepairs: [] as unknown[],
     goals: [] as GoalSpec[], choices: [] as string[], effects: [] as string[], skipped: [] as string[], results: [] as string[], error: '',
     terminalStage: undefined as 'completed' | 'failed' | 'cancelled' | undefined, terminalError: '' }
@@ -83,6 +84,15 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     check()
     // 等待前序绑定时战况可能已变；模型正文版本固定，绑定使用当前单位和目录事实。
     catalog = await loadGameCatalog(ctx, check, prompts.game)
+    // 前序同文命令可能刚刚完成绑定；必须在获得本次绑定次序后取意图模板。
+    if (!plan.operations.length) {
+      const repeated = log.repeatedCombatPlan(text, key)
+      if (repeated) {
+        valid.push(...repeated.operations.map(call => prompts.capabilities.parse(call)))
+        record.repeatedFrom = repeated.requestId
+        plan = { summary: `重新执行：${text.trim()}`, operations: valid }
+      }
+    }
     plan = { ...plan, operations: [...normalizeOperations(text, valid, ctx.mapSessionKey === key ? ctx.mapRegions : undefined, catalog), ...invalid] }
     record.plan = plan
     save()

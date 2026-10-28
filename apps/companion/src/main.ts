@@ -1,5 +1,6 @@
 import { ExplorationObserver } from './exploration.ts'
 import { MiningObserver } from './mining.ts'
+import { readFactorySites } from './factory-rally.ts'
 import { scriptedFixedKinds } from './execution-modes.ts'
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
@@ -30,7 +31,7 @@ import { buildWorkbench, openWorkbench, refreshCommandPanel, WORKBENCH_PATH } fr
 import { CommandLog } from './command-log.ts'
 import { runTranscript } from './transcript.ts'
 import { WorkbenchApi } from './workbench-api.ts'
-import { bindDefaultMap } from './map-binding.ts'
+import { bindDefaultMap, loadIceMap } from './map-binding.ts'
 import { BattleRecords } from './battle-records.ts'
 
 // import.meta.dirname = apps/companion/src，仓库根需上溯三级。
@@ -148,6 +149,7 @@ async function main(): Promise<void> {
 
   const executors = createScriptExecutors()
   const formations = new FormationRegistry()
+  const iceMap = await loadIceMap()
   let controller!: ProgramController
   let currentProvider: OpenAICompatibleProvider | undefined
   const currentModel = () => {
@@ -159,6 +161,9 @@ async function main(): Promise<void> {
     executor: executors.runtime, formations,
     checkpoint: () => saveStateFile(STATE_FILE, persistState(runtime)),
     coverRanges: (pairs, snap) => gameBridge.coverRanges(pairs, snap.sessionKey),
+    factorySites: snap => readFactorySites(gameBridge, snap),
+    rallyTiles: (points, snap) => gameBridge.rallyTiles(points, snap.sessionKey),
+    rallyClear: point => iceMap.obstacles.clear3x3(point.x, point.y) && [-1, 0, 1].every(dx => [-1, 0, 1].every(dy => iceMap.area.contains(point.x + dx, point.y + dy))),
     submit: async (actions, context, guard) => {
       const results = []
       for (const action of actions) {

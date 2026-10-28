@@ -4,6 +4,8 @@ import { ownerId, goalOwner, goalExecutionMode, normalizeAttackGoal, validBuildi
 import { validateCancellation } from './production-cancellation.ts'
 import { validateCover } from './cover.ts'
 import { validateAttackSources } from './attack-selection.ts'
+import { validateFactoryRallies, type FactoryRallyState } from './factory-rally.ts'
+import { validateProductionExits, type ProductionExitState } from './production-exit.ts'
 import { validateGoalSpec, validateGoalFacts } from './goals/index.ts'
 import type { TaskRuntime } from './index.ts'
 import type { Formation } from './formation.ts'
@@ -24,9 +26,11 @@ export interface PersistedState {
   handoffs: Handoff[]
   exploration?: { maps: ExplorationMap[]; progress: ExplorationProgress[] }
   skillRuns?: SkillRun[]
+  factoryRallies?: FactoryRallyState
+  productionExits?: ProductionExitState
 }
 export function persistState(runtime: TaskRuntime): PersistedState {
-  return structuredClone({ version: 4, exploration: { maps: [...runtime.exploration.maps.values()], progress: [...runtime.exploration.progress.values()] }, skillRuns: [...runtime.skillRuns.values()], session: runtime.session, sessionKey: runtime.battleKey, savedAt: Date.now(), formations: runtime.formations.list(), programs: [...runtime.programs.values()], goals: [...runtime.goals], production: runtime.production, seenUnitIds: [...runtime.seenUnitIds], pausedQueues: [...runtime.pausedQueues], handoffs: runtime.handoffs })
+  return structuredClone({ version: 4, productionExits: runtime.productionExits.state, factoryRallies: runtime.factoryRallies.state, exploration: { maps: [...runtime.exploration.maps.values()], progress: [...runtime.exploration.progress.values()] }, skillRuns: [...runtime.skillRuns.values()], session: runtime.session, sessionKey: runtime.battleKey, savedAt: Date.now(), formations: runtime.formations.list(), programs: [...runtime.programs.values()], goals: [...runtime.goals], production: runtime.production, seenUnitIds: [...runtime.seenUnitIds], pausedQueues: [...runtime.pausedQueues], handoffs: runtime.handoffs })
 }
 
 /** 恢复前先观察页面；持久化文件不能替代当前对局身份证明。 */
@@ -36,6 +40,8 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
   if (runtime.programs.size || runtime.goals.size) throw new Error('当前已有目标，不能覆盖恢复')
   if (!Array.isArray(state.programs) || !Array.isArray(state.goals) || !Array.isArray(state.formations) || !Array.isArray(state.production) || !Array.isArray(state.handoffs) || !Array.isArray(state.seenUnitIds) || !Array.isArray(state.pausedQueues)) throw new Error('状态结构不完整')
   const ids = new Set(state.goals.map(([id]) => id))
+  if (state.factoryRallies) validateFactoryRallies(state.factoryRallies, runtime.snapshot)
+  if (state.productionExits) validateProductionExits(state.productionExits, runtime.snapshot)
   if (ids.size !== state.goals.length) throw new Error('重复目标 ID')
   const programIds = new Set(state.programs.map(p => p.id))
   if (programIds.size !== state.programs.length) throw new Error('重复控制对象')
@@ -132,6 +138,8 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
   for (const id of state.seenUnitIds) runtime.seenUnitIds.add(id)
   for (const [queue, id] of state.pausedQueues) if (ids.has(id) && Number.isInteger(queue) && queue >= 0 && queue <= 5) runtime.pausedQueues.set(queue, id)
   runtime.handoffs.push(...structuredClone(state.handoffs))
+  if (state.factoryRallies) runtime.factoryRallies.state = structuredClone({ ...state.factoryRallies, settings: state.factoryRallies.settings.map(setting => ({ ...setting, status: setting.status === 'prepared' ? 'unknown' as const : setting.status })) })
+  if (state.productionExits) runtime.productionExits.restore(state.productionExits)
   if (state.version === 4) {
     for (const map of state.exploration!.maps) runtime.exploration.maps.set(map.id, structuredClone(map))
     for (const progress of state.exploration!.progress) runtime.exploration.progress.set(progress.goalId, structuredClone(progress))

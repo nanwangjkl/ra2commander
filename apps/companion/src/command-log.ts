@@ -21,6 +21,17 @@ export class CommandLog {
   }
   recordTranscript(record: Record<string, unknown>): void { this.archive?.transcript(record) }
   flushEvents(): void { this.archive?.flushEvents() }
+  /** 仅供玩家新下达的同局同文作战命令取回意图模板；后续仍重新绑定当前对象。 */
+  repeatedCombatPlan(text: string, sessionKey: string): { requestId: string; operations: unknown[] } | undefined {
+    const normalize = (value: string) => value.normalize('NFKC').replace(/\s+/g, '').replace(/[。.!！?？]+$/, '').toLowerCase()
+    const supported = new Set(['combat.attack', 'combat.attack-all', 'combat.clear-region', 'combat.move', 'combat.hold'])
+    const records = this.archive?.commandHistory(sessionKey).transcripts ?? []
+    for (const record of records.slice().reverse()) {
+      const operations = record.plan?.operations
+      if (record.sessionKey !== sessionKey || typeof record.text !== 'string' || normalize(record.text) !== normalize(text) || ['failed', 'cancelled'].includes(record.terminalStage) || record.terminalError || record.skipped?.length || !record.choices?.length || !Array.isArray(operations) || !operations.length || operations.length > 8) continue
+      if (operations.every(call => call && supported.has(call.capability))) return { requestId: String(record.requestId), operations: structuredClone(operations) }
+    }
+  }
   readonly streamId = randomUUID()
   private events: CommandEvent[] = []
   private nextSeq = 1

@@ -4,7 +4,7 @@ type Identity = string | number
 interface MemberDelta { id: Identity; patch: ObjectValue; removed: string[] }
 interface ListDelta { key: string; changes: MemberDelta[]; removed: Identity[]; order?: Identity[] }
 interface ObservationDelta { mode: 'full' | 'delta'; base: number; patch: ObjectValue; removed: string[]; lists?: Record<string, ListDelta> }
-const keys: Record<string, string> = { goals: 'id', production: 'id', self: 'id', visibleEnemies: 'id', formations: 'id', skillRuns: 'id', exploration: 'goalId', programs: 'id', queues: 'type' }
+const keys: Record<string, string> = { goals: 'id', production: 'id', self: 'id', visibleEnemies: 'id', formations: 'id', skillRuns: 'id', exploration: 'goalId', programs: 'id', queues: 'type', productionExits: 'unitId', factoryBlockages: 'factoryId', exitYields: 'unitId' }
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 const object = (value: unknown): value is ObjectValue => !!value && typeof value === 'object' && !Array.isArray(value)
 export function fieldDelta(previous: ObjectValue, next: ObjectValue): { patch: ObjectValue; removed: string[] } {
