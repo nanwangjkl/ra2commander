@@ -1,5 +1,5 @@
 import { attackObjective, matchingAttackTargets, validTargetRegion } from '@ra2c/contracts'
-import { alive, baseConstraints, blocked, formationExists, movementArrival, point, projection } from './common.ts'
+import { alive, baseConstraints, blocked, formationExists, formationPreparing, movementArrival, point, presentUnitIds, projection } from './common.ts'
 import type { GoalContext, GoalHandler } from './types.ts'
 import { coverMoves, emptyCoverMotion, validateCoverMotion } from '../cover.ts'
 
@@ -25,15 +25,17 @@ export const combat: GoalHandler<'combat'> = {
     validateCoverMotion(goal.facts.coverMotion)
   },
   nativeActions(ctx) {
-    if (!ctx.formations.coverOf(ctx.spec.formationId) && ctx.spec.allowedActions.includes('attack')) {
-      const target = matchingAttackTargets(ctx.spec, ctx.snap.enemies)[0]
+    const retreat = ctx.goal.facts.retreatTriggered ? ctx.spec.retreat : undefined
+    const destination = retreat ?? ctx.spec.route?.[ctx.goal.facts.routeIndex ?? 0] ?? ctx.spec.destination
+    if (!retreat && !ctx.formations.coverOf(ctx.spec.formationId) && ctx.spec.allowedActions.includes('attack')) {
+      const targets = matchingAttackTargets(ctx.spec, ctx.snap.enemies).filter(target => ctx.spec.mode !== 'hold' && ctx.spec.mode !== 'assault' || target.rx >= ctx.spec.region.x1 && target.rx <= ctx.spec.region.x2 && target.ry >= ctx.spec.region.y1 && target.ry <= ctx.spec.region.y2)
+      const target = targets.find(target => !ctx.spec.patrol || ctx.snap.self.some(unit => members(ctx).includes(unit.id) && Math.hypot(unit.rx - target.rx, unit.ry - target.ry) <= Math.max(unit.primaryWeapon?.maxRange ?? 0, unit.secondaryWeapon?.maxRange ?? 0)))
       if (target) {
         const motion = ctx.goal.facts.coverMotion ??= emptyCoverMotion()
         const ids = members(ctx).filter(id => motion.orders[id]?.kind !== 'attack' || motion.orders[id]?.targetId !== target.id || ctx.snap.self.find(unit => unit.id === id)?.isIdle)
         return ids.length ? [{ kind: 'attack', unitIds: ids, targetId: target.id }] : []
       }
     }
-    const destination = ctx.spec.route?.[ctx.goal.facts.routeIndex ?? 0] ?? ctx.spec.destination
     if (!destination) return []
     const ids = members(ctx)
     if (ctx.formations.membersOf(ctx.spec.formationId).some(id => ctx.locked(id))) return []
@@ -61,6 +63,13 @@ export const combat: GoalHandler<'combat'> = {
   },
   observe(ctx) {
     const { spec, goal } = ctx
+    const present = presentUnitIds(ctx.snap)
+    const trackedAlive = goal.facts.members.some(member => present.has(member.id) && (!ctx.formations.ownerOf(member.id) || ctx.formations.ownerOf(member.id) === spec.formationId))
+    if (!trackedAlive && !ctx.formations.membersOf(spec.formationId).some(id => present.has(id)) && !formationPreparing(ctx, spec.formationId)) {
+      goal.status = (goal.facts.routeIndex ?? 0) > 0 ? 'partial' : 'failed'
+      goal.facts.outcomeDetail = `${spec.formationId} 已无存活成员，本次任务结束，保留队名；未自动补兵`
+      return
+    }
     if (spec.destination && !attackObjective(spec)?.target.region && spec.mode !== 'hold' && spec.mode !== 'assault' && movementArrival(ctx)?.reached) {
       if (spec.route) { goal.facts.routeIndex = (goal.facts.routeIndex ?? 0) + 1; if (goal.facts.routeIndex >= spec.route.length) goal.status = 'completed' }
       else goal.status = 'completed'

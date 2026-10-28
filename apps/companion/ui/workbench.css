@@ -55,7 +55,7 @@ html.sidebar-collapsed #sidebar, html.sidebar-collapsed #resize-sidebar { visibi
 .stage-faulted { color: #d08077; }
 .stage-partial, .stage-merged { color: #d3b98a; }
 .stage-failed, .stage-cancelled { color: #d08077; }
-.stage-understanding, .stage-generating { color: #d3b98a; }
+.stage-understanding, .stage-queued, .stage-generating { color: #d3b98a; }
 .card-text { margin: 8px 0 0; font-size: 13px; color: #dbe3ec; }
 .card-summary { margin: 6px 0 0; color: #a9c4b4; }
 .card-goals { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }

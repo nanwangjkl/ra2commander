@@ -7,6 +7,7 @@ import { bindDefaultMap } from './map-binding.ts'
 import { normalizeOperations } from './transcript-plan.ts'
 import { executeCapabilities, executionText, loadCommandPrompts, type BindingCorrection, type CapabilityExecution } from './capabilities/index.ts'
 import { isRepairVehicle, isCombatUnit, loadGameCatalog } from './capabilities/selectors.ts'
+import { TranscriptQueue, priorityCall, type TranscriptTurn } from './transcript-queue.ts'
 
 export async function runTranscript(text: string, ctx: CommandContext, root: string, trace?: TraceOptions): Promise<string> {
   const log = trace?.log ?? (ctx.commandLog ??= new CommandLog())
@@ -31,6 +32,7 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     terminalStage: undefined as 'completed' | 'failed' | 'cancelled' | undefined, terminalError: '' }
   const save = () => active.log.recordTranscript(record)
   let signal: AbortSignal | undefined
+  let turn: TranscriptTurn | undefined
   const check = () => { signal?.throwIfAborted(); if (key !== ctx.runtime.battleKey) throw new Error('对局已变化，转写结果作废') }
   emit({ stage: 'received', text })
   try {
@@ -40,13 +42,11 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     const snap = ctx.runtime.snapshot
     if (!snap) throw new Error('请先进入对局')
     active?.log.follow(ctx.controller, ctx.runtime)
-    ctx.transcriptAbort?.abort(new Error('理解过程被后续命令取代'))
-    const abort = new AbortController()
-    ctx.transcriptAbort = abort
-    signal = abort.signal
+    turn = (ctx.transcripts ??= new TranscriptQueue()).register(key)
+    signal = turn.signal
     emit({ stage: 'understanding' })
     try { await bindDefaultMap(ctx) } catch { check() } // 其他能力可继续；具体地域绑定会报告文件错误。
-    const catalog = await loadGameCatalog(ctx, check, prompts.game)
+    let catalog = await loadGameCatalog(ctx, check, prompts.game)
     check()
     record.promptVersions.interpret = prompts.version
     record.messages = [
@@ -74,13 +74,23 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
       if (!plan || typeof plan.summary !== 'string' || !Array.isArray(plan.operations) || plan.operations.length > 8) throw new Error('转写解析格式非法')
     } catch (error) { throw new Error(`理解失败：${String(error)}`) }
     record.modelPlan = structuredClone(plan)
+    save()
     const valid: CapabilityCall[] = [], invalid: unknown[] = []
     for (const call of plan.operations) { try { valid.push(prompts.capabilities.parse(call)) } catch { invalid.push(call) } }
+    let waiting = false
+    const queued = () => { if (!waiting) { waiting = true; emit({ stage: 'queued', summary: plan.summary }) } }
+    await turn.wait(valid.some(priorityCall), queued)
+    check()
+    // 等待前序绑定时战况可能已变；模型正文版本固定，绑定使用当前单位和目录事实。
+    catalog = await loadGameCatalog(ctx, check, prompts.game)
     plan = { ...plan, operations: [...normalizeOperations(text, valid, ctx.mapSessionKey === key ? ctx.mapRegions : undefined, catalog), ...invalid] }
     record.plan = plan
     save()
     const update = (execution: CapabilityExecution) => { Object.assign(record, execution); plan.summary = execution.summary; save() }
     const execution = await executeCapabilities(plan.operations, ctx, { text, prompts, catalog, signal, emit, onUpdate: update, commandId: requestId,
+      onBound: () => turn!.release(),
+      checkOperation: call => turn!.check(call),
+      beforeBind: async call => { if (!priorityCall(call) && turn!.priority) { turn!.endPriority(); await turn!.wait(false, queued); check() } },
       repairBindings: async (failures, accepted) => {
         check()
         const current = ctx.runtime.snapshot!
@@ -124,8 +134,8 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     try { save() } catch (saveError) { console.error(`[companion] 转写记录保存失败：${String(saveError).slice(0, 160)}`) }
     throw new Error(`${String(error)}；记录：${requestId}`)
   } finally {
+    turn?.finish()
     active.log.syncRuntime(ctx.runtime)
     active.log.flushEvents()
-    if (ctx.transcriptAbort?.signal === signal) delete ctx.transcriptAbort
   }
 }

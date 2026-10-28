@@ -12,6 +12,7 @@ import { cancellationDetail, observeCancellations, pendingProduction, prepareCan
 import { ExplorationStore, skillGoalIds, type SkillRun } from './exploration.ts'
 import { RecoveryMonitor } from './recovery.ts'
 import { handlerFor, validateGoalSpec, validateGoalFacts } from './goals/index.ts'
+import { formationPreparing, presentUnitIds } from './goals/common.ts'
 import { validateCover, emptyCoverMotion, recordCoverOrder, coverMembers, coverMoves, type CoverMotion } from './cover.ts'
 import { coverCombat, coverRangePairs, airborne, type CoverIntent, type CoverRange } from './cover-combat.ts'
 import type { GoalContext, GoalProjection } from './goals/types.ts'
@@ -111,14 +112,15 @@ export class TaskRuntime {
     const ctx = this.goalContext(spec, this.latest), projected = this.project(spec, this.latest), view = projected.view
     const activeHandler = handlerFor(spec)
     const execution = activeHandler.execution?.(ctx, projected)
-    if (execution) return execution
+    const notice = goal.facts.coverEnded
+    if (execution) return { ...execution, ...(notice ? { detail: [notice, execution.detail].filter(Boolean).join('；') } : {}) }
     const currentProgress = activeHandler.progress?.(ctx, view) ?? {}
     const unmet = view.productionPlan?.unmetConditions ?? []
     const conditionDetail = unmet.length && !view.productionPlan?.availableToProduce.length && !view.productionPlan?.readyToPlace.length ? unmet.map(condition => condition.reason).join('；') : undefined
     const detail = view.blocked ?? conditionDetail ?? (goal.facts.placementBlocked ? goal.facts.blocked : undefined) ?? (view.uncertain.length ? `提交结果待确认：${view.uncertain.join('、')}` : undefined)
     if (detail) return { state: 'blocked', detail, ...(currentProgress.progress ? { progress: currentProgress.progress } : {}) }
     const continuous = activeHandler.continuous?.(ctx)
-    return { ...currentProgress, state: continuous ? 'continuous' : 'running' }
+    return { ...currentProgress, state: continuous ? 'continuous' : 'running', ...(notice ? { detail: [notice, currentProgress.detail].filter(Boolean).join('；') } : {}) }
   }
 
   async cancelSkillRun(id: string, superseded = false): Promise<void> {
@@ -217,20 +219,61 @@ export class TaskRuntime {
     this.coverIdleOrders.delete(formationId)
     const program = this.program({ kind: 'formation', formationId })
     program.generation++
-    for (const id of program.activeGoalIds) if (this.goals.get(id)?.facts.coverMotion) this.goals.get(id)!.facts.coverMotion!.orders = {}
+    for (const id of program.activeGoalIds) {
+      const facts = this.goals.get(id)!.facts
+      if (facts.coverMotion) facts.coverMotion.orders = {}
+      delete facts.coverEnded
+    }
   }
   hasCover(formationId: string): boolean {
     return !!this.formations.coverOf(formationId) || [...this.skillRuns.values()].some(run => run.kind === 'cover' && run.formationId === formationId && ['preparing', 'covering'].includes(run.status))
   }
-  /** 原受护对象已全部失效时，玩家的新行动不能被旧角色永久挡住。 */
+  /** 新命令到来早于下一次战损观察时，也立即解除失去受护对象的旧角色。 */
   async clearLostCover(formationId: string): Promise<boolean> {
     const policy = this.formations.coverOf(formationId)
     if (!policy || this.latest?.self.some(unit => this.formations.ownerOf(unit.id) === formationId && !policy.escortIds.includes(unit.id))
       || policy.protectedSources?.some(id => ['pending', 'active'].includes(this.goals.get(id)?.status ?? ''))) return false
-    const run = this.skillRuns.get(policy.runId)
-    if (run?.kind === 'cover') await this.cancelSkillRun(run.id)
-    else await this.uncover(formationId)
+    this.endCover(formationId, '被掩护成员已全部损失，已转为普通编队，继续当前任务')
     return true
+  }
+
+  /** 战损只结束掩护职责，保留任务、成员、独立生产和暂停/停止状态。 */
+  private endCover(formationId: string, detail: string, failed = false, escortIds = this.formations.coverOf(formationId)?.escortIds ?? []): void {
+    const policy = this.formations.coverOf(formationId)
+    if (!policy) return
+    this.formations.setCover(formationId)
+    this.coverIdleOrders.delete(formationId)
+    const run = this.skillRuns.get(policy.runId)
+    if (run?.kind === 'cover') { run.status = failed ? 'failed' : 'partial'; run.detail = detail }
+    const present = this.latest ? presentUnitIds(this.latest) : new Set<number>()
+    const released = escortIds.filter(id => present.has(id) && this.formations.ownerOf(id) === formationId)
+    const program = this.programs.get(`formation:${formationId}`)
+    if (program) { program.generation++; program.memory = {} }
+    for (const goal of this.goals.values()) if (goal.ownerId === program?.id && (goal.activeSpec || goal.facts.initialized) && ['pending', 'active'].includes(goal.status) && (goal.spec.kind === 'combat' || goal.spec.kind === 'attack')) {
+      delete goal.facts.coverMotion
+      goal.facts.coverEnded = detail
+      if (goal.spec.kind === 'attack' && released.length) goal.facts.coverReleasedIds = [...new Set([...(goal.facts.coverReleasedIds ?? []), ...released])]
+    }
+  }
+
+  private observeCoverLosses(snap: Snapshot): void {
+    const present = presentUnitIds(snap), context = { snap, goals: this.goals, handoffs: this.handoffs }
+    for (const formation of this.formations.list()) {
+      const policy = formation.cover
+      if (!policy) continue
+      const run = this.skillRuns.get(policy.runId)
+      const escorts = new Set([...policy.escortIds, ...(run?.kind === 'cover' ? run.escortIds : []),
+        ...(policy.escortSources ?? []).flatMap(source => this.production.filter(record => record.goalId === source.goalId && record.name === (this.goals.get(source.goalId)?.spec as { target?: string })?.target).flatMap(record => record.observedIds).slice(0, source.quantity))])
+      const members = formation.memberIds.filter(id => present.has(id))
+      // 没有现役成员但本次仍有生产或交接时，保留准备，不判全灭。
+      if (!members.length && formationPreparing(context, formation.id)) continue
+      const escortLost = !members.some(id => escorts.has(id)) && !formationPreparing(context, formation.id, { sourceIds: (policy.escortSources ?? []).map(source => source.goalId), accepts: id => escorts.has(id) })
+      const protectedLost = !members.some(id => !escorts.has(id)) && !formationPreparing(context, formation.id, { sourceIds: policy.protectedSources ?? [], accepts: id => !escorts.has(id) })
+      if (!escortLost && !protectedLost) continue
+      const detail = !members.length ? `${formation.id} 已无存活成员，掩护结束，保留队名`
+        : `${protectedLost ? '被掩护' : '掩护'}成员已全部损失，已转为普通编队，继续当前任务`
+      this.endCover(formation.id, detail, !members.length, [...escorts])
+    }
   }
   async uncover(formationId: string): Promise<void> {
     const previous = this.formations.coverOf(formationId)
@@ -523,8 +566,13 @@ export class TaskRuntime {
     }
   }
 
+  /** 队伍尚未创建时也保留显式控制状态，迟到的成员交接不能恢复它。 */
+  private controlProgram(id: string): ProgramState | undefined {
+    return this.programs.get(id) ?? this.programs.get(this.goals.get(id)?.ownerId ?? '')
+      ?? (id === 'global' ? this.program({ kind: 'global' }) : id.startsWith('formation:') && id.length > 10 ? this.program({ kind: 'formation', formationId: id.slice(10) }) : undefined)
+  }
   async stop(id: string): Promise<void> {
-    const program = this.programs.get(id) ?? this.programs.get(this.goals.get(id)?.ownerId ?? '')
+    const program = this.controlProgram(id)
     if (!program) return
     const goals = [...new Set([...program.goalIds, ...program.activeGoalIds])]
     this.cancelCommand(program.id)
@@ -535,7 +583,7 @@ export class TaskRuntime {
   pause(id: string): void {
     this.recovery.reset(id)
     this.cancelCommand(id)
-    const program = this.programs.get(id)
+    const program = this.controlProgram(id)
     if (program) {
       if (this.latest) for (const spec of this.activeSpecs(program)) handlerFor(spec).pause?.(this.goalContext(spec, this.latest))
       program.status = 'paused'; program.generation++
@@ -609,6 +657,8 @@ export class TaskRuntime {
     }
     observeProduction(this.production, this.seenUnitIds, snap, converted)
     observeCancellations(this.production, snap)
+    // 先解除失效角色，再结算攻击；剩余掩护成员可在同轮接续原任务。
+    this.observeCoverLosses(snap)
     for (const last of [false, true]) for (const goal of this.goals.values()) {
       const spec = goal.activeSpec
       if (goal.status !== 'active' || !spec) continue
@@ -759,7 +809,8 @@ export class TaskRuntime {
           if (goal) {
             delete goal.facts.blocked
             if (goal.status !== 'cancelled' && goal.spec.kind === 'formation') {
-              if (goal.spec.cover) this.setCover(goal.spec.request.formationId, goal.spec.cover)
+              const run = goal.spec.cover && this.skillRuns.get(goal.spec.cover.runId)
+              if (goal.spec.cover && (!run || ['preparing', 'covering'].includes(run.status))) this.setCover(goal.spec.request.formationId, goal.spec.cover)
               this.complete(goal)
             }
           }

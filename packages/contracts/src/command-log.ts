@@ -1,5 +1,5 @@
 /** 工作台只接收命令阶段事件，不接收逐帧战场数据。 */
-export type CommandStage = 'received' | 'understanding' | 'understood' | 'binding' | 'bound'
+export type CommandStage = 'received' | 'understanding' | 'queued' | 'understood' | 'binding' | 'bound'
   | 'skipped' | 'generating' | 'merged' | 'effective' | 'failed' | 'cancelled' | 'execution' | 'completed'
 export type CommandSource = 'sidebar' | 'cli' | 'restored'
 

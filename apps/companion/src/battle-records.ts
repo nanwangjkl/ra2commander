@@ -26,18 +26,21 @@ export class BattleRecords {
   private timer: NodeJS.Timeout | undefined
   private writer: NodeJS.Immediate | undefined
   private sessionKey = ''
+  /** 未进局的命令只展示本次进程收到的，历史失败仍保留在归档里。 */
+  private readonly unboundCommands = new Set<string>()
   private runtime: TaskRuntime | undefined
   warning = ''
 
   constructor(root: string, private readonly warn = console.error) { this.folder = join(root, '.runtime/battles') }
   get currentId(): string | null {
     const id = battleId(this.sessionKey || 'unbound')
-    return this.sessionKey || existsSync(join(this.folder, id, 'meta.json')) ? id : null
+    return this.sessionKey || this.unboundCommands.size ? id : null
   }
   setSession(key: string): void {
     if (this.sessionKey === key) return
     this.guarded(() => { if (this.runtime?.battleKey === this.sessionKey) this.capture(this.runtime, true); this.flush() })
     this.sessionKey = key
+    this.unboundCommands.clear()
     this.guarded(() => { this.ensure(key); this.trimCache() })
   }
   private journal(id: string): BattleJournal {
@@ -47,7 +50,8 @@ export class BattleRecords {
   }
   currentCommands(): CurrentCommands {
     const record = this.currentId ? this.readStored(this.currentId) : undefined
-    return { battleId: record?.id ?? null, sessionKey: record?.sessionKey ?? null, events: record?.events ?? [], feedback: record?.feedback ?? [], warning: this.warning }
+    const current = (commandId: string) => !!this.sessionKey || this.unboundCommands.has(commandId)
+    return { battleId: record?.id ?? null, sessionKey: record?.sessionKey ?? null, events: record?.events.filter(event => current(event.commandId)) ?? [], feedback: record?.feedback.filter(item => current(item.commandId)) ?? [], warning: this.warning }
   }
   /** 卡片只恢复同局记录；旧转写缺少阶段事件时才用其目标/终态补足展示。 */
   commandHistory(key: string): { events: CommandEvent[]; transcripts: Array<Record<string, any>> } {
@@ -127,7 +131,9 @@ export class BattleRecords {
   event = (event: CommandEvent): void => this.guarded(() => {
     if (event.sessionKey === undefined && event.stage === 'received') return
     const key = event.sessionKey ?? this.sessionKey
-    this.append(this.ensure(key), 'event', { ...event, commandId: canonicalId(event.commandId) })
+    const commandId = canonicalId(event.commandId)
+    this.append(this.ensure(key), 'event', { ...event, commandId })
+    if (!key) this.unboundCommands.add(commandId)
     if (event.error || ['completed', 'failed', 'cancelled'].includes(event.stage) || event.execution && ['completed', 'failed', 'partial', 'faulted', 'cancelled'].includes(event.execution.state)) {
       if (this.runtime?.battleKey === key) this.capture(this.runtime, true)
       this.writeEvents()
@@ -305,7 +311,7 @@ export class BattleRecords {
   }
   markdown(record: SummaryRecord, { inlineCode = false }: { inlineCode?: boolean } = {}): string {
     const fence = (value: string, lang = '') => { const ticks = '`'.repeat(Math.max(3, ...[...value.matchAll(/`+/g)].map(match => match[0].length + 1))); return `${ticks}${lang}\n${value}\n${ticks}` }
-    const labels: Record<string, string> = { received: '已收到', understanding: '理解中', understood: '已理解', binding: '绑定中', bound: '待生效', generating: '生成中', merged: '等待合并', effective: '脚本已生效', pending: '等待就绪', completed: '已完成', running: '执行中', continuous: '持续执行', paused: '暂停', faulted: '运行出错', blocked: '执行受阻', cancelled: '已取消', failed: '失败', partial: '部分执行', 'partial-completed': '部分完成' }
+    const labels: Record<string, string> = { received: '已收到', understanding: '理解中', queued: '等待前序指令', understood: '已理解', binding: '绑定中', bound: '待生效', generating: '生成中', merged: '等待合并', effective: '脚本已生效', pending: '等待就绪', completed: '已完成', running: '执行中', continuous: '持续执行', paused: '暂停', faulted: '运行出错', blocked: '执行受阻', cancelled: '已取消', failed: '失败', partial: '部分执行', 'partial-completed': '部分完成' }
     const info = this.info(record)
     const lines = ['# 对局记录', '', `对局：${record.sessionKey || '未进入对局'}`, `开始：${new Date(record.startedAt).toLocaleString('zh-CN')}`, `最后记录：${new Date(record.updatedAt).toLocaleString('zh-CN')}`, `命令 ${info.commands} 条，已反馈 ${info.feedback} 条，其中待改进 ${info.issues} 条。`, '', '执行结果来自最后观察到的游戏事实；游戏关闭后不推断完成或胜负。用户反馈单独保留。', '完整请求、响应、状态变化与反馈在同目录 events.jsonl 中，供开发复盘使用。', '']
     const ids = new Set([...record.events.map(event => event.commandId), ...Object.keys(record.transcripts)])

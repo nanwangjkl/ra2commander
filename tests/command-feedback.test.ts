@@ -56,7 +56,7 @@ test('规则/模型早期失败、解析取消和零目标都有明确结束反�
     } }) as never
     const pending = runTranscript('取消中的原话', ctx, root)
     await started.promise
-    ctx.transcriptAbort!.abort(new Error('已被后续命令取代'))
+    ctx.transcripts!.cancelAll(new Error('已被玩家取消'))
     await assert.rejects(pending)
     assert.equal(ctx.commandLog!.since(0).at(-1)!.stage, 'cancelled')
   } finally { rmSync(root, { recursive: true, force: true }) }
@@ -96,6 +96,45 @@ test('生成被停止不会报生效，合并目标等真实提交后再更新�
     const cards = [...render(merged.commandLog!.since(0)).values()]
     assert.ok(cards.every(card => card.stage === 'running'))
     assert.ok(cards.every(card => [...card.goals.values()].every(goal => goal.version === 1)))
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('后续生产合并全局生成时继续原命令的独立编队生成，明确停止全部仍可中断', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ra2c-multi-owner-'))
+  try {
+    for (const stop of [false, true]) {
+      const ctx = await context(), started = deferred<void>(), resume = deferred<void>()
+      let firstGlobal = true, formationCompiles = 0
+      const model = { generate: async (input: { messages: Array<{ content: string }> }) => {
+        const value = JSON.parse(input.messages[1]!.content)
+        if (!('text' in value)) return modelResult(code)
+        return modelResult(JSON.stringify({ summary: value.text, operations: value.text === '第一条' ? [
+          { capability: 'production.produce', params: { target: 'GAPOWR', quantity: 1 } },
+          { capability: 'combat.move', params: { formationId: 'A', x: 9, y: 9 } },
+        ] : stop ? [{ capability: 'control.stop', params: { scope: 'all' } }] : [{ capability: 'production.produce', params: { target: 'GAPOWR', quantity: 1 } }] }))
+      } }
+      ctx.currentProvider = () => model as never
+      ctx.bridge = { rules, submit: async () => ({ ok: true }) } as never
+      ctx.controller = new ProgramController({ runtime: ctx.runtime, executor, provider: () => model as never,
+        prepare: async goals => {
+          if (goals.some(goal => goal.kind === 'combat')) formationCompiles++
+          if (firstGlobal && goals.some(goal => goal.kind === 'production')) { firstGlobal = false; started.resolve(); await resume.promise }
+          return goals
+        } })
+      const first = runTranscript('第一条', ctx, root)
+      await started.promise
+      const firstId = ctx.commandLog!.since(0)[0]!.commandId
+      await runTranscript(stop ? '停止全部' : '再造一个', ctx, root)
+      resume.resolve(); await first
+      const goal = [...ctx.runtime.goals.values()].find(goal => goal.spec.kind === 'combat')!
+      assert.equal(formationCompiles, stop ? 0 : 1)
+      assert.equal(goal.status, stop ? 'cancelled' : 'active')
+      if (!stop) {
+        assert.ok(goal.activeSpec)
+        assert.equal(ctx.commandLog!.since(0).some(event => event.commandId === firstId && event.stage === 'cancelled'), false)
+        assert.equal(render(ctx.commandLog!.since(0)).get(firstId)!.error, '')
+      }
+    }
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 

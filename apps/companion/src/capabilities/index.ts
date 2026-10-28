@@ -7,6 +7,7 @@ import { skillGoalIds } from '@ra2c/runtime'
 import { randomUUID } from 'node:crypto'
 import { relocationKey } from '../base-relocation.ts'
 import { retainBindingScope } from './binding-recovery.ts'
+import { InterruptedOperation, interruptTranscripts, priorityCall } from '../transcript-queue.ts'
 
 export function validateBindings(prompts: PromptLibrary): void { prompts.capabilities.assertBindings(Object.keys(bindings)) }
 export function loadCommandPrompts(): PromptLibrary { return loadPrompts({ validate: validateBindings }) }
@@ -25,6 +26,9 @@ interface ExecuteOptions {
   prompts?: PromptLibrary
   catalog?: GameCatalog
   signal?: AbortSignal
+  beforeBind?: (call: CapabilityCall) => Promise<void>
+  checkOperation?: (call: CapabilityCall) => void
+  onBound?: () => void
   emit?: (event: Partial<CommandEvent> & Pick<CommandEvent, 'stage'>) => void
   onUpdate?: (execution: CapabilityExecution) => void
   onPromptVersion?: (owner: string, version: string) => void
@@ -39,7 +43,9 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
   const prompts = options.prompts ?? loadCommandPrompts()
   validateBindings(prompts)
   const key = ctx.runtime.battleKey
-  const check = () => { options.signal?.throwIfAborted(); if (!ctx.runtime.snapshot || key !== ctx.runtime.battleKey) throw new Error('对局已变化或尚未进入对局') }
+  const checkSession = () => { if (!ctx.runtime.snapshot || key !== ctx.runtime.battleKey) throw new Error('对局已变化或尚未进入对局') }
+  let activeCall: CapabilityCall | undefined, interrupted = 0
+  const check = () => { options.signal?.throwIfAborted(); checkSession(); if (activeCall) options.checkOperation?.(activeCall) }
   check()
   const emit = options.emit ?? (() => {})
   const state: CapabilityExecution = { goals: [], choices: [], effects: [], skipped: [], results: [], summary: '' }
@@ -60,7 +66,6 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
     commandId: options.commandId ?? `cmd-${randomUUID()}`,
     knownCatalog: options.catalog,
     catalog: () => catalog ??= loadGameCatalog(ctx, check, prompts.game),
-    cancelUnderstanding: () => { if (ctx.transcriptAbort?.signal !== options.signal) ctx.transcriptAbort?.abort(new Error('被控制命令中止')) },
   }
   const skip = (message: string) => { state.skipped.push(message); emit({ stage: 'skipped', error: message }) }
   emit({ stage: 'binding' })
@@ -68,11 +73,15 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
     for (const value of values) {
       try { const call = prompts.capabilities.parse(value); if (call.capability === 'base.relocate' && !context.relocationIds.has(relocationKey(call.params))) context.relocationIds.set(relocationKey(call.params), `command-${randomUUID().slice(0, 8)}`) } catch { /* 正式绑定时反馈 */ }
     }
-    values = [...values].sort((a, b) => Number((b as CapabilityCall)?.capability === 'base.relocate') - Number((a as CapabilityCall)?.capability === 'base.relocate'))
+    values = [...values].sort((a, b) => Number(priorityCall(b as CapabilityCall)) - Number(priorityCall(a as CapabilityCall)) || Number((b as CapabilityCall)?.capability === 'base.relocate') - Number((a as CapabilityCall)?.capability === 'base.relocate'))
     for (const value of values) {
       try {
         check()
         const call = prompts.capabilities.parse(value)
+        await options.beforeBind?.(call)
+        activeCall = call
+        check()
+        if (priorityCall(call)) interruptTranscripts(ctx, call, prompts, options.catalog, options.signal)
         const definition = prompts.capabilities.definitions().find(definition => definition.id === call.capability)!
         const binder = bindings[definition.binder as CapabilityId] as (params: ResolvedCapabilityParameters[CapabilityId], context: BindingContext) => ReturnType<(typeof bindings)[CapabilityId]>
         const result = await binder(call.params, context)
@@ -133,7 +142,11 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
         state.effects.push(...(result.choices ?? [])); accepted.push(...(result.choices ?? []))
         for (const message of result.skipped ?? []) skip(message)
         acceptedCalls.push(call)
-      } catch (error) { check(); failed.push({ operation: value, error: String(error) }) }
+      } catch (error) {
+        activeCall = undefined; check()
+        if (error instanceof InterruptedOperation) { interrupted++; skip(error.message) }
+        else failed.push({ operation: value, error: String(error) })
+      } finally { activeCall = undefined }
     }
   }
   const updateSummary = () => {
@@ -144,17 +157,26 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
   }
   const compileFailures = new Map<string, string>()
   const compileOwners = async () => {
+    const targets = new Map([...owners].map(owner => {
+      const program = ctx.runtime.programs.get(owner)
+      return [owner, { ids: [...(program?.goalIds ?? [])], generation: program?.generation }]
+    }))
+    const retained = (owner: string) => {
+      checkSession()
+      const program = ctx.runtime.programs.get(owner), target = targets.get(owner)
+      if (suppressed.has(owner) || !program || ['paused', 'stopped'].includes(program.status) && (options.signal?.aborted || program.generation !== target?.generation)) return false
+      return target?.ids.some(id => program.goalIds.includes(id) && ['pending', 'active'].includes(ctx.runtime.goals.get(id)?.status ?? '')) ?? false
+    }
     // 所有已绑定的固定流程先启用，避免被其他控制对象的云端生成拖住。
     for (const owner of owners) {
-      if (suppressed.has(owner)) continue
-      check()
+      if (!retained(owner)) continue
       const native = [...ctx.runtime.goals.values()].some(goal => goal.ownerId === owner && ['pending', 'active'].includes(goal.status) && goalExecutionMode(goal.spec) === 'native') ? ctx.controller.activateNative(owner) : undefined
       if (native && !scriptOwners.has(owner)) state.results.push(native)
     }
     options.onUpdate?.(state)
     for (const owner of owners) {
-      if (suppressed.has(owner) || !scriptOwners.has(owner)) continue
-      check()
+      // 理解被新命令替代，不撤销已经接收的独立目标；停止/改令由各控制对象自己使其失效。
+      if (!scriptOwners.has(owner) || !retained(owner) || ctx.runtime.hasPendingCommand(owner)) continue
       emit({ stage: 'generating', owner, executionMode: 'script' })
       try {
         state.results.push(await ctx.controller.refresh(owner, false, { prompts, ...(options.commandId ? { commandId: options.commandId } : {}), onPromptVersion: version => options.onPromptVersion?.(owner, version) }))
@@ -174,9 +196,10 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
   }
   await bindCalls(calls, failures)
   updateSummary()
+  if (!failures.length || !options.repairBindings) options.onBound?.()
   // 已绑定部分先生成并执行；重决策只处理失败项，不重放成功调用。
   await compileOwners()
-  if (failures.length && options.repairBindings) {
+  if (failures.length && options.repairBindings && !options.signal?.aborted) {
     try {
       const corrections = await options.repairBindings(failures, acceptedCalls)
       check()
@@ -213,10 +236,12 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
       skip(`绑定重试失败：${String(error)}`)
     }
     updateSummary()
+    options.onBound?.()
     await compileOwners()
   } else for (const failure of failures) skip(failure.error)
   updateSummary()
-  if (!accepted.length) { emit({ stage: 'failed', error: `未执行：${state.skipped.join('；') || state.summary}` }); return state }
+  options.onBound?.()
+  if (!accepted.length) { emit({ stage: interrupted && !failures.length ? 'cancelled' : 'failed', error: `未执行：${state.skipped.join('；') || state.summary}` }); return state }
   if (!state.goals.length) emit(compileFailures.size ? { stage: 'failed', error: `脚本生成失败：${[...compileFailures.values()].join('；')}` } : { stage: 'completed' })
   return state
 }

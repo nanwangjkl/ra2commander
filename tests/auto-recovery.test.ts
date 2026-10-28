@@ -68,11 +68,10 @@ test('绑定修正期间停止命令优先，迟到模型结果不能追加目�
   const f = await bindingFixture(true)
   try {
     const pending = runTranscript('造两辆坦克，现有未编队坦克去20,20', f.ctx, f.root)
-    const rejected = assert.rejects(pending, /中止|停止|取消/)
     await f.started.promise
     await handleCommand('global stop', f.ctx)
     f.late.resolve(reply(JSON.stringify({ repairs: [{ index: 0, operations: [{ capability: 'management.rally', params: { unitIds: [2], x: 20, y: 20 } }] }] })))
-    await rejected
+    assert.match(await pending, /中止|停止|取消/)
     assert.equal(f.runtime.programs.get('global')!.status, 'stopped')
     assert.ok([...f.runtime.goals.values()].every(goal => goal.status === 'cancelled'))
     assert.ok(![...f.runtime.goals.values()].some(goal => goal.spec.kind === 'rally'))

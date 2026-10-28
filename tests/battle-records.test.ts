@@ -79,7 +79,7 @@ function request(url: string, method = 'GET', value?: unknown, origin?: string):
   return Object.assign(Readable.from(value === undefined ? [] : [Buffer.from(JSON.stringify(value))]), { url, method, headers: { host: '127.0.0.1:8787', ...(origin ? { origin } : {}) } }) as IncomingMessage
 }
 
-test('游戏未就绪时仍可查看旧命令和保存反馈，接口拒绝无效或跨来源写入', async () => {
+test('游戏未就绪时本次命令仍可保存反馈，接口拒绝无效或跨来源写入', async () => {
   const root = mkdtempSync(join(tmpdir(), 'ra2c-battle-api-'))
   const records = new BattleRecords(root)
   const api = new WorkbenchApi({ log: new CommandLog(), records, ready: () => false, status: async () => 'waiting', submit: async () => {} })
@@ -113,6 +113,27 @@ test('游戏未就绪时仍可查看旧命令和保存反馈，接口拒绝无�
     await api.handle(request('/commander/records/not-a-battle'), traversal as never)
     assert.equal(traversal.status, 404)
   } finally { api.close(); records.close(); rmSync(root, { recursive: true, force: true }) }
+})
+
+test('未进局的历史错误不在新Companion重复出现，本次新错误和反馈仍可查看', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ra2c-unbound-'))
+  let records = new BattleRecords(root)
+  try {
+    records.event({ commandId: 'old', source: 'sidebar', sessionKey: '', text: '展开基地', stage: 'failed', error: '请先进入对局', at: 1, seq: 1 })
+    const id = records.currentId!
+    records.feedback(id, 'old', 'bad', '旧反馈')
+    records.close()
+    records = new BattleRecords(root)
+    assert.equal(records.currentId, null)
+    assert.deepEqual(records.currentCommands().events, [])
+    records.event({ commandId: 'new', source: 'sidebar', sessionKey: '', text: '新命令', stage: 'failed', error: '请先进入对局', at: 2, seq: 1 })
+    records.feedback(records.currentId!, 'new', 'partial', '新反馈')
+    assert.deepEqual(records.currentCommands().events.map(event => event.commandId), ['new'])
+    assert.deepEqual(records.currentCommands().feedback.map(item => item.note), ['新反馈'])
+    assert.equal(records.read(id)!.events.length, 2, '历史原档保留，不靠删除错误掩盖问题')
+    records.setSession('new-game')
+    assert.deepEqual(records.currentCommands().events, [])
+  } finally { records.close(); rmSync(root, { recursive: true, force: true }) }
 })
 
 test('中断的末行保留备份并可继续追加，不吞掉后续反馈', () => {

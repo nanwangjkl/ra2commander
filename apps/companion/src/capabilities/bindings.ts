@@ -3,7 +3,7 @@ import type { CapabilityId, GameProfile, PromptLibrary, ResolvedCapabilityParame
 import type { SkillRun } from '@ra2c/runtime'
 import { directionLabels, type CombatGoal, type FormationGoal, type GoalSpec, type ProductionGoal } from '@ra2c/contracts'
 import type { CommandContext } from '../commands.ts'
-import { checkPoint, destination, formationName, fullMap, rectangle, regionDestination, resolveOwner, selectUnits, selectUnitSet, type GameCatalog } from './selectors.ts'
+import { checkPoint, destination, formationAlias, formationName, fullMap, rectangle, regionDestination, resolveOwner, selectUnits, selectUnitSet, type GameCatalog } from './selectors.ts'
 import { prepareExploration } from '../exploration.ts'
 import { bindRepairSkill, repairGoal } from './repair-vehicle.ts'
 import { bindBuildingPlacement, bindPlacementRegion } from '../building-placement.ts'
@@ -23,7 +23,6 @@ export interface BindingContext {
   prompts: PromptLibrary
   commandId: string
   knownCatalog?: GameCatalog | undefined
-  cancelUnderstanding: () => void
   formationGoals: Map<string, FormationGoal>
   movementGoals: Map<string, CombatGoal>
   relocationIds: Map<string, string>
@@ -50,13 +49,20 @@ async function catalogTarget(target: string, context: BindingContext, expected: 
 }
 async function control(params: CapabilityParameters['control.stop'], context: BindingContext, action: 'stop' | 'pause' | 'resume'): Promise<BoundCapability> {
   const { ctx } = context
-  context.cancelUnderstanding()
   const scope = params.scope
   const units = scope === 'units' ? selectUnits(ctx, params, context.knownCatalog, context.game) : undefined
   const owners = scope === 'all' ? [...new Set([...ctx.runtime.programs.keys(), ...ctx.runtime.pendingCommandIds()])]
     : scope === 'global' ? ['global']
       : units ? [...new Set(units.map(unit => ctx.formations.ownerOf(unit.id)).map(formation => formation ? `formation:${formation}` : 'global'))]
-        : [resolveOwner(ctx, params.formationId ?? '')]
+        : [(() => {
+          try { return resolveOwner(ctx, params.formationId ?? '') }
+          catch (error) {
+            if (!params.formationId) throw error
+            const owner = `formation:${formationAlias(params.formationId)}`
+            if (action === 'resume' && !ctx.runtime.programs.has(owner)) throw error
+            return owner
+          }
+        })()]
   if (scope === 'units' && !units?.length) throw new Error('没有可控制的匹配单位')
   context.check()
   if (action === 'stop') {

@@ -12,6 +12,7 @@ import { loadIceMap } from './map-binding.ts'
 import { runTranscript } from './transcript.ts'
 import type { CommandLog } from './command-log.ts'
 import { executeCapabilities, executeCapability, executionText, loadCommandPrompts } from './capabilities/index.ts'
+import type { TranscriptQueue } from './transcript-queue.ts'
 const ROOT = resolve(import.meta.dirname, '../../..')
 
 export function usage(): string {
@@ -77,7 +78,7 @@ export interface CommandContext {
   mapRegions?: MapRegionIndex
   mapSessionKey?: string
   mapPlayableArea?: import('../../../packages/maps/src/index.ts').PlayableAreaIndex
-  transcriptAbort?: AbortController
+  transcripts?: TranscriptQueue
   /** 命令记录（阶段 2）：界面/终端/TCP 的 say 统一入流。 */
   commandLog?: CommandLog
 }
@@ -97,7 +98,7 @@ function debugBusy(ids: number[], ctx: CommandContext): boolean {
 export async function handleCommand(line: string, ctx: CommandContext): Promise<string> {
   const [cmd, ...args] = line.split(/\s+/)
   const { bridge, page } = ctx
-  if (cmd === 'stop' || cmd === 'quit' || (cmd === 'task' && ['stop', 'pause'].includes(args[0] ?? '')) || (cmd === 'global' && args[0] === 'pause')) ctx.transcriptAbort?.abort()
+  if (cmd === 'quit') ctx.transcripts?.cancelAll(new Error('伴随程序正在退出'))
   switch (cmd) {
     case 'say': return runTranscript(line.slice(3).trim(), ctx, ROOT)
     case 'map': {

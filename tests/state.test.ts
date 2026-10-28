@@ -41,6 +41,32 @@ test('正常部署转换不计阵亡，转换后的身份继续跟踪', async ()
   assert.equal(runtime.goals.get('alpha')!.facts.lossRatio, 0.5)
 })
 
+test('移动和守区全灭后结束原任务、保留队名；明确生产与载员存活不会误判全灭', async () => {
+  for (const mode of ['move', 'hold', 'assault'] as const) {
+    const env = await harness({ run: async () => outcome() })
+    activate(env.runtime, spec({ mode, ...(mode === 'move' ? { destination: { x: 9, y: 9 } } : {}) }))
+    activate(env.runtime, production({ formationId: 'A' }))
+    await env.runtime.onSnapshot(snapshot({ seq: 2, self: [] }))
+    assert.equal(env.runtime.goals.get('alpha')!.status, 'active', '明确生产尚未结束，暂时空队保持等待')
+    await env.runtime.cancelGoal('production')
+    const carrier = { ...snapshot().self[0]!, id: 50, transport: { occupied: 1, capacity: 5, unitIds: [1] } }
+    await env.runtime.onSnapshot(snapshot({ seq: 3, self: [carrier] }))
+    assert.equal(env.runtime.goals.get('alpha')!.status, 'active', '上车成员仍存活')
+    await env.runtime.onSnapshot(snapshot({ seq: 4, self: [] }))
+    assert.equal(env.runtime.goalExecution('alpha')!.state, 'failed')
+    assert.match(env.runtime.goalExecution('alpha')!.detail!, /保留队名/)
+    assert.ok(env.formations.list().some(formation => formation.id === 'A'))
+    assert.equal(env.runtime.programs.get('formation:A')!.status, 'idle')
+    const saved = persistState(env.runtime), restored = await harness({ run: async () => outcome() }, { formations: new FormationRegistry() })
+    await restored.runtime.onSnapshot(snapshot({ seq: 4, self: [] }))
+    restoreState(restored.runtime, saved)
+    restored.formations.transfer([60], 'A')
+    await restored.runtime.onSnapshot(snapshot({ seq: 5, self: [{ ...snapshot().self[0]!, id: 60 }] }))
+    assert.equal(restored.runtime.goals.get('alpha')!.status, 'failed', '补进新成员不自动复活已经结束的原任务')
+    assert.deepEqual(restored.submitted, [])
+  }
+})
+
 test('取消或替换任务后冻结旧变形事实，附近新产物正常记入生产', async () => {
   for (const exit of ['cancel', 'replace'] as const) {
     const { runtime } = await harness({ run: async () => outcome() })

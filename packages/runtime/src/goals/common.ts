@@ -11,6 +11,24 @@ export const paused = (ctx: GoalContext) => ctx.programs.get(ownerId(goalOwner(c
 export const alive = (ctx: GoalContext, ids: number[]) => ids.filter(id => ctx.snap.self.some(unit => unit.id === id) && !ctx.locked(id))
 export const world = (ctx: GoalContext, name: string) => ({ name, x1: 0, y1: 0, x2: ctx.snap.mapWidth - 1, y2: ctx.snap.mapHeight - 1 })
 export const formationExists = (ctx: GoalContext, id: string, planned = false) => ctx.formations.list().some(formation => formation.id === id) || planned && ctx.hasPlannedFormation(id)
+/** 载具内成员仍然存活；暂不可指挥不能当作全灭。 */
+export const presentUnitIds = (snap: GoalContext['snap']) => new Set(snap.self.flatMap(unit => [unit.id, ...(unit.transport?.unitIds ?? [])]))
+/** 只等待明确的生产与仍存活的待交接成员，不把空补员目标当成永远有援军。 */
+export function formationPreparing(ctx: Pick<GoalContext, 'snap' | 'goals' | 'handoffs'>, formationId: string,
+  options: { sourceIds?: string[]; accepts?: (id: number) => boolean } = {}): boolean {
+  const present = presentUnitIds(ctx.snap), accepts = options.accepts ?? (() => true)
+  for (const goal of ctx.goals.values()) {
+    if (terminal(goal.status)) continue
+    const spec = goal.activeSpec ?? goal.spec
+    if (spec.kind === 'production' && spec.formationId === formationId && spec.targetType !== 2 && !spec.maintainPower && (!options.sourceIds || options.sourceIds.includes(spec.id))) return true
+    if (spec.kind === 'formation' && spec.request.kind !== 'dissolveFormation' && spec.request.formationId === formationId && spec.request.unitIds.some(id => present.has(id) && accepts(id))) return true
+  }
+  return ctx.handoffs.some(handoff => {
+    const spec = ctx.goals.get(handoff.goalId)?.spec
+    const target = spec?.kind === 'formation' ? spec.request.formationId : spec?.kind === 'production' ? spec.formationId : undefined
+    return target === formationId && handoff.unitIds.some(id => present.has(id) && accepts(id))
+  })
+}
 export function baseConstraints(ctx: GoalContext): GoalConstraints {
   return { allowedUnitIds: [], enemyIds: ctx.snap.enemies.map(unit => unit.id), mapWidth: ctx.snap.mapWidth, mapHeight: ctx.snap.mapHeight, allowedActions: [] }
 }

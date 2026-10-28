@@ -14,6 +14,9 @@ export interface CommonGoalFacts {
 export interface GoalProgress {
   routeIndex?: number
   coverMotion?: import('./cover.ts').CoverMotion
+  coverEnded?: string
+  /** 解除掩护后继续原攻击的原掩护成员；不扩大到其他编队或后来无关产物。 */
+  coverReleasedIds?: number[]
   /** 已完成生产被追加总量时，保留前次完成事实供待生效/失败状态展示。 */
   completedQuantity?: number
   placementBlocked?: boolean
@@ -25,12 +28,12 @@ export interface GoalProgress {
   building?: import('./building.ts').BuildingState
 }
 export interface GoalFactKeys {
-  combat: 'routeIndex' | 'coverMotion'
+  combat: 'routeIndex' | 'coverMotion' | 'coverEnded'
   production: 'completedQuantity' | 'placementBlocked' | 'cancelProduction'
   repair: 'repair'
   relocate: 'relocation'
   mining: 'mining'
-  attack: 'attack' | 'coverMotion'
+  attack: 'attack' | 'coverMotion' | 'coverEnded' | 'coverReleasedIds'
   building: 'building'
   explore: never
   deploy: never

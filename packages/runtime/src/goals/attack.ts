@@ -3,18 +3,18 @@ import { initialAttack, planAttack, recordAttack } from '../attack.ts'
 import { attackRoster, validateAttackSources } from '../attack-selection.ts'
 import { baseConstraints, formationExists, idsValid, paused, projection, stringsValid, world } from './common.ts'
 import type { GoalContext, GoalHandler } from './types.ts'
-import { validateCoverMotion, emptyCoverMotion } from '../cover.ts'
+import { validateCoverMotion, emptyCoverMotion, coverMoves } from '../cover.ts'
 
-function roster(ctx: GoalContext<'attack'>) { return attackRoster(ctx.spec, ctx.goals, ctx.production, ctx.snap, ctx.goal.facts.attack) }
+function roster(ctx: GoalContext<'attack'>) { return [...new Set([...attackRoster(ctx.spec, ctx.goals, ctx.production, ctx.snap, ctx.goal.facts.attack), ...(ctx.goal.facts.coverReleasedIds ?? [])])] }
 function members(ctx: GoalContext<'attack'>) {
   const { spec, goal, snap, locked, formations } = ctx
   const membership = attackMembership(spec), ids = roster(ctx)
   return snap.self.filter(unit => ids.includes(unit.id) && !locked(unit.id) && (formations.ownerOf(unit.id) ?? undefined) === spec.formationId
-    && (membership.kind === 'selected' ? goal.spec.kind !== 'attack' || goal.spec.unitIds.includes(unit.id) : membership.names.includes(unit.name) && !!(unit.primaryWeapon || unit.secondaryWeapon))).map(unit => unit.id)
+    && (goal.facts.coverReleasedIds?.includes(unit.id) || (membership.kind === 'selected' ? goal.spec.kind !== 'attack' || goal.spec.unitIds.includes(unit.id) : membership.names.includes(unit.name) && !!(unit.primaryWeapon || unit.secondaryWeapon)))).map(unit => unit.id)
 }
 function plan(ctx: GoalContext<'attack'>) {
   const preparing = ctx.spec.preparationGoalIds.some(id => { const goal = ctx.goals.get(id); return goal && ['pending', 'active'].includes(goal.status) })
-  const retained = attackMembership(ctx.spec).kind === 'selected' && ctx.goal.spec.kind === 'attack' ? ctx.goal.spec.unitIds : roster(ctx)
+  const retained = attackMembership(ctx.spec).kind === 'selected' && ctx.goal.spec.kind === 'attack' ? [...new Set([...ctx.goal.spec.unitIds, ...(ctx.goal.facts.coverReleasedIds ?? [])])] : roster(ctx)
   return planAttack(ctx.spec, ctx.snap, members(ctx), ctx.goal.facts.attack ?? initialAttack(), preparing, retained)
 }
 export const attack: GoalHandler<'attack'> = {
@@ -28,6 +28,7 @@ export const attack: GoalHandler<'attack'> = {
   },
   validateFacts({ facts, activeSpec }) {
     validateCoverMotion(facts.coverMotion)
+    if (facts.coverReleasedIds && !idsValid(facts.coverReleasedIds, true)) throw new Error('解除掩护后的攻击成员非法')
     const state = facts.attack
     if (state && (!Array.isArray(state.members) || new Set(state.members.map(member => member.unitId)).size !== state.members.length || state.members.some(member => !Number.isSafeInteger(member.unitId) || typeof member.aircraft !== 'boolean' || !['pending', 'ready', 'attacking', 'fired', 'lost', 'released'].includes(member.phase) || [member.lastAmmo, member.lastCooldown, member.acceptedAt, member.firedAt].some(value => value !== undefined && !Number.isFinite(value))))) throw new Error('攻击与投弹进度非法')
     if (activeSpec && !state) throw new Error('攻击缺少执行进度')
@@ -55,8 +56,14 @@ export const attack: GoalHandler<'attack'> = {
   managedMembers: members,
   nativeActions(ctx) {
     const planned = plan(ctx), target = planned.view.targets[0]
-    if (!target) return []
     const motion = ctx.goal.facts.coverMotion ??= emptyCoverMotion()
+    if (!target) {
+      const objective = attackObjective(ctx.spec), destination = objective?.search.destination
+      if (objective?.search.kind !== 'region' || !destination) return []
+      const result = coverMoves({ runId: 'ordinary', version: '1', escortIds: [], gap: Number.MAX_SAFE_INTEGER, resumeGap: 1, retryTicks: 90 }, ctx.snap, planned.view.groundIds, destination, motion)
+      ctx.goal.facts.coverMotion = result.state
+      return result.actions
+    }
     const ids = planned.view.readyIds.filter(id => motion.orders[id]?.kind !== 'attack' || motion.orders[id]?.targetId !== target.id || ctx.snap.self.find(unit => unit.id === id)?.isIdle)
     return ids.length ? [{ kind: 'attack', unitIds: ids, targetId: target.id }] : []
   },

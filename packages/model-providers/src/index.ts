@@ -66,12 +66,11 @@ export class OpenAICompatibleProvider {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       if (opts.signal?.aborted) throw new ProviderError('已取消', undefined, false)
       try {
-        const text = await this.requestOnce(model, opts)
+        const result = await this.requestOnce(model, opts)
         return {
-          text,
+          ...result,
           model,
           durationMs: Date.now() - started,
-          usage: this.lastUsage,
         }
       } catch (err) {
         lastError = err instanceof ProviderError ? err : new ProviderError(String(err))
@@ -82,9 +81,7 @@ export class OpenAICompatibleProvider {
     throw lastError ?? new ProviderError('unreachable')
   }
 
-  private lastUsage?: GenerateResult['usage']
-
-  private async requestOnce(model: string, opts: GenerateOptions): Promise<string> {
+  private async requestOnce(model: string, opts: GenerateOptions): Promise<Pick<GenerateResult, 'text' | 'usage'>> {
     // 挂起保护：单请求 120s 硬超时（实测 GLM coding 端点在大 max_tokens 下可能长期不返回）。
     const timeoutSignal = AbortSignal.timeout(120_000)
     const signal = opts.signal ? AbortSignal.any([opts.signal, timeoutSignal]) : timeoutSignal
@@ -116,13 +113,13 @@ export class OpenAICompatibleProvider {
       choices?: Array<{ message?: { content?: string } }>
       usage?: { prompt_tokens?: number; completion_tokens?: number }
     }
-    this.lastUsage = {
+    const usage = {
       promptTokens: data.usage?.prompt_tokens,
       completionTokens: data.usage?.completion_tokens,
     }
     const text = data.choices?.[0]?.message?.content
     if (typeof text !== 'string') throw new ProviderError('响应缺少 content')
-    return text
+    return { text, usage }
   }
 }
 

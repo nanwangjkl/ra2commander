@@ -12,7 +12,7 @@ import { bindings, type BindingContext } from '../apps/companion/src/capabilitie
 import { retainBindingScope } from '../apps/companion/src/capabilities/binding-recovery.ts'
 import { normalizeOperations } from '../apps/companion/src/transcript-plan.ts'
 import { coverCombat, coverRangePairs } from '../packages/runtime/src/cover-combat.ts'
-import { harness, outcome, production, snapshot } from './helpers.ts'
+import { activate, harness, outcome, production, snapshot } from './helpers.ts'
 
 const policy: CoverPolicy = { runId: 'cover', version: '0.1.0', escortIds: [2], gap: 4, resumeGap: 2, retryTicks: 90 }
 const productionSource = `function step(s,m){const actions=[];for(const g of s.control.goals){if(g.spec.kind!=='production')continue;
@@ -283,9 +283,134 @@ test('掩护进攻使用同一协调器：主力打基地，IFV优先近处空�
   assert.ok(plan.actions.some(a => a.kind === 'move' && a.unitIds.includes(2) && a.x < snap.self[0]!.rx), '敌人从后方出现时掩护站到受护成员与敌人之间')
   assert.ok(coverRangePairs(p, snap, [1, 2], intent, emptyCoverMotion()).length <= 64)
   own.shift(); submitted.length = 0; await tick([base])
-  assert.ok(submitted.every(a => a.kind === 'stop'), '受护成员失效后不能继续追击旧目标')
-  assert.equal(await runtime.clearLostCover('1队'), true, '玩家新命令解除失去对象的旧掩护，剩余成员可继续行动')
+  assert.ok(submitted.some(a => a.kind === 'attack' && a.unitIds.includes(2) && a.targetId === 90 && !a.holdPosition), '受护成员全灭后，原掩护成员按普通编队继续攻击原目标')
+  assert.equal(await runtime.clearLostCover('1队'), false, '已经自动解除，无需等待玩家补发命令')
   assert.equal(formations.coverOf('1队'), undefined)
+})
+
+test('任一侧全灭后普通编队接续路线，保留进度与暂停状态，重启不恢复失效掩护', async () => {
+  for (const lost of ['escort', 'protected'] as const) {
+    const f = await fixture()
+    await executeCapabilities([
+      { capability: 'combat.move', params: { formationId: '1队', x: 40, y: 5 } },
+      { capability: 'combat.move', params: { formationId: '1队', x: 80, y: 5 } },
+    ], f.ctx, { text: '先去40再去80', prompts: f.prompts, catalog: f.catalog })
+    f.own.forEach(unit => { unit.rx = 40 }); await f.tick()
+    const goal = [...f.runtime.goals.values()].find(goal => goal.spec.kind === 'combat')!
+    assert.equal(goal.facts.routeIndex, 1)
+    await f.run('control.pause', { scope: 'formation', formationId: '1队' })
+    const survivors = f.own.filter(unit => lost === 'escort' ? unit.id <= 5 : unit.id > 5)
+    survivors.forEach(unit => { unit.rx = 45 })
+    f.submitted.length = 0; await f.tick(survivors)
+    assert.equal(f.formations.coverOf('1队'), undefined)
+    assert.equal(f.runtime.goalExecution(goal.spec.id)!.state, 'paused')
+    assert.equal(f.submitted.length, 0, '战损转换不能恢复玩家暂停的编队')
+    assert.equal([...f.runtime.skillRuns.values()][0]!.status, 'partial')
+    await f.run('control.resume', { scope: 'formation', formationId: '1队' })
+    f.submitted.length = 0; await f.tick(survivors)
+    assert.ok(f.submitted.some(action => action.kind === 'move' && action.x === 80 && action.unitIds.length === 5))
+    assert.equal(f.submitted.some(action => action.kind === 'stop'), false)
+    assert.match(f.runtime.goalExecution(goal.spec.id)!.detail!, /转为普通编队/)
+    assert.equal(goal.facts.routeIndex, 1)
+    const restored = await harness({ run: async () => outcome() }, { formations: new FormationRegistry() })
+    await restored.runtime.onSnapshot(f.runtime.snapshot!)
+    restoreState(restored.runtime, JSON.parse(JSON.stringify(persistState(f.runtime))))
+    await restored.runtime.onSnapshot({ ...f.runtime.snapshot!, seq: f.runtime.snapshot!.seq + 1 })
+    assert.equal(restored.formations.coverOf('1队'), undefined)
+    assert.equal(restored.runtime.goals.get(goal.spec.id)!.facts.routeIndex, 1)
+    assert.equal(restored.runtime.hasCover('1队'), false)
+  }
+})
+
+test('受护全灭后接管原掩护成员继续限定区域攻击，搜索和重启保留本次成员范围', async () => {
+  for (const prepared of [false, true]) {
+    const own: SnapshotUnit[] = [
+      { ...snapshot().self[0]!, id: 1, name: 'MTNK', speed: 27 },
+      { ...snapshot().self[0]!, id: 2, name: 'FV', speed: 39 },
+      { ...snapshot().self[0]!, id: 3, name: 'FV', speed: 39 },
+    ]
+    const env = await harness({ run: async () => outcome() }, { formations: new FormationRegistry() })
+    await env.runtime.onSnapshot(snapshot({ seq: 2, self: own, enemies: [] }))
+    env.formations.create('1队', [1, 2]); env.runtime.setCover('1队', { ...policy, escortIds: [2] })
+    if (prepared) {
+      const source = { ...production({ id: 'tank-source', formationId: '1队' }) }
+      activate(env.runtime, source)
+      env.runtime.production.push({ id: 'born', goalId: source.id, name: 'MTNK', quantity: 1, observedIds: [1], building: false, placed: false, state: 'submitted' })
+    }
+    env.runtime.upsertGoal({ id: 'attack', kind: 'attack', rawText: '1队坦克清理右侧基地', executionMode: 'native', formationId: '1队', unitIds: [1], aircraftIds: [], ammoCapacity: {},
+      preparationGoalIds: prepared ? ['tank-source'] : [], ...(prepared ? { membership: { kind: 'prepared' as const, goalIds: ['tank-source'], names: ['MTNK'], limit: 1 } } : {}), targetKind: 'base', targetNames: ['GACNST'],
+      objective: { target: { kind: 'base', names: ['GACNST'], region: { id: 'right', name: '右侧', polygons: [{ outer: [[60, 0], [99, 0], [99, 99], [60, 99], [60, 0]], holes: [] }] } }, search: { kind: 'region', destination: { x: 80, y: 5 } }, completion: { ground: 'continuous', aircraft: 'single-shot' } } })
+    env.runtime.activateNativeGoals('formation:1队')
+    const tick = async (self: SnapshotUnit[], enemies: SnapshotUnit[]) => env.runtime.onSnapshot({ ...env.runtime.snapshot!, seq: env.runtime.snapshot!.seq + 1, tick: env.runtime.snapshot!.tick + 30, self, enemies })
+    await tick(own, [])
+    const current = env.runtime.goals.get('attack')!.spec
+    if (current.kind !== 'attack') throw new Error('fixture')
+    env.runtime.upsertGoal({ ...current, id: 'next-attack', rawText: '下一条明确选择', unitIds: [1], membership: { kind: 'selected' }, preparationGoalIds: [] })
+    env.submitted.length = 0
+    await tick(own.slice(1), [])
+    assert.equal(env.formations.coverOf('1队'), undefined)
+    assert.ok(env.submitted.some(action => action.kind === 'move' && action.unitIds.includes(2) && action.x === 80), '没有可见敌人时继续原分区搜索')
+    assert.equal(env.submitted.some(action => 'unitIds' in action && action.unitIds.includes(3)), false, '不吸收未编队同型成员')
+    assert.equal(env.runtime.goals.get('attack')!.status, 'active')
+    assert.equal(env.runtime.goals.get('next-attack')!.facts.coverReleasedIds, undefined, '未生效的新命令仍保留自己的明确选择')
+    const restored = await harness({ run: async () => outcome() }, { formations: new FormationRegistry() })
+    await restored.runtime.onSnapshot(env.runtime.snapshot!)
+    restoreState(restored.runtime, JSON.parse(JSON.stringify(persistState(env.runtime))))
+    const targets = [
+      { ...own[0]!, id: 90, name: 'GACNST', type: 2, rx: 10 },
+      { ...own[0]!, id: 91, name: 'GACNST', type: 2, rx: 70 },
+      { ...own[0]!, id: 92, name: 'ORCA', type: 1, zone: 1, rx: 71 },
+    ]
+    await restored.runtime.onSnapshot({ ...env.runtime.snapshot!, seq: env.runtime.snapshot!.seq + 1, tick: env.runtime.snapshot!.tick + 30, self: own.slice(1), enemies: targets })
+    assert.ok(restored.submitted.some(action => action.kind === 'attack' && action.targetId === 91 && action.unitIds.includes(2) && !action.holdPosition))
+    assert.ok(restored.submitted.every(action => action.kind !== 'attack' || action.targetId === 91), '失去掩护后仍保留原目标类型和区域')
+    assert.deepEqual(restored.runtime.goals.get('attack')!.facts.coverReleasedIds, [2])
+  }
+})
+
+test('战损转普通编队后，迟到的停车交接不能重新安装旧掩护', async () => {
+  const f = await fixture(), run = [...f.runtime.skillRuns.values()][0]!
+  const incoming = { ...f.own[0]!, id: 100 }
+  await f.tick([...f.own, incoming])
+  activate(f.runtime, { id: 'late-handoff', kind: 'formation', rawText: '加入后保持掩护', cover: f.formations.coverOf('1队')!, request: { kind: 'transferUnits', formationId: '1队', unitIds: [100] } })
+  f.formations.transfer([100], '1队')
+  f.runtime.handoffs.push({ goalId: 'late-handoff', unitIds: [100], owners: [[100, '1队']] })
+  await f.tick([...f.own.filter(unit => unit.id <= 5), incoming])
+  assert.equal(f.formations.coverOf('1队'), undefined)
+  assert.equal(run.status, 'partial')
+  assert.equal(f.runtime.handoffs.length, 0)
+  await f.tick([...f.own.filter(unit => unit.id <= 5), incoming])
+  assert.equal(f.runtime.hasCover('1队'), false)
+})
+
+test('缺少一侧时等待明确的生产与停车交接，准备结束仍缺员才转普通编队', async () => {
+  for (const lost of ['escort', 'protected'] as const) {
+    const f = await fixture()
+    const source = production({ id: 'incoming', formationId: '1队', target: lost === 'escort' ? 'ADOG' : 'MTNK', targetType: lost === 'escort' ? 3 : 7 })
+    activate(f.runtime, source)
+    const run = [...f.runtime.skillRuns.values()][0]!
+    assert.equal(run.kind, 'cover')
+    if (run.kind !== 'cover') throw new Error('fixture')
+    const next = { ...f.formations.coverOf('1队')!, ...(lost === 'escort' ? { escortSources: [{ goalId: source.id, quantity: 1 }] } : { protectedSources: [source.id] }) }
+    run.cover = next; run.preparationGoalIds.push(source.id); f.runtime.setCover('1队', next)
+    await f.run('combat.move', { formationId: '1队', x: 80, y: 5 })
+    const survivors = f.own.filter(unit => lost === 'escort' ? unit.id <= 5 : unit.id > 5)
+    await f.tick(survivors)
+    assert.ok(f.formations.coverOf('1队'), '本次还有明确待生产成员时不误判一侧全灭')
+    const incoming = { ...f.own[lost === 'escort' ? 5 : 0]!, id: 100 }
+    await f.tick([...survivors, incoming])
+    activate(f.runtime, { id: 'handoff', kind: 'formation', rawText: '补入现有成员', request: { kind: 'transferUnits', formationId: '1队', unitIds: [100] } })
+    await f.runtime.cancelGoal(source.id)
+    // 来源已经取消，但现有成员正在交接，仍不能丢掉掩护关系。
+    if (lost === 'escort') { run.escortIds.push(100); f.formations.coverOf('1队')!.escortIds.push(100) }
+    await f.tick([...survivors, incoming])
+    assert.ok(f.formations.coverOf('1队'))
+    f.formations.transfer([100], '1队')
+    await f.tick([...survivors, incoming])
+    assert.ok(f.formations.coverOf('1队'))
+    await f.tick(survivors)
+    assert.equal(f.formations.coverOf('1队'), undefined, '准备与交接都结束后，一侧真正耗尽转为普通编队')
+  }
 })
 
 test('同句已生产掩护成员且未重复指定数量时，关联整批来源而不额外再造一辆', async () => {

@@ -211,6 +211,7 @@ async function main(): Promise<void> {
       console.log(`[companion] 当前对局 ${snap.sessionKey}，tick=${snap.tick}，己方=${snap.self.length}`)
     }
     const advance = runtime.onSnapshot(snap)
+    commandContext?.transcripts?.setSession(runtime.battleKey)
     if (commandContext && mapAttemptSession !== runtime.battleKey) {
       mapAttemptSession = runtime.battleKey
       void bindDefaultMap(commandContext).catch(error => console.log(`[companion] 默认分区绑定失败：${String(error)}`))
@@ -348,7 +349,7 @@ async function main(): Promise<void> {
   }
 
   runtime.cancelAllCommands()
-  ctx.transcriptAbort?.abort(new Error('伴随程序正在退出'))
+  ctx.transcripts?.cancelAll(new Error('伴随程序正在退出'))
   api.close()
   records.observe(runtime)
   records.close()
