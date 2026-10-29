@@ -124,6 +124,8 @@ export class BattleRecords {
       if ((entry.schemaVersion ?? 1) >= 2) record.observations = [decodeObservation(record.observations.at(-1) ?? {}, value, record.observationCount, entry.schemaVersion)]
       else record.observations = [value]
       record.observationCount++
+      const last = record.observations[0]!, battle = this.journal(record.id).objects.unpack(last.battle) as import('@ra2c/contracts').BattleStatus | undefined
+      if (battle?.phase === 'ended' && battle.outcome) record.result = { outcome: battle.outcome, tick: Number(last.tick), evidence: battle.evidence }
       observation?.(record.observations[0]!)
     }
     record.schemaVersion = Math.max(record.schemaVersion, entry.schemaVersion ?? 1) as BattleRecord['schemaVersion']
@@ -151,7 +153,7 @@ export class BattleRecords {
     const snap = runtime.snapshot
     if (!snap) return
     const previous = this.fingerprints.get(snap.sessionKey)
-    const stages = JSON.stringify([[...runtime.goals].map(([id, goal]) => [id, goal.status]), [...runtime.programs].map(([id, program]) => [id, program.status, program.compileError, program.stats.errors, program.stats.lastError]), runtime.factoryRallies.state.settings])
+    const stages = JSON.stringify([[...runtime.goals].map(([id, goal]) => [id, goal.status]), [...runtime.programs].map(([id, program]) => [id, program.status, program.compileError, program.stats.errors, program.stats.lastError]), runtime.factoryRallies.state.settings, snap.battle?.phase, snap.battle?.outcome])
     const full = force || !previous || previous.stages !== stages
     if (!full && snap.tick - previous.tick < 60) return
     const facts = {
@@ -171,10 +173,10 @@ export class BattleRecords {
       programs: [...runtime.programs.values()].map(program => ({ id: program.id, status: program.status, goalIds: program.goalIds, activeGoalIds: program.activeGoalIds,
         script: program.script, compileError: program.compileError, errors: program.stats.errors, rejected: program.stats.rejected, lastError: program.stats.lastError })),
     }
-    if (!full && !facts.goals.length && !facts.programs.length && !facts.factoryRallies.settings.length) return
-    const observation = { credits: snap.credits,
+    if (!full && !facts.goals.length && !facts.programs.length && !facts.factoryRallies.settings.length && snap.battle?.phase !== 'ended') return
+    const observation = { credits: snap.credits, battle: snap.battle,
       map: { width: snap.mapWidth, height: snap.mapHeight }, power: snap.production?.power, queues: snap.production?.queues,
-      self: snap.self.map(unit => ({ id: unit.id, name: unit.name, type: unit.type, rx: unit.rx, ry: unit.ry, elevation: unit.elevation, isIdle: unit.isIdle, harvester: unit.harvester, naval: unit.naval, speed: unit.speed, velocity: unit.velocity, zone: unit.zone, hitPoints: unit.hitPoints, maxHitPoints: unit.maxHitPoints, ammo: unit.ammo, hasWrenchRepair: unit.hasWrenchRepair, transport: unit.transport })), visibleEnemies: snap.enemies,
+      self: snap.self.map(unit => ({ id: unit.id, name: unit.name, type: unit.type, rx: unit.rx, ry: unit.ry, elevation: unit.elevation, isIdle: unit.isIdle, canDeploy: unit.canDeploy, isDeployed: unit.isDeployed, harvester: unit.harvester, naval: unit.naval, speed: unit.speed, velocity: unit.velocity, zone: unit.zone, hitPoints: unit.hitPoints, maxHitPoints: unit.maxHitPoints, ammo: unit.ammo, hasWrenchRepair: unit.hasWrenchRepair, transport: unit.transport })), visibleEnemies: snap.enemies,
       ...facts,
     }
     // 比较实际保存的战场内容；时间戳和采样序号不产生重复观察。
@@ -218,14 +220,14 @@ export class BattleRecords {
         const fields = pick(value, ['id', 'goalIds', 'commandId', 'owner', 'stage', 'version', 'repair', 'attempt', 'errors', 'error', 'reason', 'code'])
         return { ...fields, id: String(fields.id), goalIds: fields.goalIds as string[] }
       }),
-      observations: record.observations.length ? [pick(record.observations.at(-1)!, ['at', 'tick', 'credits', 'power', 'formations', 'production'])] : [],
+      observations: record.observations.length ? [pick(record.observations.at(-1)!, ['at', 'tick', 'credits', 'battle', 'power', 'formations', 'production'])] : [],
     }
   }
-  private info(record: Pick<StoredRecord, 'id' | 'sessionKey' | 'startedAt' | 'updatedAt' | 'feedback' | 'events' | 'transcripts'>): BattleRecordInfo & { sessionKey: string } {
+  private info(record: Pick<StoredRecord, 'id' | 'sessionKey' | 'startedAt' | 'updatedAt' | 'feedback' | 'events' | 'transcripts' | 'result'>): BattleRecordInfo & { sessionKey: string } {
     const latest = new Map(record.feedback.map(item => [item.commandId, item]))
     return { id: record.id, sessionKey: record.sessionKey, startedAt: record.startedAt, updatedAt: record.updatedAt,
       commands: new Set([...record.events.map(event => event.commandId), ...Object.keys(record.transcripts)]).size,
-      feedback: latest.size, issues: [...latest.values()].filter(item => item.rating !== 'good').length }
+      feedback: latest.size, issues: [...latest.values()].filter(item => item.rating !== 'good').length, ...(record.result ? { result: record.result } : {}) }
   }
   list(): BattleRecordInfo[] {
     if (!existsSync(this.folder)) return []
@@ -317,7 +319,9 @@ export class BattleRecords {
     const fence = (value: string, lang = '') => { const ticks = '`'.repeat(Math.max(3, ...[...value.matchAll(/`+/g)].map(match => match[0].length + 1))); return `${ticks}${lang}\n${value}\n${ticks}` }
     const labels: Record<string, string> = { received: '已收到', understanding: '理解中', queued: '等待前序指令', understood: '已理解', binding: '绑定中', bound: '待生效', generating: '生成中', merged: '等待合并', effective: '脚本已生效', pending: '等待就绪', completed: '已完成', running: '执行中', continuous: '持续执行', paused: '暂停', faulted: '运行出错', blocked: '执行受阻', cancelled: '已取消', failed: '失败', partial: '部分执行', 'partial-completed': '部分完成' }
     const info = this.info(record)
+    const resultLine = record.result ? `对局结果：${record.result.outcome === 'victory' ? '胜利' : '失败'}（公开玩家状态确认，tick ${record.result.tick}）` : '对局结果：未记录；不根据最后敌人消失或断连猜测胜负'
     const lines = ['# 对局记录', '', `对局：${record.sessionKey || '未进入对局'}`, `开始：${new Date(record.startedAt).toLocaleString('zh-CN')}`, `最后记录：${new Date(record.updatedAt).toLocaleString('zh-CN')}`, `命令 ${info.commands} 条，已反馈 ${info.feedback} 条，其中待改进 ${info.issues} 条。`, '', '执行结果来自最后观察到的游戏事实；游戏关闭后不推断完成或胜负。用户反馈单独保留。', '完整请求、响应、状态变化与反馈在同目录 events.jsonl 中，供开发复盘使用。', '']
+    lines.splice(6, 0, resultLine)
     const ids = new Set([...record.events.map(event => event.commandId), ...Object.keys(record.transcripts)])
     const commandAt = (id: string) => Number(record.transcripts[id]?.at ?? record.events.find(event => event.commandId === id)?.at ?? 0)
     for (const id of [...ids].sort((a, b) => commandAt(a) - commandAt(b))) {

@@ -33,6 +33,18 @@ export interface CombatGoal extends GoalBase {
   attackRegion?: import('./spatial.ts').TargetRegion
 }
 export interface DeployGoal extends GoalBase { kind: 'deploy'; unitIds: number[]; target: string }
+export interface UnitDeploymentGoal extends GoalBase {
+  kind: 'unitDeploy'
+  unitIds: number[]
+  formationId?: string
+  deployed: boolean
+  transientNames?: string[]
+  excludedIds?: number[]
+  /** 只接收明确生产来源的产物，不凭兵种接管后来无关的新单位。 */
+  sources: Array<{ goalId: string; name: string; quantity: number }>
+  destination?: { x: number; y: number; name?: string }
+  targetRegion?: import('./spatial.ts').TargetRegion
+}
 export interface AttackGoal extends GoalBase {
   kind: 'attack'
   objective?: import('./attack-objective.ts').AttackObjective
@@ -110,8 +122,8 @@ export interface BuildingGoal extends GoalBase {
   operation: 'repair' | 'sell'
   unitIds: number[]
 }
-export type GoalSpec = CombatGoal | AttackGoal | ExploreGoal | DeployGoal | RelocateGoal | ProductionGoal | FormationGoal | ReinforceGoal | RallyGoal | TransportGoal | MiningGoal | RepairGoal | BuildingGoal
-export const goalOwner = (goal: GoalSpec): ScriptOwner => goal.kind === 'combat' || goal.kind === 'explore' || goal.kind === 'repair' || (goal.kind === 'mining' || goal.kind === 'attack') && goal.formationId ? { kind: 'formation', formationId: goal.formationId! } : { kind: 'global' }
+export type GoalSpec = CombatGoal | AttackGoal | ExploreGoal | DeployGoal | UnitDeploymentGoal | RelocateGoal | ProductionGoal | FormationGoal | ReinforceGoal | RallyGoal | TransportGoal | MiningGoal | RepairGoal | BuildingGoal
+export const goalOwner = (goal: GoalSpec): ScriptOwner => goal.kind === 'combat' || goal.kind === 'explore' || goal.kind === 'repair' || (goal.kind === 'mining' || goal.kind === 'attack' || goal.kind === 'unitDeploy') && goal.formationId ? { kind: 'formation', formationId: goal.formationId! } : { kind: 'global' }
 
 export interface ScriptAction { goalId: string; request: ActionRequest | FormationRequest }
 /** 本步部队主体是否抵达目的地；宿主与脚本共用，不要求全队挤到同一点。 */
@@ -139,6 +151,7 @@ export interface GoalView {
   relocation?: { phase: 'packing' | 'moving' | 'deploying' | 'confirming' | 'completed' | 'failed'; unitId: number; destination: { x: number; y: number }; action?: ActionRequest; detail: string }
   mining?: { actions: ActionRequest[]; knownOre: number; assigned: number; total: number; detail: string }
   building?: { actions: ActionRequest[]; completed: number; total: number; failed: number; pending: boolean; detail: string }
+  unitDeployment?: { actions: ActionRequest[]; completed: number; total: number; failed: number; pending: boolean; detail: string }
   attack?: { readyIds: number[]; pendingIds: number[]; attackingIds: number[]; firedIds: number[]; lostIds: number[]; totalAircraft: number; groundIds: number[]; targets: import('./index.ts').SnapshotUnit[]; preparing: boolean; detail: string }
   exploration?: { seen: number; total: number; coverageRatio: number; regions: Array<{ id: string; name: string; seen: number; total: number; satisfied: boolean; deferred: boolean }>; targets: Array<{ unitId: number; x: number; y: number; regionId: string }> }
   repair?: {

@@ -11,6 +11,7 @@ import type { TaskRuntime } from './index.ts'
 import type { Formation } from './formation.ts'
 import { skillGoalIds, type ExplorationMap, type ExplorationProgress, type SkillRun } from './exploration.ts'
 import type { GoalState, ProgramState, ProductionRecord, Handoff } from './state.ts'
+import type { Snapshot } from '@ra2c/contracts'
 
 export interface PersistedState {
   version: 3 | 4
@@ -27,10 +28,11 @@ export interface PersistedState {
   exploration?: { maps: ExplorationMap[]; progress: ExplorationProgress[] }
   skillRuns?: SkillRun[]
   factoryRallies?: FactoryRallyState
+  battleResult?: NonNullable<Snapshot['battle']>
   productionExits?: ProductionExitState
 }
 export function persistState(runtime: TaskRuntime): PersistedState {
-  return structuredClone({ version: 4, productionExits: runtime.productionExits.state, factoryRallies: runtime.factoryRallies.state, exploration: { maps: [...runtime.exploration.maps.values()], progress: [...runtime.exploration.progress.values()] }, skillRuns: [...runtime.skillRuns.values()], session: runtime.session, sessionKey: runtime.battleKey, savedAt: Date.now(), formations: runtime.formations.list(), programs: [...runtime.programs.values()], goals: [...runtime.goals], production: runtime.production, seenUnitIds: [...runtime.seenUnitIds], pausedQueues: [...runtime.pausedQueues], handoffs: runtime.handoffs })
+  return structuredClone({ version: 4, ...(runtime.battleResult ? { battleResult: runtime.battleResult } : {}), productionExits: runtime.productionExits.state, factoryRallies: runtime.factoryRallies.state, exploration: { maps: [...runtime.exploration.maps.values()], progress: [...runtime.exploration.progress.values()] }, skillRuns: [...runtime.skillRuns.values()], session: runtime.session, sessionKey: runtime.battleKey, savedAt: Date.now(), formations: runtime.formations.list(), programs: [...runtime.programs.values()], goals: [...runtime.goals], production: runtime.production, seenUnitIds: [...runtime.seenUnitIds], pausedQueues: [...runtime.pausedQueues], handoffs: runtime.handoffs })
 }
 
 /** 恢复前先观察页面；持久化文件不能替代当前对局身份证明。 */
@@ -41,6 +43,7 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
   if (!Array.isArray(state.programs) || !Array.isArray(state.goals) || !Array.isArray(state.formations) || !Array.isArray(state.production) || !Array.isArray(state.handoffs) || !Array.isArray(state.seenUnitIds) || !Array.isArray(state.pausedQueues)) throw new Error('状态结构不完整')
   const ids = new Set(state.goals.map(([id]) => id))
   if (state.factoryRallies) validateFactoryRallies(state.factoryRallies, runtime.snapshot)
+  if (state.battleResult && (state.battleResult.phase !== 'ended' || !['victory', 'defeat'].includes(state.battleResult.outcome ?? '') || state.battleResult.evidence !== 'public-player-status' || !Array.isArray(state.battleResult.players) || state.battleResult.players.some(player => typeof player.name !== 'string' || [player.allied, player.defeated, player.combatant, player.isObserver].some(flag => typeof flag !== 'boolean')))) throw new Error('对局结束状态非法')
   if (state.productionExits) validateProductionExits(state.productionExits, runtime.snapshot)
   if (ids.size !== state.goals.length) throw new Error('重复目标 ID')
   const programIds = new Set(state.programs.map(p => p.id))
@@ -52,6 +55,7 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
     if (id !== goal.spec.id || !programIds.has(goal.ownerId) || goal.ownerId !== ownerId(goalOwner(goal.spec)) || (goal.activeSpec && (goal.activeSpec.id !== id || goal.activeSpec.kind !== goal.spec.kind || goalExecutionMode(goal.activeSpec) !== goalExecutionMode(goal.spec) || ownerId(goalOwner(goal.activeSpec)) !== goal.ownerId)) || !goal.facts || !Array.isArray(goal.facts.members) || !['pending', 'active', 'completed', 'partial', 'failed', 'cancelled'].includes(goal.status)) throw new Error('目标状态非法')
     for (const spec of [goal.spec, goal.activeSpec]) if (spec) {
       validateGoalSpec(spec, runtime.snapshot)
+      if (spec.kind === 'unitDeploy' && spec.sources.some(source => { const goal = state.goals.find(([id]) => id === source.goalId)?.[1]; return goal?.spec.kind !== 'production' || goal.spec.target !== source.name || source.quantity > goal.spec.quantity })) throw new Error('部署生产来源不匹配')
       if (spec.kind === 'attack') validateAttackSources(spec, new Map(state.goals))
       if (spec.kind === 'production' && spec.afterGoalId && state.goals.some(([key, target]) => key === spec.afterGoalId && target.spec.kind !== 'relocate')) throw new Error('建筑搬迁依赖非法')
     }
@@ -140,11 +144,14 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
   runtime.handoffs.push(...structuredClone(state.handoffs))
   if (state.factoryRallies) runtime.factoryRallies.state = structuredClone({ ...state.factoryRallies, settings: state.factoryRallies.settings.map(setting => ({ ...setting, status: setting.status === 'prepared' ? 'unknown' as const : setting.status })) })
   if (state.productionExits) runtime.productionExits.restore(state.productionExits)
+  if (!runtime.battleResult && state.battleResult) runtime.battleResult = structuredClone(state.battleResult)
   if (state.version === 4) {
     for (const map of state.exploration!.maps) runtime.exploration.maps.set(map.id, structuredClone(map))
     for (const progress of state.exploration!.progress) runtime.exploration.progress.set(progress.goalId, structuredClone(progress))
     for (const run of state.skillRuns!) runtime.skillRuns.set(run.id, structuredClone(run))
   }
+  // 第一份快照可能已经结束；恢复不能等待不存在的下一帧才收尾。
+  runtime.finishBattle()
   return state.programs.filter(p => p.script).length
 }
 

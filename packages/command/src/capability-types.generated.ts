@@ -1,5 +1,5 @@
 // 由 prompts/capabilities/*.md 生成；修改定义后运行 pnpm capabilities:generate。
-export const CAPABILITY_CONTRACT_VERSION = '86193767a24a5cd717bb54dbb78fe3ace86752169d90e3c5de5b3c523f012c68'
+export const CAPABILITY_CONTRACT_VERSION = '35e4defafbd05baaef44a5c13bb307ae828c85f0ee8cee27e272a12a3491823a'
 export interface CapabilityParameters {
   "base.deploy": Record<string, never>
   "base.relocate": { regionName?: string; x?: number; y?: number; unitId?: number }
@@ -31,6 +31,7 @@ export interface CapabilityParameters {
   "skill.cancel": { runId?: string; skillId?: string; all?: boolean }
   "skill.run": { skillId: string; quantity?: number; memberSource?: "auto" | "existing" | "new"; useExisting?: boolean; formationId?: string; followFormationId?: string; regionName?: string; selector?: string; unitIds?: number[]; protectedSelector?: string; protectedQuantity?: number; protectedUnitIds?: number[] }
   "transport.enter": { unitIds: number[]; transportId: number }
+  "unit.deploy": { selector?: string; unitIds?: number[]; formationId?: string; quantity?: number | 'all'; deployed?: boolean; source?: "auto" | "existing" | "production"; regionName?: string; x?: number; y?: number }
   "vehicle.repair": { formationId: string; followFormationId?: string; targetId?: number }
 }
 export interface ResolvedCapabilityParameters {
@@ -64,6 +65,7 @@ export interface ResolvedCapabilityParameters {
   "skill.cancel": { runId?: string; skillId?: string; all: boolean }
   "skill.run": { skillId: string; quantity?: number; memberSource?: "auto" | "existing" | "new"; useExisting?: boolean; formationId?: string; followFormationId?: string; regionName?: string; selector?: string; unitIds?: number[]; protectedSelector?: string; protectedQuantity?: number; protectedUnitIds?: number[] }
   "transport.enter": { unitIds: number[]; transportId: number }
+  "unit.deploy": { selector: string; unitIds?: number[]; formationId?: string; quantity: number | 'all'; deployed: boolean; source: "auto" | "existing" | "production"; regionName?: string; x?: number; y?: number }
   "vehicle.repair": { formationId: string; followFormationId?: string; targetId?: number }
 }
 export type CapabilityId = keyof CapabilityParameters

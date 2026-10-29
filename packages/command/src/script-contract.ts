@@ -1,4 +1,4 @@
-import { parse } from 'acorn'
+import { parse, type Node, type MemberExpression, type VariableDeclarator } from 'acorn'
 
 /**
  * 统一脚本契约：模型为控制对象的完整目标集合生成单个函数声明
@@ -76,6 +76,25 @@ export function compileChecks(code: string): string[] {
     const fn = ast.body[0]
     if (ast.body.length !== 1 || fn?.type !== 'FunctionDeclaration' || fn.id?.name !== 'step' || fn.async || fn.generator || fn.params.length !== 2 || fn.params.some(p => p.type !== 'Identifier')) {
       errors.push('代码必须且只能包含同步 function step(snapshot, memory) 声明，参数必须是两个普通标识符')
+    } else {
+      const parameter = fn.params[0]!
+      const root = parameter.type === 'Identifier' ? parameter.name : ''
+      let wrongPlan = false
+      const visit = (value: unknown): void => {
+        if (!value || typeof value !== 'object') return
+        const node = value as Node
+        if (node.type === 'MemberExpression') {
+          const member = node as MemberExpression
+          if (member.object.type === 'Identifier' && member.object.name === root && (member.computed ? member.property.type === 'Literal' && member.property.value === 'productionPlan' : member.property.type === 'Identifier' && member.property.name === 'productionPlan')) wrongPlan = true
+        }
+        if (node.type === 'VariableDeclarator') {
+          const declaration = node as VariableDeclarator
+          if (declaration.init?.type === 'Identifier' && declaration.init.name === root && declaration.id.type === 'ObjectPattern' && declaration.id.properties.some(property => property.type === 'Property' && (property.computed ? property.key.type === 'Literal' && property.key.value === 'productionPlan' : property.key.type === 'Identifier' && property.key.name === 'productionPlan' || property.key.type === 'Literal' && property.key.value === 'productionPlan'))) wrongPlan = true
+        }
+        for (const child of Object.values(node)) if (Array.isArray(child)) child.forEach(visit); else visit(child)
+      }
+      visit(fn.body)
+      if (wrongPlan) errors.push('productionPlan 位于 snapshot.control.goals 的每个目标上，快照根级不存在；请读取 goal.productionPlan')
     }
   } catch (err) {
     errors.push(`语法错误: ${String((err as Error).message).slice(0, 300)}`)

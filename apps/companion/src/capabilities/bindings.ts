@@ -14,6 +14,7 @@ import { bindAttack, bindClearRegion, bindAttackAll } from '../attack.ts'
 import { bindBuildingOperation } from '../building-operations.ts'
 import { bindCover } from './cover.ts'
 import { bindFactoryRally } from '../factory-rally.ts'
+import { bindUnitDeployment } from '../unit-deployment.ts'
 
 export interface BindingContext {
   ctx: CommandContext
@@ -28,6 +29,7 @@ export interface BindingContext {
   movementGoals: Map<string, CombatGoal>
   relocationIds: Map<string, string>
   productionGoals?: Map<string, ProductionGoal[]>
+  producedGoals?: ProductionGoal[]
 }
 export interface BoundCapability {
   skillRun?: SkillRun
@@ -103,6 +105,7 @@ function findGoal(context: BindingContext, token: string, includeCancelled = fal
 }
 
 export const bindings: Binders = {
+  'unit.deploy': bindUnitDeployment,
   'production.rally': bindFactoryRally,
   'formation.cover': bindCover,
   'formation.uncover': async (params, context) => {

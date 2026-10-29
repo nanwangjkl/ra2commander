@@ -211,7 +211,9 @@ export function validateActions(value: unknown, c: StepConstraints, snapshot?: S
       continue
     }
     if (a.kind === 'deploy') {
+      if (a.deployed !== undefined && typeof a.deployed !== 'boolean') return '部署目标状态非法'
       if (snapshot && a.unitIds.some(id => !snapshot.self.find(u => u.id === id)?.canDeploy)) return '单位当前不能展开'
+      if (a.deployed !== undefined && snapshot && a.unitIds.some(id => typeof snapshot.self.find(unit => unit.id === id)?.isDeployed !== 'boolean')) return '单位不支持可确认的部署姿态'
       continue
     }
     if (c.retreat?.active) {

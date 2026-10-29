@@ -61,6 +61,7 @@ export interface RuntimeDeps {
 }
 
 export class TaskRuntime {
+  battleResult: Snapshot['battle'] | undefined
   session = -1
   private sessionKey = ''
   private retiredSessions = new Set<string>()
@@ -124,6 +125,7 @@ export class TaskRuntime {
   goalExecution(id: string): GoalExecution | undefined {
     const goal = this.goals.get(id)
     if (!goal) return undefined
+    if (goal.facts.endedByBattle) return { state: goal.status as 'completed' | 'partial' | 'failed', detail: goal.facts.outcomeDetail ?? '对局已结束' }
     const handler = handlerFor(goal.spec)
     const terminal = this.latest && ['completed', 'partial', 'failed'].includes(goal.status) ? handler.terminalExecution?.(this.goalContext(goal.spec, this.latest)) : undefined
     if (terminal) return terminal
@@ -360,6 +362,7 @@ export class TaskRuntime {
   }
 
   upsertGoal(spec: GoalSpec): string {
+    if (this.battleResult?.phase === 'ended') throw new Error('对局已结束，请进入新对局后下令')
     spec = { ...normalizeAttackGoal(spec), executionMode: goalExecutionMode(spec) }
     if (spec.kind === 'rally') spec = { ...spec, unitIds: [...new Set(spec.unitIds)].filter(id => !this.formations.ownerOf(id) && this.latest?.self.some(u => u.id === id)) }
     this.validateGoal(spec)
@@ -710,7 +713,7 @@ export class TaskRuntime {
       let result: { stopIds: number[] } | void
       try { result = handler.observe?.(this.goalContext(spec, snap)) }
       catch (error) { if (goalExecutionMode(spec) !== 'native') throw error; this.nativeFault(goal, error); continue }
-      if (result?.stopIds.length) {
+      if (result?.stopIds.length && this.battleResult?.phase !== 'ended') {
         const program = this.programs.get(goal.ownerId)!
         void this.deps.submit([{ kind: 'stop', unitIds: result.stopIds }], snap, () => this.sessionKey === snap.sessionKey && this.goals.get(spec.id) === goal && program.activeGoalIds.includes(spec.id) && !program.activeGoalIds.some(id => id !== spec.id && this.goals.get(id)?.status === 'active')).catch(error => this.deps.log?.(String(error)))
       }
@@ -742,17 +745,39 @@ export class TaskRuntime {
       this.nextProgram = 0
       for (const unit of snap.self) this.seenUnitIds.add(unit.id)
     } else if (this.latest && snap.seq <= this.latest.seq) return
+    if (this.latest?.sessionKey !== snap.sessionKey) this.battleResult = undefined
+    if (snap.battle?.phase === 'ended') this.battleResult = structuredClone(snap.battle)
+    if (this.battleResult?.phase === 'ended') snap = { ...snap, battle: this.battleResult }
     this.latest = snap
     this.observe(snap)
-    this.syncSkillRuns()
+    if (this.battleResult?.phase === 'ended') this.finishBattle()
+    if (this.battleResult?.phase !== 'ended') this.syncSkillRuns()
     if (!this.draining) this.draining = this.drain().finally(() => { this.draining = undefined })
     await this.draining
+  }
+
+  /** 胜负来自公开玩家状态；停掉调度，不向已结束的对局补发停车或撤销生产。 */
+  finishBattle(): void {
+    const result = this.battleResult
+    if (result?.phase !== 'ended' || !result.outcome) return
+    if (this.latest && this.latest.battle !== result) this.latest = { ...this.latest, battle: result }
+    this.cancelAllCommands()
+    for (const goal of this.goals.values()) {
+      if (!['active', 'pending'].includes(goal.status)) continue
+      const combat = goal.spec.kind === 'combat' || goal.spec.kind === 'attack'
+      goal.status = combat ? result.outcome === 'victory' ? 'completed' : 'failed' : 'partial'
+      goal.facts.endedByBattle = result.outcome
+      goal.facts.outcomeDetail = `对局${result.outcome === 'victory' ? '胜利' : '失败'}，${combat ? '作战任务结束' : '后续任务停止，保留已完成进度'}`
+    }
+    for (const program of this.programs.values()) if (program.status !== 'stopped') program.status = 'idle'
+    for (const run of this.skillRuns.values()) if (!['completed', 'partial', 'failed', 'cancelled', 'superseded'].includes(run.status)) { run.status = 'partial'; run.detail = '对局已结束，停止后续 Skill 步骤' }
   }
 
   private async drain(): Promise<void> {
     let consumed: Snapshot | undefined
     while (this.latest && consumed !== this.latest) {
       const snap = this.latest
+      if (this.battleResult?.phase === 'ended') { this.finishBattle(); return }
       consumed = snap
       if ([...this.goals.values()].some(goal => ['active', 'pending'].includes(goal.status) && goal.spec.kind === 'production' && (goal.spec.targetType === 7 || goal.spec.targetType === 3))) this.factoryRallies.state.enabled = true
       if (this.productionExits.state.units.some(unit => unit.phase !== 'ready')) this.factoryRallies.state.enabled = true
@@ -912,6 +937,7 @@ export class TaskRuntime {
     const formationId = program.owner.formationId, policy = this.formations.coverOf(formationId), revision = this.formations.revision, generation = program.generation
     if (!policy || this.formations.membersOf(formationId).some(id => this.locked(id))) return
     const ids = this.formations.membersOf(formationId), previous = this.coverIdleOrders.get(formationId) ?? emptyCoverMotion()
+    if (snap.self.some(unit => ids.includes(unit.id) && unit.isDeployed)) return
     const intent: CoverIntent = { targets: [], threats: snap.enemies, region: { name: '掩护待命', x1: 0, y1: 0, x2: snap.mapWidth - 1, y2: snap.mapHeight - 1 }, waiting: false }
     const ranges = await this.deps.coverRanges?.(coverRangePairs(policy, snap, ids, intent, previous), snap).catch(() => []) ?? []
     const plan = coverCombat(policy, snap, ids, intent, previous, ranges)

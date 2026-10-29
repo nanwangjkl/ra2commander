@@ -18,6 +18,11 @@ export function retainBindingScope(original: unknown, replacement: unknown, prom
     }
     return prompts.capabilities.parse(corrected)
   }
+  if (previous.capability === 'unit.deploy') {
+    const corrected = prompts.capabilities.parse(replacement)
+    if (corrected.capability !== 'unit.deploy') throw new Error('部署绑定修正不能丢弃部署、改成仅移动或重新生产')
+    return prompts.capabilities.parse({ ...corrected, params: { ...corrected.params, ...previous.params } })
+  }
   if (!ATTACKS.has(previous.capability)) return prompts.capabilities.parse(replacement)
   const corrected = prompts.capabilities.parse(replacement)
   if (!ATTACKS.has(corrected.capability)) throw new Error('攻击绑定修正不能改成建队或其他全局操作')

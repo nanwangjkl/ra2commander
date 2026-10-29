@@ -24,6 +24,7 @@ export interface BattleRecord {
   sessionKey: string
   startedAt: number
   updatedAt: number
+  result?: { outcome: 'victory' | 'defeat'; tick: number; evidence: 'public-player-status' }
   events: CommandEvent[]
   transcripts: Record<string, Record<string, unknown>>
   compilations: Array<Record<string, unknown> & { id: string; goalIds: string[]; commandId?: string }>
@@ -38,4 +39,5 @@ export interface BattleRecordInfo {
   commands: number
   feedback: number
   issues: number
+  result?: BattleRecord['result']
 }

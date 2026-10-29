@@ -40,6 +40,7 @@ M1（公共 API 桥）与 M2 单队循环已实测：文本命令经云模型（
 | [基地搬迁与区域建造](doc/spec/base-relocation.md) | 如何收起基地、搬至分区重新展开，并等待搬迁后在区域内建造？ |
 | [指定分区采矿](doc/spec/regional-mining.md) | 如何指挥现有矿车采区内矿石，并保留正常采集、返厂与卸货？ |
 | [现有单位攻击与飞机出击](doc/spec/selected-attacks-and-sorties.md) | 如何不建队直接攻击，并让飞机等待装弹、投弹一次后完成？ |
+| [常规单位部署](doc/spec/unit-deployment.md) | 如何让大兵、辐射工兵等移动部署，衔接本次生产并确认实际姿态？ |
 | [游戏规则与战术约定](doc/spec/game-rules-and-tactics.md) | 如何按真实规则选择阵营项目、复用前置，并按目标组合战术提示？ |
 | [完整游戏目录与通用科技树](doc/spec/full-game-catalog.md) | 如何识别尚未解锁的单位与建筑，导入中文名称并自动补齐前置和生产设施？ |
 | [对局记录与命令反馈](doc/spec/battle-records.md) | 如何归档命令反馈、理解、代码和实际成果，导出紧凑单局提交包供开发复盘？ |

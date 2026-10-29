@@ -21,7 +21,7 @@ export interface BridgeState {
  * install() 必须在打开任何页面之前调用（exposeBinding/addInitScript 是 context 级）。
  */
 /** 桥版本（与 bridge.js 的 BRIDGE_VERSION 保持一致；升级后对已开页面重装）。 */
-const BRIDGE_VERSION = 19
+const BRIDGE_VERSION = 20
 
 export function isGameDocument(url: string, gameUrl: string): boolean {
   try {

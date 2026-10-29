@@ -9,6 +9,7 @@ export interface CommonGoalFacts {
   cancelReason?: string
   outcomeDetail?: string
   nativeError?: string
+  endedByBattle?: 'victory' | 'defeat'
 }
 /** 保持 v4 字段兼容，按目标类型列明进度归属。 */
 export interface GoalProgress {
@@ -27,6 +28,7 @@ export interface GoalProgress {
   mining?: import('./mining.ts').MiningState
   attack?: import('./attack.ts').AttackState
   building?: import('./building.ts').BuildingState
+  unitDeployment?: import('./unit-deployment.ts').UnitDeploymentState
 }
 export interface GoalFactKeys {
   combat: 'routeIndex' | 'coverMotion' | 'coverEnded'
@@ -36,6 +38,7 @@ export interface GoalFactKeys {
   mining: 'mining'
   attack: 'attack' | 'coverMotion' | 'coverEnded' | 'coverReleasedIds'
   building: 'building'
+  unitDeploy: 'unitDeployment'
   explore: never
   deploy: never
   formation: never

@@ -30,7 +30,7 @@ production：spec 含 target、quantity、prerequisites、queues、targetType。
 - 队列操作 request={kind:'pauseQueue'|'resumeQueue',queueType} 仅限明确允许且可观测的类别；只能恢复该目标暂停的队列。cancel 不可用。普通目标不主动操作队列。
 - blocked 表示目标当前阻塞，可继续处理其他目标。
 
-productionPlan 是宿主按本步规则与提交记录算好的事实：missingPrerequisites 是尚未满足的必要前置，pendingPrerequisites 是已有提交待完成的前置；availableToProduce 是当前有剩余额度、可造且有队列空位的候选；readyToPlace 是本步就绪且允许放置的建筑。优先使用这些事实，结合本步 constraints 和目标进度执行，不按游戏常识重算科技树，不重复提交前置。
+每个 goal.productionPlan 是宿主按本步规则与提交记录算好的事实：missingPrerequisites 是尚未满足的必要前置，pendingPrerequisites 是已有提交待完成的前置；availableToProduce 是当前有剩余额度、可造且有队列空位的候选；readyToPlace 是本步就绪且允许放置的建筑。必须从当前目标读取，不能读取不存在的 snapshot.productionPlan。优先使用这些事实，结合本步 constraints 和目标进度执行，不按游戏常识重算科技树，不重复提交前置。
 目标已经在 production.available 中时，引擎已确认前置满足，不再等待 spec.prerequisites 中的历史缺项，直接处理目标本身的剩余额度与放置。
 
 productionPlan.placement 存在时表示玩家明确指定了逐座方位：completed 只计实际位于要求方向的建筑，next 是本次待放置建筑的方向及参照点。仍然用普通 {kind:"place",name} 发起放置，宿主补齐当前约束；不要因已发 place 就切换方位，不按全部目标累计数量自己选方向。暂时无合法位置时保留就绪建筑，在原方向继续尝试，其他队列与目标继续；不擅自放到相反方向，不补造替代品。

@@ -8,6 +8,8 @@
 
 目录保存原生 ID、类型、中文和英文名称、前置及覆盖前置、国家限制、科技等级、工厂类别和必要角色事实；同时导入 `POWER/PROC/BARRACKS/FACTORY/RADAR/TECH` 类别以及国家清单。数据版本由三个来源文件的 SHA-256 计算，记录来源文件名与哈希，导入不添加时间戳，结果可重复生成；未包含占地的旧目录仍兼容。
 
+常规部署同时导入 `Deployer` 和 `UndeployDelay`，区分持续姿态与自动解除的短时技能；本局公开规则优先，公开 `isDeployed` 用于确认实际效果。`DeploysInto` 的建筑变形不自动纳入常规部署，灰熊变建筑的 Mod 能力按用户要求排除。详见[单位部署](unit-deployment.md)。
+
 `current-mod.md` 的 `catalogFile` 选择这份数据。它与 Markdown 模板、角色、战术和 Skill 共同计算提示版本，加载错误保留上一套完整定义。Markdown 维护常用别名、角色与策略；完整建造依赖不按单位逐条维护。
 
 ## 本局规则优先

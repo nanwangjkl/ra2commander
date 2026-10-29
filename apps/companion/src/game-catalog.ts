@@ -6,6 +6,8 @@ import { createRuleLookup } from './game-rules.ts'
 export interface CatalogItem extends RuleFacts {
   name: string; type: number; power: number; available: boolean
   deploysInto?: string | undefined
+  deployer?: boolean | undefined
+  undeployDelay?: number | undefined
   undeploysInto?: string | undefined
   ammo?: number | undefined
   unsellable?: boolean | undefined
@@ -103,7 +105,7 @@ export async function loadGameCatalog(ctx: CommandContext, check: () => void, pr
     const aliases = [...new Set([...profile.memberAliases(name), ...(entry ? [entry.label, entry.englishName] : [])])]
     const limitation = available.has(name) ? undefined : profile.limitation(name, snap.country, undefined, rule.techLevel)
     const label = rule.label ?? entry?.label
-    return { name, type, label, techLevel: rule.techLevel, limitation, power: rule.power ?? 0, deploysInto: rule.deploysInto, undeploysInto: rule.undeploysInto, ammo: rule.ammo, available: available.has(name),
+    return { name, type, label, techLevel: rule.techLevel, limitation, power: rule.power ?? 0, deploysInto: rule.deploysInto, undeploysInto: rule.undeploysInto, deployer: rule.deployer ?? entry?.deployer, undeployDelay: rule.undeployDelay ?? entry?.undeployDelay, ammo: rule.ammo, available: available.has(name),
       factions: profile.factionsFor(name), roles: profile.rolesFor(name, type, { ...rule, label: `${label ?? ''} ${rule.label ?? ''}` }), aliases,
       harvester: rule.harvester, naval: rule.naval, refinery: rule.refinery, constructionYard: rule.constructionYard, engineer: rule.engineer, unsellable: rule.unsellable }
   }))

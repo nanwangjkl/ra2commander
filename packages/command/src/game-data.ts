@@ -6,6 +6,7 @@ export interface GameDataEntry {
   prerequisite: string[]; prerequisiteOverride: string[]; owner: string[]; requiredHouses: string[]; forbiddenHouses: string[]
   techLevel: number; power: number; factory: string; buildCat: string
   deploysInto?: string; undeploysInto?: string
+  deployer?: boolean; undeployDelay?: number
   harvester: boolean; naval: boolean; refinery: boolean; constructionYard: boolean; engineer: boolean
   foundation?: { width: number; height: number }
 }
@@ -71,6 +72,7 @@ export function importGameData(rules: Buffer, strings: Buffer, gameId: string, a
         prerequisite: list(rule.PREREQUISITE), prerequisiteOverride: list(rule.PREREQUISITEOVERRIDE), owner: list(rule.OWNER), requiredHouses: list(rule.REQUIREDHOUSES), forbiddenHouses: list(rule.FORBIDDENHOUSES),
         techLevel: numeric('TECHLEVEL', -1), power: numeric('POWER', 0), factory: rule.FACTORY ?? '', buildCat: rule.BUILDCAT ?? '',
         ...(rule.DEPLOYSINTO ? { deploysInto: rule.DEPLOYSINTO } : {}), ...(rule.UNDEPLOYSINTO ? { undeploysInto: rule.UNDEPLOYSINTO } : {}),
+        ...(flag('DEPLOYER') ? { deployer: true, undeployDelay: numeric('UNDEPLOYDELAY', 0) } : {}),
         harvester: flag('HARVESTER'), naval: flag('NAVAL'), refinery: flag('REFINERY'), constructionYard: flag('CONSTRUCTIONYARD'), engineer: flag('ENGINEER'), ...(foundation ? { foundation } : {}) })
     }
   }
@@ -87,6 +89,7 @@ export function validateGameData(data: GameData): void {
   for (const item of data.entries) {
     if (!item || !/^[A-Za-z0-9_]+$/.test(item.name) || names.has(item.name) || ![1, 2, 3, 7].includes(item.type) || !item.label || !Number.isFinite(item.techLevel) || !Number.isFinite(item.power) || [item.prerequisite, item.prerequisiteOverride, item.owner, item.requiredHouses, item.forbiddenHouses].some(list => !Array.isArray(list) || list.some(value => typeof value !== 'string'))) throw new Error(`游戏目录条目非法：${item?.name}`)
     names.add(item.name)
+    if (item.deployer !== undefined && typeof item.deployer !== 'boolean' || item.undeployDelay !== undefined && (!Number.isFinite(item.undeployDelay) || item.undeployDelay < 0)) throw new Error(`单位部署规则非法：${item.name}`)
     if (item.foundation && (item.type !== 2 || ![item.foundation.width, item.foundation.height].every(value => Number.isSafeInteger(value) && value > 0 && value <= 32))) throw new Error(`建筑占地非法：${item.name}`)
   }
   for (const [category, entries] of Object.entries(data.categories)) if (!entries.length || entries.some(name => !names.has(name))) throw new Error(`前置类别引用不存在：${category}`)

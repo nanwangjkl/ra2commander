@@ -1,6 +1,7 @@
 import { ExplorationObserver } from './exploration.ts'
 import { MiningObserver } from './mining.ts'
 import { readFactorySites } from './factory-rally.ts'
+import { compileChecks } from '@ra2c/command'
 import { scriptedFixedKinds } from './execution-modes.ts'
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
@@ -250,6 +251,10 @@ async function main(): Promise<void> {
           if (program.status !== 'stopped') controller.activateNative(program.id)
           const waiting = program.goalIds.some(id => { const goal = runtime.goals.get(id); return goal && goal.spec.executionMode !== 'native' && !['cancelled', 'completed', 'partial', 'failed'].includes(goal.status) && JSON.stringify(goal.spec) !== JSON.stringify(goal.activeSpec) })
           if (waiting && program.status !== 'paused' && program.status !== 'stopped') void controller.refresh(program.id).catch(err => console.log(`[companion] 恢复待生效目标失败：${String(err)}`))
+          else if (program.status === 'active' && program.script) {
+            const errors = compileChecks(program.script.code)
+            if (errors.length) controller.fault(program.id, `恢复脚本不符合当前契约：${errors.join('；')}`)
+          }
         }
       }
     }).catch(err => console.error(`[runtime] 快照处理错误：${String(err)}`))

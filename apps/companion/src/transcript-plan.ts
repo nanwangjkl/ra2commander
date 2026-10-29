@@ -2,9 +2,11 @@ import type { CapabilityCall } from '@ra2c/command'
 import type { MapRegionIndex } from '../../../packages/maps/src/index.ts'
 import { chineseNumber, formationAlias, normalizeName } from './capabilities/selectors.ts'
 import type { GameCatalog } from './game-catalog.ts'
+import { normalizeDeployment } from './deployment-plan.ts'
 
 /** 纠正已确认的编队/地域误解；原位替换，保留同句话各操作的先后关系。 */
 export function normalizeOperations(text: string, operations: CapabilityCall[], map?: MapRegionIndex, catalog?: GameCatalog): CapabilityCall[] {
+  operations = normalizeDeployment(text, operations, map, catalog)
   const raw = normalizeName(text)
   const role = (value: string, name: 'aircraft' | 'tank') => catalog?.selectorHasRole(value, name) ?? (name === 'aircraft' ? /^(?:aircraft|飞机|空军)$/i : /^(?:tanks?|坦克|所有坦克)$/i).test(value)
 

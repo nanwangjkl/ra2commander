@@ -42,6 +42,51 @@ function pageBridge() {
   return { window, api, submitted, sample, next, poll: () => poll(), install, own, enemy, setTick: (value: number) => { tick = value } }
 }
 
+test('部署原语按实际姿态幂等提交，不将无姿态的 Mod 变形当成常规部署', () => {
+  const page = pageBridge()
+  page.own[0] = { ...page.own[0]!, name: 'E1', type: 3, canDeploy: true, isDeployed: false }
+  Object.assign(page.api, { deploy: (ids: number[]) => { page.submitted.push(ids); for (const id of ids) { const unit = page.own.find(unit => unit.id === id)!; unit.isDeployed = !unit.isDeployed } return true } })
+  let snap = page.sample()
+  assert.equal(snap.self[0]!.isDeployed, false)
+  const submit = (deployed: boolean) => page.window.__ra2cSubmit(snap.session, { kind: 'deploy', unitIds: [1], deployed }, snap.seq, snap.sessionKey)
+  assert.equal(submit(true).submitted, 1)
+  assert.equal(submit(true).submitted, 0, '旧快照期间也复查页面真实姿态')
+  snap = page.next()
+  assert.equal(snap.self[0]!.isDeployed, true)
+  assert.equal(submit(false).submitted, 1)
+  delete page.own[0]!.isDeployed
+  assert.equal(submit(true).reason, 'deployment-state-unavailable')
+  assert.equal(page.submitted.length, 2)
+})
+
+test('公开玩家状态确认胜负，最后不满采样间隔也补存结束，不凭敌人消失宣布胜利', () => {
+  const page = pageBridge()
+  let defeated = false
+  page.api.me = () => ({ credits: 1000, name: 'self', combatant: true, isObserver: false, defeated: false })
+  Object.assign(page.api, { players: () => [
+    { name: 'self', allied: true, combatant: true, isObserver: false, defeated: false },
+    { name: 'ally', allied: true, combatant: true, isObserver: false, defeated: false },
+    { name: 'opponent', allied: false, combatant: !defeated, isObserver: false, defeated },
+  ] })
+  let snap = page.sample()
+  assert.equal(snap.battle!.phase, 'playing')
+  page.enemy.length = 0
+  snap = page.next()
+  assert.equal(snap.battle!.phase, 'playing')
+  page.setTick(snap.tick + 1); defeated = true
+  page.poll()
+  const ended = page.window.__ra2cState()
+  assert.ok(ended.installed)
+  // 原采样间隔还没有过去，只靠轮询补采最终状态。
+  const final = page.sample()
+  assert.equal(final.battle!.outcome, 'victory')
+  assert.ok(final.seq > snap.seq)
+  assert.equal(page.window.__ra2cSubmit(final.session, { kind: 'stop', unitIds: [1] }, final.seq, final.sessionKey).reason, 'battle-ended')
+  page.api.me = () => ({ credits: 1000, name: 'self', combatant: false, isObserver: false, defeated: true })
+  page.next()
+  assert.equal(page.sample().battle!.outcome, 'defeat')
+})
+
 test('生产建筑集结原语走公开 Move 订单，拒绝车辆、建造厂、机场及失效目标', () => {
   const page = pageBridge()
   page.own[0] = { ...page.own[0]!, name: 'GAWEAP', type: 2 }

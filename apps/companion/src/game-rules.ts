@@ -5,6 +5,8 @@ export interface GameRule extends RuleFacts {
   prerequisite?: string[]
   prerequisiteOverride?: string[]
   deploysInto?: string
+  deployer?: boolean
+  undeployDelay?: number
   undeploysInto?: string
   buildCat?: number
   techLevel?: number

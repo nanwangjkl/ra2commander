@@ -36,6 +36,7 @@ export interface SnapshotUnit {
   velocity?: { x: number; y: number; z: number };
   zone?: number;
   canDeploy?: boolean;
+  isDeployed?: boolean;
   ammo?: number;
   hasWrenchRepair?: boolean;
   veteranLevel?: number;
@@ -61,6 +62,12 @@ export interface ProductionState {
 }
 
 /** 每个采样窗口回传一次的有界快照。 */
+export interface BattleStatus {
+  phase: 'playing' | 'ended'
+  outcome?: 'victory' | 'defeat'
+  evidence: 'public-player-status'
+  players: Array<{ name: string; allied: boolean; defeated: boolean; combatant: boolean; isObserver: boolean }>
+}
 export interface Snapshot {
   /** 会话代次：一局对局一个代次，换局递增。 */
   session: number;
@@ -72,6 +79,8 @@ export interface Snapshot {
   time: number;
   credits: number;
   country?: string;
+  /** 仅依据公开玩家战败状态；敌人离开视野不代表胜利。 */
+  battle?: BattleStatus;
   mapWidth: number;
   mapHeight: number;
   /** 己方全部单位（含建筑）。 */
@@ -100,7 +109,7 @@ export type ActionRequest =
   | { kind: 'repairBuilding'; unitIds: number[] }
   | { kind: 'sellBuilding'; unitIds: number[] }
   | { kind: 'stop'; unitIds: number[] }
-  | { kind: 'deploy'; unitIds: number[] }
+  | { kind: 'deploy'; unitIds: number[]; deployed?: boolean }
   | { kind: 'scatter'; unitIds: number[] }
   | { kind: 'guard'; unitIds: number[] }
   | { kind: 'produce'; name: string; quantity: number }

@@ -12,6 +12,17 @@ export async function releaseGlobalOrders(ctx: CommandContext, ids: number[]): P
   const edits: NonNullable<BoundCapability['goals']> = []
   for (const goal of ctx.runtime.goals.values()) {
     const spec = goal.spec
+    if (spec.kind === 'unitDeploy' && goal.ownerId === 'global' && ['pending', 'active'].includes(goal.status)) {
+      const sourceIds = spec.sources.flatMap(source => ctx.runtime.production.filter(record => record.goalId === source.goalId && record.name === source.name).flatMap(record => record.observedIds).slice(0, source.quantity))
+      const members = [...spec.unitIds, ...sourceIds].filter(id => !spec.excludedIds?.includes(id))
+      if (members.some(id => ids.includes(id))) {
+        const excludedIds = [...new Set([...(spec.excludedIds ?? []), ...members.filter(id => ids.includes(id))])]
+        const pending = spec.sources.some(source => ['pending', 'active'].includes(ctx.runtime.goals.get(source.goalId)?.status ?? '') && ctx.runtime.production.filter(record => record.goalId === source.goalId && record.name === source.name).flatMap(record => record.observedIds).length < source.quantity)
+        if (pending || members.some(id => !excludedIds.includes(id))) edits.push({ goal: { ...spec, unitIds: spec.unitIds.filter(id => !ids.includes(id)), excludedIds }, choice: '保留其余成员及同批后续产物的原部署目标' })
+        else await ctx.runtime.cancelGoal(spec.id, '所选单位已由新命令接管')
+      }
+      continue
+    }
     if (spec.kind === 'relocate' && ['pending', 'active'].includes(goal.status) && ids.includes(goal.facts.relocation?.unitId ?? spec.unitId)) {
       await ctx.runtime.cancelGoal(spec.id, '所选单位已由新命令接管')
       continue

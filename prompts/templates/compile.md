@@ -6,7 +6,8 @@ snapshot 包含 tick、credits、mapWidth、mapHeight、self、enemies、product
 生成请求中的 self/enemies 只取少量单位供理解；实际 step 收到完整采样快照，仍使用 self/enemies 这两个字段。
 self/enemies 中单位为 {id,name,type,rx,ry,hitPoints,maxHitPoints,isIdle,primaryWeapon?,secondaryWeapon?}。type: 1飞机、2建筑、3步兵、7车辆；武器含 minRange,maxRange,aa,ag。
 control.owner 标识全局或编队；control.formations 为当前编队成员。
-control.goals 每项为 {spec,unitIds,produceRemaining,submitted,observed,uncertain,lossRatio,retreatActive,blocked?,maxUnits?}。
+control.goals 每项为 {spec,unitIds,produceRemaining,submitted,observed,uncertain,lossRatio,retreatActive,blocked?,maxUnits?,productionPlan?}。
+productionPlan 属于每个生产目标：遍历 snapshot.control.goals 后读取 goal.productionPlan.readyToPlace / availableToProduce；快照根级没有 snapshot.productionPlan，不能从根级读取或用空对象代替目标事实。
 spec 含 id、kind、rawText 和目标参数。每步读取这些动态事实；不能把生成时的成员、剩余产量或阶段写死。新代码的 memory 从空对象开始，memory 仅保存临时选敌、站位和发令记忆，生产进度以目标事实为准。
 rawText 是玩家对该目标的实际指令，必须落实其中明确的目的地、行动顺序和停止条件。结构化字段描述成员、能力与边界，不能替代或覆盖玩家指令。
 

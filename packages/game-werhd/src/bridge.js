@@ -9,12 +9,12 @@
 // 且带性能护栏（超预算自动降频）。
 (() => {
   'use strict';
-  var BRIDGE_VERSION = 19;
+  var BRIDGE_VERSION = 20;
   if (window.__ra2cInstalled && window.__ra2cVersion === BRIDGE_VERSION) return;
   var upgrading = false;
   if (window.__ra2cInstalled && window.__ra2cSessionKey && typeof window.__ra2cSubmit === 'function') {
     // 空成员探测只读取旧桥的身份检查，不向游戏发令；换局/API变化不能沿用旧 UUID。
-    try { upgrading = window.__ra2cSubmit(window.__ra2cSession, { kind: 'stop', unitIds: [] }, 0, window.__ra2cSessionKey).reason === 'invalid-units'; } catch (e) {}
+    try { upgrading = ['invalid-units', 'battle-ended'].includes(window.__ra2cSubmit(window.__ra2cSession, { kind: 'stop', unitIds: [] }, 0, window.__ra2cSessionKey).reason); } catch (e) {}
   }
   if (window.__ra2cInterval) { try { clearInterval(window.__ra2cInterval) } catch (e) {} }
   window.__ra2cInstalled = true;
@@ -136,6 +136,7 @@
       velocity: u.velocity ? { x: u.velocity.x, y: u.velocity.y, z: u.velocity.z } : undefined,
       zone: u.zone,
       canDeploy: u.canDeploy,
+      isDeployed: u.isDeployed,
       ammo: u.ammo,
       hasWrenchRepair: u.hasWrenchRepair,
       veteranLevel: u.veteranLevel,
@@ -143,6 +144,18 @@
       secondaryWeapon: u.secondaryWeapon,
       transport: u.transport ? { occupied: u.transport.occupied, capacity: u.transport.capacity, unitIds: u.transport.unitIds.slice(), passengers: u.transport.unitIds.map(function (id) { return identities[id] }).filter(Boolean) } : undefined,
     };
+  }
+
+  function battleStatus(w) {
+    if (typeof w.players !== 'function') return undefined;
+    try {
+      var me = w.me(), players = w.players().map(function (player) {
+        return { name: player.name, allied: !!player.allied, defeated: !!player.defeated, combatant: !!player.combatant, isObserver: !!player.isObserver };
+      });
+      var enemies = players.filter(function (player) { return player.name !== me.name && !player.allied && !player.isObserver && (player.combatant || player.defeated) });
+      var outcome = me && !me.isObserver ? me.defeated ? 'defeat' : me.combatant && enemies.length && enemies.every(function (player) { return player.defeated }) ? 'victory' : undefined : undefined;
+      return { phase: outcome ? 'ended' : 'playing', outcome: outcome, evidence: 'public-player-status', players: players };
+    } catch (_) { return undefined; }
   }
 
   function collect(w) {
@@ -172,6 +185,7 @@
       mapHeight: size.height,
       self: self,
       enemies: enemies,
+      battle: battleStatus(w),
     };
     // 生产态势：队列/电力/可造清单（M3）。采集失败不影响战斗快照。
     try {
@@ -248,6 +262,7 @@
     if (session !== currentSession() || sessionKey !== window.__ra2cSessionKey) {
       return { ok: false, reason: 'stale-session', submitted: 0, session: currentSession() };
     }
+    if (battleStatus(w)?.phase === 'ended') return { ok: false, reason: 'battle-ended', submitted: 0, session: session };
     // 停车不依赖旧位置，允许宿主撤权后用同局稍早的快照紧急停车。
     if (action.kind !== 'stop' && expectedSeq !== seq) return { ok: false, reason: 'stale-snapshot', submitted: 0, session: currentSession() };
     var alive = {};
@@ -351,6 +366,17 @@
         }
         case 'stop': w.stop(ids); break;
         case 'deploy':
+          if (action.deployed !== undefined) {
+            if (typeof action.deployed !== 'boolean') return { ok: false, reason: 'invalid-deployment-state', submitted: 0, session: session };
+            var changed = [];
+            for (var di = 0; di < ids.length; di++) {
+              var member = w.unit(ids[di]);
+              if (!member || typeof member.isDeployed !== 'boolean') return { ok: false, reason: 'deployment-state-unavailable', submitted: 0, session: session };
+              if (member.isDeployed !== action.deployed) changed.push(ids[di]);
+            }
+            ids = changed;
+            if (!ids.length) return { ok: true, reason: 'already-in-deployment-state', submitted: 0, session: session };
+          }
           if (!w.deploy(ids)) return { ok: false, reason: 'deploy-rejected', submitted: 0, session: session };
           break;
         case 'scatter': ids.forEach(function (id) { w.order([id], { type: 16 }); }); break;
@@ -366,11 +392,16 @@
   // 主循环：发现新对局 → 递增代次并挂接；发现 API 消失 → 递增代次；
   // 发现挂接丢失（onTick 被替换后不再更新 lastTickAt）→ 重挂同代次。
   var previousApi = upgrading ? window.werhd : undefined;
+  var finalSession = '';
   window.__ra2cInterval = setInterval(function () {
     var hasApi = !!window.werhd;
     if (hasApi && window.werhd !== previousApi) bumpSession('api-appeared');
     if (!hasApi && previousApi) bumpSession('api-removed');
     previousApi = window.werhd;
+    // 最后一帧可能不落在采样间隔内；公开玩家状态确认结束时补采一次。
+    if (hasApi && window.__ra2cSessionKey && finalSession !== window.__ra2cSessionKey && battleStatus(window.werhd)?.phase === 'ended') {
+      try { if (window.__ra2cSnapshot) { window.__ra2cSnapshot(collect(window.werhd)); finalSession = window.__ra2cSessionKey } } catch (_) {}
+    }
     if (hasApi && (hookedSession !== currentSession() || Date.now() - lastTickAt > 4000)) {
       hook();
     }

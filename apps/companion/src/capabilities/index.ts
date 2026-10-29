@@ -61,6 +61,7 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
     movementGoals: new Map(),
     relocationIds: new Map(),
     productionGoals: new Map(),
+    producedGoals: [],
     game: prompts.game,
     prompts,
     commandId: options.commandId ?? `cmd-${randomUUID()}`,
@@ -73,7 +74,8 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
     for (const value of values) {
       try { const call = prompts.capabilities.parse(value); if (call.capability === 'base.relocate' && !context.relocationIds.has(relocationKey(call.params))) context.relocationIds.set(relocationKey(call.params), `command-${randomUUID().slice(0, 8)}`) } catch { /* 正式绑定时反馈 */ }
     }
-    values = [...values].sort((a, b) => Number(priorityCall(b as CapabilityCall)) - Number(priorityCall(a as CapabilityCall)) || Number((b as CapabilityCall)?.capability === 'base.relocate') - Number((a as CapabilityCall)?.capability === 'base.relocate'))
+    const followsProduction = (value: unknown) => { const call = value as CapabilityCall; return Number(call?.capability === 'unit.deploy' && call.params.source === 'production') }
+    values = [...values].sort((a, b) => Number(priorityCall(b as CapabilityCall)) - Number(priorityCall(a as CapabilityCall)) || Number((b as CapabilityCall)?.capability === 'base.relocate') - Number((a as CapabilityCall)?.capability === 'base.relocate') || followsProduction(a) - followsProduction(b))
     for (const value of values) {
       try {
         check()
@@ -101,6 +103,7 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
               const pending = context.productionGoals!.get(item.goal.formationId) ?? []
               context.productionGoals!.set(item.goal.formationId, [...pending.filter(goal => goal.id !== item.goal.id), item.goal])
             }
+            if (item.goal.kind === 'production') context.producedGoals = [...context.producedGoals!.filter(goal => goal.id !== item.goal.id), item.goal]
             if (item.goal.kind === 'combat') {
               if (call.capability === 'combat.move' && item.goal.destination) context.movementGoals.set(item.goal.formationId, item.goal)
               else context.movementGoals.delete(item.goal.formationId)

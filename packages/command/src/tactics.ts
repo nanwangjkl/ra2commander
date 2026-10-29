@@ -4,7 +4,7 @@ import type { GoalSpec } from '@ra2c/contracts'
 
 type Stage = 'interpret' | 'compile'
 interface Tactic { id: string; stages: Stage[]; always?: boolean; goalKinds?: GoalSpec['kind'][]; recovery?: boolean; text: string; source: string }
-const GOAL_KINDS: Record<GoalSpec['kind'], true> = { production: true, combat: true, attack: true, explore: true, formation: true, reinforce: true, rally: true, deploy: true, relocate: true, transport: true, mining: true, repair: true, building: true }
+const GOAL_KINDS: Record<GoalSpec['kind'], true> = { production: true, combat: true, attack: true, explore: true, formation: true, reinforce: true, rally: true, deploy: true, unitDeploy: true, relocate: true, transport: true, mining: true, repair: true, building: true }
 
 export class TacticLibrary {
   private readonly tactics: Tactic[]
