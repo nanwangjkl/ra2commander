@@ -12,7 +12,7 @@ import { cancellationDetail, observeCancellations, pendingProduction, prepareCan
 import { ExplorationStore, skillGoalIds, type SkillRun } from './exploration.ts'
 import { RecoveryMonitor } from './recovery.ts'
 import { handlerFor, validateGoalSpec, validateGoalFacts } from './goals/index.ts'
-import { formationPreparing, presentUnitIds } from './goals/common.ts'
+import { formationPreparing, presentUnitIds, unobservableMembers } from './goals/common.ts'
 import { validateCover, emptyCoverMotion, recordCoverOrder, coverMembers, coverMoves, type CoverMotion } from './cover.ts'
 import { coverCombat, coverRangePairs, airborne, type CoverIntent, type CoverRange } from './cover-combat.ts'
 import type { GoalContext, GoalProjection } from './goals/types.ts'
@@ -268,9 +268,24 @@ export class TaskRuntime {
   async clearLostCover(formationId: string): Promise<boolean> {
     const policy = this.formations.coverOf(formationId)
     if (!policy || this.latest?.self.some(unit => this.formations.ownerOf(unit.id) === formationId && !policy.escortIds.includes(unit.id))
+      || this.unobservableMembers(formationId).some(member => !policy.escortIds.includes(member.id))
       || policy.protectedSources?.some(id => ['pending', 'active'].includes(this.goals.get(id)?.status ?? ''))) return false
     this.endCover(formationId, '被掩护成员已全部损失，已转为普通编队，继续当前任务')
     return true
+  }
+
+  /** 只返回活动任务中已捕获、仍归原控制对象的身份，供离场期间改令和战损判断使用。 */
+  unobservableMembers(formationId?: string): Array<{id:number;name:string}> {
+    if (!this.latest) return []
+    const found = new Map<number,{id:number;name:string}>()
+    for (const goal of this.goals.values()) {
+      const spec=goal.activeSpec ?? goal.spec
+      if (!['pending','active'].includes(goal.status) || (spec.kind!=='combat'&&spec.kind!=='attack') || formationId!==undefined && spec.formationId!==formationId) continue
+      const ids=new Set(unobservableMembers(this.goalContext(spec,this.latest)))
+      const identities=spec.kind==='combat'?[...goal.facts.members,...Object.entries(spec.memberNames??{}).map(([id,name])=>({id:Number(id),name}))]:(goal.facts.attack?.members??[]).map(member=>({id:member.unitId,name:member.name}))
+      for (const member of identities) if (ids.has(member.id)&&member.name) found.set(member.id,{id:member.id,name:member.name})
+    }
+    return [...found.values()]
   }
 
   /** 战损只结束掩护职责，保留任务、成员、独立生产和暂停/停止状态。 */
@@ -300,7 +315,8 @@ export class TaskRuntime {
       const run = this.skillRuns.get(policy.runId)
       const escorts = new Set([...policy.escortIds, ...(run?.kind === 'cover' ? run.escortIds : []),
         ...(policy.escortSources ?? []).flatMap(source => this.production.filter(record => record.goalId === source.goalId && record.name === (this.goals.get(source.goalId)?.spec as { target?: string })?.target).flatMap(record => record.observedIds).slice(0, source.quantity))])
-      const members = formation.memberIds.filter(id => present.has(id))
+      const uncertain = new Set(this.unobservableMembers(formation.id).map(member=>member.id))
+      const members = formation.memberIds.filter(id => present.has(id) || uncertain.has(id))
       // 没有现役成员但本次仍有生产或交接时，保留准备，不判全灭。
       if (!members.length && formationPreparing(context, formation.id)) continue
       const escortLost = !members.some(id => escorts.has(id)) && !formationPreparing(context, formation.id, { sourceIds: (policy.escortSources ?? []).map(source => source.goalId), accepts: id => escorts.has(id) })
@@ -344,7 +360,7 @@ export class TaskRuntime {
         const targetRegion = result.constraints.targetRegion ?? attackObjective(spec)?.target.region
         result.constraints.coverFire = { unitIds: escorts, enemyIds: snap.enemies.filter(unit => airborne(unit) && (!targetRegion || inTargetRegion(unit.rx, unit.ry, targetRegion))).map(unit => unit.id) }
         const members = coverMembers(policy, snap, result.constraints.allowedUnitIds)
-        result.view.cover = { protectedIds: members.protectedUnits.map(u => u.id), escortIds: escorts, slowestIds: members.slowest.map(u => u.id), heldIds: this.goals.get(spec.id)?.facts.coverMotion?.heldIds ?? [], detail: this.goals.get(spec.id)?.facts.coverMotion?.detail ?? '掩护配置生效，协调行军与近身支援' }
+        result.view.cover = { protectedIds: members.protectedUnits.map(u => u.id), escortIds: escorts, slowestIds: members.slowest.map(u => u.id), heldIds: this.goals.get(spec.id)?.facts.coverMotion?.heldIds ?? [], catchingUpIds:this.goals.get(spec.id)?.facts.coverMotion?.cohesion?.catchingUpIds??[], detail: this.goals.get(spec.id)?.facts.coverMotion?.detail ?? '掩护配置生效，协调行军与近身支援' }
       }
     }
     result.constraints.allowedUnitIds = result.constraints.allowedUnitIds.filter(id => !this.productionExits.locked(id))
@@ -628,6 +644,10 @@ export class TaskRuntime {
     this.cancelCommand(id)
     const program = this.controlProgram(id)
     if (program) {
+      if(this.latest)for(const spec of this.activeSpecs(program)) {
+        const motion=this.goals.get(spec.id)!.facts.coverMotion
+        if(motion?.cohesion?.regroupSince!==undefined)motion.pausedAt??=this.latest.tick
+      }
       if (this.latest) for (const spec of this.activeSpecs(program)) handlerFor(spec).pause?.(this.goalContext(spec, this.latest))
       program.status = 'paused'; program.generation++
       if (program.owner.kind === 'formation' && this.formations.coverOf(program.owner.formationId) && this.latest) {
@@ -643,7 +663,13 @@ export class TaskRuntime {
     const program = this.programs.get(id)
     if (program && (program.script || this.activeSpecs(program).length) && program.status === 'paused') { program.status = 'active'; program.stats.errors = 0; program.generation++ }
     if (program) for (const spec of this.activeSpecs(program)) delete this.goals.get(spec.id)!.facts.nativeError
-    if (program) for (const spec of this.activeSpecs(program)) if (this.goals.get(spec.id)!.facts.coverMotion) this.goals.get(spec.id)!.facts.coverMotion!.orders = {}
+    if (program) for (const spec of this.activeSpecs(program)) {
+      const motion=this.goals.get(spec.id)!.facts.coverMotion
+      if(!motion)continue
+      if(motion.pausedAt!==undefined&&this.latest&&motion.cohesion?.regroupSince!==undefined)motion.cohesion.regroupSince+=Math.max(0,this.latest.tick-motion.pausedAt)
+      delete motion.pausedAt
+      motion.orders={}
+    }
   }
   async stopUnits(ids: number[]): Promise<void> {
     this.productionExits.halt(ids)
@@ -750,8 +776,9 @@ export class TaskRuntime {
     if (snap.battle?.phase === 'ended') this.battleResult = structuredClone(snap.battle)
     if (this.battleResult?.phase === 'ended') snap = { ...snap, battle: this.battleResult }
     this.latest = snap
-    this.observe(snap)
+    // 结束帧可能已经清空己方列表；先结算胜负，冻结最后正常帧的战损和掩护事实。
     if (this.battleResult?.phase === 'ended') this.finishBattle()
+    else this.observe(snap)
     if (this.battleResult?.phase !== 'ended') this.syncSkillRuns()
     if (!this.draining) this.draining = this.drain().finally(() => { this.draining = undefined })
     await this.draining

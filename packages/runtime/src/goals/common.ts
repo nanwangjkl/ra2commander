@@ -1,6 +1,7 @@
 import { goalOwner, ownerId, type GoalConstraints, type GoalView } from '@ra2c/contracts'
 import { assessArrival } from '../arrival.ts'
 import { coverMembers } from '../cover.ts'
+import { coverCohort } from '../cover-cohesion.ts'
 import type { GoalContext, GoalProjection, MapSize } from './types.ts'
 
 export const terminal = (status: string) => ['completed', 'partial', 'failed', 'cancelled'].includes(status)
@@ -13,6 +14,16 @@ export const world = (ctx: GoalContext, name: string) => ({ name, x1: 0, y1: 0, 
 export const formationExists = (ctx: GoalContext, id: string, planned = false) => ctx.formations.list().some(formation => formation.id === id) || planned && ctx.hasPlannedFormation(id)
 /** 载具内成员仍然存活；暂不可指挥不能当作全灭。 */
 export const presentUnitIds = (snap: GoalContext['snap']) => new Set(snap.self.flatMap(unit => [unit.id, ...(unit.transport?.unitIds ?? [])]))
+/** 保留已捕获身份的暂时离场成员；不把同型新单位当作原成员，也不假定寄生成功。 */
+export function unobservableMembers(ctx: GoalContext): number[] {
+  const spec = ctx.spec
+  if (spec.kind !== 'combat' && spec.kind !== 'attack' || !spec.temporaryAbsenceNames?.length) return []
+  const present = presentUnitIds(ctx.snap)
+  const members = spec.kind === 'combat' ? [...ctx.goal.facts.members.map(member => ({ id: member.id, name: member.name })), ...Object.entries(spec.memberNames??{}).map(([id,name])=>({id:Number(id),name}))]
+    : (ctx.goal.facts.attack?.members ?? []).filter(member => member.phase !== 'released' && member.phase !== 'fired').map(member => ({ id: member.unitId, name: member.name }))
+  return [...new Set(members.filter(member => member.name && spec.temporaryAbsenceNames!.includes(member.name) && !present.has(member.id)
+    && ctx.formations.ownerOf(member.id) === spec.formationId).map(member => member.id))]
+}
 /** 只等待明确的生产与仍存活的待交接成员，不把空补员目标当成永远有援军。 */
 export function formationPreparing(ctx: Pick<GoalContext, 'snap' | 'goals' | 'handoffs'>, formationId: string,
   options: { sourceIds?: string[]; accepts?: (id: number) => boolean } = {}): boolean {
@@ -47,10 +58,12 @@ export function movementArrival(ctx: GoalContext) {
   const destination = spec.kind === 'combat' ? spec.route?.[facts.routeIndex ?? 0] ?? spec.destination : spec.kind === 'rally' ? { x: spec.x, y: spec.y } : undefined
   if (!destination) return undefined
   const ids = new Set(spec.kind === 'combat' ? formations.membersOf(spec.formationId) : spec.kind === 'rally' ? spec.unitIds.filter(id => !formations.ownerOf(id)) : [])
-  const arrival = assessArrival(snap.self.filter(unit => ids.has(unit.id)), destination, id => ctx.locked(id))
+  let arrival = assessArrival(snap.self.filter(unit => ids.has(unit.id)), destination, id => ctx.locked(id))
   const cover = spec.kind === 'combat' ? formations.coverOf(spec.formationId) : undefined
   if (cover) {
-    const { members, slowest, protectedUnits, escorts } = coverMembers(cover, snap, [...ids])
+    const cohort=coverCohort(coverMembers(cover,snap,[...ids]).members,cover,snap.tick,facts.coverMotion?.cohesion)
+    const { members, slowest, protectedUnits, escorts } = coverMembers(cover, snap, cohort.core.map(unit=>unit.id))
+    arrival=assessArrival(members,destination,id=>ctx.locked(id))
     const remaining = members.map(unit => Math.hypot(unit.rx - destination.x, unit.ry - destination.y))
     const preparing = [...(cover.protectedSources ?? []), ...(cover.escortSources ?? []).map(source => source.goalId)].some(id => ['pending', 'active'].includes(ctx.goals.get(id)?.status ?? ''))
     arrival.reached &&= !preparing && protectedUnits.length > 0 && escorts.every(unit => !ctx.locked(unit.id)) && slowest.every(unit => Math.hypot(unit.rx - destination.x, unit.ry - destination.y) <= arrival.radius)

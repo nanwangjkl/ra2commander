@@ -4,7 +4,7 @@
 {
   "id": "ra2web-gonghui",
   "name": "ra2web 共和国之辉",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "catalogFile": "catalogs/ra2web-gonghui.json",
   "factions": [
     {
@@ -589,7 +589,10 @@
           "harvester": true
         }
       }
-    }
+    },
+    {"id":"defenseBuilding","aliases":["防御建筑","防御设施","防御工事","防御塔","defenses"],"members":[],"match":{"type":2,"flags":{"isBaseDefense":true}}},
+    {"id":"nuclearPowerPlant","aliases":["核电站","核电厂","核反应堆","核子反应炉","nuclearPowerPlant"],"members":[{"name":"NANRCT","type":2,"factions":["soviet"]},{"name":"CANRCT","type":2,"factions":["china"]}]},
+    {"id":"terrorDrone","aliases":["蜘蛛","恐怖机器人","恐怖蜘蛛","terrorDrone"],"members":[{"name":"DRON","type":7,"factions":["soviet"]}]}
   ]
 }
 ```
@@ -599,6 +602,8 @@
 当前引擎 rules()、production.available() 和实际单位观测优先。建造前置、队列类别、电力与可造性使用宿主查询结果；不把“电厂、矿场、重工”写成所有阵营固定的科技顺序。宿主会解析真实 prerequisite，包括 POWER、PROC 等类别，并复用已有或已提交的前置。
 
 泛称“防空车”使用 antiAirVehicle，苏军通常选择 HTK，盟军通常选择 FV；不能把它固定解释为 IFV。明确“IFV／多功能步兵车”仍指 FV。“飞行兵／火箭飞行兵”指 JUMPJET，“美国大兵／大兵”指 E1；目标名称依据完整目录解析，不把敌方兵种丢成全部单位。
+
+“核电站／核电厂”是 nuclearPowerPlant，苏军 NANRCT、中国 CANRCT，未解锁时补科技前置，不换成普通电厂。“部队和防御建筑”是步兵、车辆、防御设施的并集；defenseBuilding 由本局 isBaseDefense 标记决定，不能泛化为全部建筑。terrorDrone 表示恐怖机器人；暂时离场时不能据此断言阵亡或寄生成功。
 
 catalog 中角色用于理解“坦克”“侦察犬”等名称。同类有多个候选时，按当前可造项目、当前阵营和已有设施合理选择，简短反馈选择；精确可用的项目可跨阵营。角色映射不自动建立额外生产或扩张目标。
 

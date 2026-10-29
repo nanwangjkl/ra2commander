@@ -27,15 +27,24 @@ export function normalizeCombatIntent(text: string, calls: CapabilityCall[], map
     const named = clause.match(/([\d一二三四五六七八九十两]+)队/)
     const relevant = attacks.filter(call => !named || !call.params.formationId || formationAlias(call.params.formationId) === formationAlias(`${named[1]}队`))
     if (!named && new Set(relevant.map(call => call.params.formationId ?? '')).size > 1) continue
-    let enemyText = clause.slice(verb.index! + verb[0].length)
+    let enemyText = clause.slice(verb.index! + verb[0].length).toLowerCase()
     const selectors: string[] = []
-    for (const item of names) if (enemyText.includes(normalizeName(item.alias))) {
-      selectors.push(item.selector); enemyText = enemyText.split(normalizeName(item.alias)).join(' ')
+    // “部队”与“防御建筑”先作为完整概念解析，不能只捡出末尾的“建筑”。
+    enemyText = enemyText.replace(/部队|军队/g, () => { selectors.push('infantry', 'vehicle'); return ' ' })
+    for (const item of names) if (enemyText.includes(normalizeName(item.alias).toLowerCase())) {
+      selectors.push(item.selector); enemyText = enemyText.split(normalizeName(item.alias).toLowerCase()).join(' ')
     }
     const domain = /空中/.test(clause.slice(verb.index!)) ? 'air' as const : /地面/.test(clause.slice(verb.index!)) ? 'ground' as const : undefined
     const region = map?.scheme.regions.find(region => [region.name, ...region.aliases].some(name => clause.includes(normalizeName(name))))
+    for (const name of region ? [region.name, ...region.aliases] : []) enemyText = enemyText.split(normalizeName(name).toLowerCase()).join(' ')
+    const fullyParsed = !enemyText.replace(/以及|并且|视野内|可见|当前|最近|所有|全部|全体|任何|任意|空中|地面|敌方|敌军|敌人|对方|区域内|分区内|区域|分区|单位|目标|的|和|与|及|或|内|里|中|物|[\s、]/g, '')
     for (const call of relevant) {
-      if (selectors.length) call.params.targetSelectors = [...new Set(selectors)]
+      if(/分头|分散|各自/.test(clause))call.params.splitTargets=true
+      if (selectors.length) {
+        // 只在整段目标都已识别时替换。局部词命中只能补充，不能删掉模型识别出的其他目标。
+        call.params.targetSelectors = [...new Set([...(fullyParsed ? [] : call.params.targetSelectors ?? []), ...selectors])]
+        if (call.capability === 'combat.attack' && fullyParsed) call.params.target = 'enemies'
+      }
       if (domain) call.params.targetDomain = domain
       if (region && call.capability !== 'combat.attack-all') call.params.regionName = region.name
     }

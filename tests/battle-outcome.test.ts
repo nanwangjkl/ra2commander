@@ -70,3 +70,21 @@ test('失败有真实终态，不把进攻伪装成完成；结束状态进入�
     archive.close()
   } finally { records.close(); rmSync(root, { recursive: true, force: true }) }
 })
+
+test('败局结束帧清空己方列表时优先结束对局，保留之前损失六辆、尚存四辆的事实和掩护状态',async()=>{
+  const h=await harness({run:async()=>({ok:true,actions:[],memory:{}})})
+  h.formations.transfer([2,3,4,5,6,7,8,9,10],'A')
+  h.runtime.setCover('A',{runId:'cover',version:'0.2.5',escortIds:[4],gap:4,resumeGap:2,retryTicks:90})
+  const goal={id:'raid',kind:'attack' as const,rawText:'攻击矿车',formationId:'A',executionMode:'native' as const,unitIds:[1,2,3,4,5,6,7,8,9,10],aircraftIds:[],preparationGoalIds:[],ammoCapacity:{},targetKind:'units' as const,targetNames:[]}
+  h.runtime.activateNativeGoals(h.runtime.upsertGoal(goal))
+  await h.runtime.onSnapshot(snapshot({seq:2,battle:battle()}))
+  await h.runtime.onSnapshot(snapshot({seq:3,tick:45,battle:battle(),self:snapshot().self.slice(0,4)}))
+  const before=JSON.parse(JSON.stringify(h.runtime.goals.get('raid')!.facts.attack))
+  assert.equal(before.members.filter((m:{phase:string})=>m.phase==='lost').length,6)
+  h.submitted.length=0
+  await h.runtime.onSnapshot(snapshot({seq:4,tick:60,battle:battle('defeat'),self:[]}))
+  assert.deepEqual(h.runtime.goals.get('raid')!.facts.attack,before)
+  assert.match(h.runtime.goalExecution('raid')!.detail!,/对局失败/)
+  assert.ok(h.formations.coverOf('A'),'不能因结束帧清空而篡改为掩护全灭')
+  assert.equal(h.submitted.length,0)
+})

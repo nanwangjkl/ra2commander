@@ -4,6 +4,7 @@
 {
   "id":"combat.attack", "name":"选择单位攻击", "version":"1.1.0", "binder":"combat.attack", "owner":"selected",
   "parameters": {
+    "splitTargets": {"type":"boolean","default":false,"description":"仅在明确要求分头、分散或各自攻击时为true；普通编队默认集中主目标"},
     "selector":{"type":"string","default":"combat","description":"己方兵种/角色，如 aircraft、tanks、combat，或具体兵种名；不需要编队"},
     "unitIds":{"type":"integer[]","min":0,"minItems":1,"description":"明确选择的现有己方单位ID"},
     "formationId":{"type":"string","description":"可选已有或本句话正在建立的编队；只选择该队符合 selector 的成员"},
@@ -17,6 +18,8 @@
 }
 ```
 
+“敌方部队和防御建筑”使用 target=enemies、targetSelectors=[infantry,vehicle,defenseBuilding]，表示步兵、车辆与防御建筑的并集；不能只选建筑，也不能扩大为全部建筑。defenseBuilding 按本局公开规则 isBaseDefense 识别，不按建筑名称猜测。敌方多个目标类别合在同一个攻击要求里，不给同一队创建会相互替换的多个攻击目标。
+
 “所有飞机攻击敌方基地”返回 selector=aircraft、target=base；“所有飞机攻击敌方单位”返回 selector=aircraft、target=units。不得额外创建数字编队、转编或把其他小队带入攻击。宿主保留实际归属，未编队成员走全局，已有队伍分别更新该队脚本。
 飞机默认一次出击：装弹未满保持 pending，不发攻击或移动；满弹后自动出击，每架实际发射一次后完成自己的任务，不要求摧毁目标。已满弹的先出击，不等其他飞机。地面单位按可见敌人持续攻击。没有敌人时观察，不编造隐藏位置，不额外生产。
 
@@ -25,3 +28,5 @@
 “1队攻击三楼左下的大兵和飞行兵”使用 formationId=1队、regionName=三楼左下、target=units、targetSelectors=[E1,JUMPJET]；“防空车攻击飞行兵”使用 selector=antiAirVehicle、targetSelectors=[JUMPJET]；“攻击空中敌人”设置 targetDomain=air。地域、兵种和空地要求同时保留，不能用己方 selector 表达敌方目标。已有目标直接 attack，不先集结或走到分区中心；暂时没有匹配敌人时地面成员进入指定区域搜索。一般“向某区移动，攻击区内敌人”合并为本能力，不增加独立集结要求。
 
 新攻击使用本机固定流程，理解后直接执行，不等待生成攻击脚本；飞机仍逐架等待装弹并确认实际发射。
+
+普通编队默认集中攻击一个主要目标，目标失效后继续选择下一目标；不要求先集结或进入射程。玩家明确要求“分头／各自攻击”才填 splitTargets=true；目标兵种和区域要求照常保留。

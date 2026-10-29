@@ -1,13 +1,13 @@
 // 由 prompts/capabilities/*.md 生成；修改定义后运行 pnpm capabilities:generate。
-export const CAPABILITY_CONTRACT_VERSION = '3f843b1f252cbc957cdc45ee0c5287d675ef23c78769abd06d159386a19fe08c'
+export const CAPABILITY_CONTRACT_VERSION = 'b5b4f95f36da17f272ace4fc9892d0c82fbf443983df22e237999a45aba639b8'
 export interface CapabilityParameters {
   "base.deploy": Record<string, never>
   "base.relocate": { regionName?: string; x?: number; y?: number; unitId?: number }
   "building.repair": { selector?: string; unitIds?: number[]; quantity?: number | 'all' }
   "building.sell": { selector?: string; unitIds?: number[]; quantity?: number | 'all' }
-  "combat.attack-all": { targetSelectors?: string[]; targetDomain?: "all" | "air" | "ground"; selector?: string; unitIds?: number[]; formationId?: string }
-  "combat.attack": { selector?: string; unitIds?: number[]; formationId?: string; quantity?: number | 'all'; target?: "enemies" | "base" | "units" | "buildings"; targetId?: number; targetSelectors?: string[]; targetDomain?: "all" | "air" | "ground"; regionName?: string }
-  "combat.clear-region": { formationId: string; targetSelectors?: string[]; targetDomain?: "all" | "air" | "ground"; regionName: string }
+  "combat.attack-all": { splitTargets?: boolean; targetSelectors?: string[]; targetDomain?: "all" | "air" | "ground"; selector?: string; unitIds?: number[]; formationId?: string }
+  "combat.attack": { splitTargets?: boolean; selector?: string; unitIds?: number[]; formationId?: string; quantity?: number | 'all'; target?: "enemies" | "base" | "units" | "buildings"; targetId?: number; targetSelectors?: string[]; targetDomain?: "all" | "air" | "ground"; regionName?: string }
+  "combat.clear-region": { splitTargets?: boolean; formationId: string; targetSelectors?: string[]; targetDomain?: "all" | "air" | "ground"; regionName: string }
   "combat.hold": { defendBase?: boolean; formationId: string; regionName?: string; bounds?: number[]; mode?: "hold" | "assault" | "move"; retreatLoss?: number; retreatX?: number; retreatY?: number; label?: string }
   "combat.move": { formationId: string; regionName?: string; x?: number; y?: number; bounds?: number[]; label?: string; patrol?: boolean }
   "control.pause": { scope?: "formation" | "global" | "all" | "units"; formationId?: string; selector?: string; unitIds?: number[] }
@@ -39,9 +39,9 @@ export interface ResolvedCapabilityParameters {
   "base.relocate": { regionName?: string; x?: number; y?: number; unitId?: number }
   "building.repair": { selector: string; unitIds?: number[]; quantity: number | 'all' }
   "building.sell": { selector: string; unitIds?: number[]; quantity: number | 'all' }
-  "combat.attack-all": { targetSelectors?: string[]; targetDomain: "all" | "air" | "ground"; selector?: string; unitIds?: number[]; formationId?: string }
-  "combat.attack": { selector: string; unitIds?: number[]; formationId?: string; quantity: number | 'all'; target: "enemies" | "base" | "units" | "buildings"; targetId?: number; targetSelectors?: string[]; targetDomain: "all" | "air" | "ground"; regionName?: string }
-  "combat.clear-region": { formationId: string; targetSelectors?: string[]; targetDomain: "all" | "air" | "ground"; regionName: string }
+  "combat.attack-all": { splitTargets: boolean; targetSelectors?: string[]; targetDomain: "all" | "air" | "ground"; selector?: string; unitIds?: number[]; formationId?: string }
+  "combat.attack": { splitTargets: boolean; selector: string; unitIds?: number[]; formationId?: string; quantity: number | 'all'; target: "enemies" | "base" | "units" | "buildings"; targetId?: number; targetSelectors?: string[]; targetDomain: "all" | "air" | "ground"; regionName?: string }
+  "combat.clear-region": { splitTargets: boolean; formationId: string; targetSelectors?: string[]; targetDomain: "all" | "air" | "ground"; regionName: string }
   "combat.hold": { defendBase: boolean; formationId: string; regionName?: string; bounds?: number[]; mode: "hold" | "assault" | "move"; retreatLoss?: number; retreatX?: number; retreatY?: number; label?: string }
   "combat.move": { formationId: string; regionName?: string; x?: number; y?: number; bounds?: number[]; label?: string; patrol: boolean }
   "control.pause": { scope: "formation" | "global" | "all" | "units"; formationId?: string; selector: string; unitIds?: number[] }

@@ -1,11 +1,18 @@
 import { canAttackTarget, type ActionRequest, type Snapshot, type SnapshotUnit } from '@ra2c/contracts'
 import type { CoverMotion } from './cover.ts'
 
-/** 每名就绪成员直接攻击最近的兼容目标；不以射程或整队到达作为前置。 */
-export function directAttackOrders(snap: Snapshot, ids: number[], targets: readonly SnapshotUnit[], motion: CoverMotion): ActionRequest[] {
+/** 编队可共用稳定主目标；不以射程或整队到达作为前置，空地不兼容者另选相容目标。 */
+export function directAttackOrders(snap: Snapshot, ids: number[], targets: readonly SnapshotUnit[], motion: CoverMotion, focus=false): ActionRequest[] {
   const groups = new Map<number, number[]>()
-  for (const unit of snap.self.filter(unit => ids.includes(unit.id))) {
-    const target = targets.filter(target => canAttackTarget(unit, target)).slice().sort((a, b) => Math.hypot(unit.rx - a.rx, unit.ry - a.ry) - Math.hypot(unit.rx - b.rx, unit.ry - b.ry) || a.id - b.id)[0]
+  const units=snap.self.filter(unit=>ids.includes(unit.id))
+  const center={rx:units.reduce((n,u)=>n+u.rx,0)/Math.max(1,units.length),ry:units.reduce((n,u)=>n+u.ry,0)/Math.max(1,units.length)}
+  const distance=(a:{rx:number;ry:number},b:{rx:number;ry:number})=>Math.hypot(a.rx-b.rx,a.ry-b.ry)
+  const candidates=targets.filter(target=>units.some(unit=>canAttackTarget(unit,target)))
+  const primary=focus?(candidates.find(target=>target.id===motion.focusTargetId)??candidates.slice().sort((a,b)=>units.filter(u=>canAttackTarget(u,b)).length-units.filter(u=>canAttackTarget(u,a)).length||distance(center,a)-distance(center,b)||a.id-b.id)[0]):undefined
+  if(primary)motion.focusTargetId=primary.id
+  else delete motion.focusTargetId
+  for (const unit of units) {
+    const target = primary&&canAttackTarget(unit,primary)?primary:targets.filter(target => canAttackTarget(unit, target)).slice().sort((a, b) => distance(focus?center:unit,a)-distance(focus?center:unit,b) || a.id - b.id)[0]
     if (!target) continue
     const old = motion.orders[unit.id]
     if (old?.kind === 'attack' && old.targetId === target.id && !unit.isIdle) continue

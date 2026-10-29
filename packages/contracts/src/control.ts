@@ -15,6 +15,9 @@ export interface ExploreGoal extends GoalBase {
   policy: { pointSpacing: number; stallTicks: number; maxStallsPerRegion: number; coverageRatio?: number; interiorMargin?: number; retryPasses?: number; centerFirst?: boolean }
 }
 export interface CombatGoal extends GoalBase {
+  /** 可能暂时离场且公开 API 不能确认阵亡的兵种；缺席保留命令，不自动补兵。 */
+  temporaryAbsenceNames?: string[]
+  memberNames?: Record<number, string>
   objective?: import('./attack-objective.ts').AttackObjective
   kind: 'combat'
   formationId: string
@@ -48,6 +51,9 @@ export interface UnitDeploymentGoal extends GoalBase {
   targetRegion?: import('./spatial.ts').TargetRegion
 }
 export interface AttackGoal extends GoalBase {
+  temporaryAbsenceNames?: string[]
+  /** 发令时已知的成员身份，支持蜘蛛离场期间改令，不扩大到同型新单位。 */
+  memberNames?: Record<number, string>
   kind: 'attack'
   objective?: import('./attack-objective.ts').AttackObjective
   membership?: import('./attack-objective.ts').AttackMembership
@@ -149,12 +155,12 @@ export interface GoalView {
   blocked?: string
   maxUnits?: number
   arrival?: ArrivalState
-  cover?: { protectedIds: number[]; escortIds: number[]; slowestIds: number[]; heldIds: number[]; detail: string }
+  cover?: { protectedIds: number[]; escortIds: number[]; slowestIds: number[]; heldIds: number[]; catchingUpIds?: number[]; detail: string }
   relocation?: { phase: 'packing' | 'moving' | 'deploying' | 'confirming' | 'completed' | 'failed'; unitId: number; destination: { x: number; y: number }; action?: ActionRequest; detail: string }
   mining?: { actions: ActionRequest[]; knownOre: number; assigned: number; total: number; detail: string }
   building?: { actions: ActionRequest[]; completed: number; total: number; failed: number; pending: boolean; detail: string }
   unitDeployment?: { actions: ActionRequest[]; completed: number; total: number; failed: number; pending: boolean; detail: string }
-  attack?: { readyIds: number[]; pendingIds: number[]; attackingIds: number[]; firedIds: number[]; lostIds: number[]; totalAircraft: number; groundIds: number[]; targets: import('./index.ts').SnapshotUnit[]; preparing: boolean; detail: string }
+  attack?: { readyIds: number[]; pendingIds: number[]; attackingIds: number[]; firedIds: number[]; lostIds: number[]; unobservableIds?: number[]; totalAircraft: number; groundIds: number[]; targets: import('./index.ts').SnapshotUnit[]; preparing: boolean; detail: string }
   exploration?: { seen: number; total: number; coverageRatio: number; regions: Array<{ id: string; name: string; seen: number; total: number; satisfied: boolean; deferred: boolean }>; targets: Array<{ unitId: number; x: number; y: number; regionId: string }> }
   repair?: {
     readyIds: number[]; assembling: Array<{ engineerId: number; vehicleId: number }>

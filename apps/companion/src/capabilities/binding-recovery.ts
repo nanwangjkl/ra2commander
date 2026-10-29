@@ -6,6 +6,15 @@ const ATTACKS = new Set(['combat.attack', 'combat.attack-all', 'combat.clear-reg
 export function retainBindingScope(original: unknown, replacement: unknown, prompts: PromptLibrary, text = ''): CapabilityCall {
   let previous: CapabilityCall
   try { previous = prompts.capabilities.parse(original) } catch { return prompts.capabilities.parse(replacement) }
+  if (previous.capability === 'production.produce') {
+    const corrected = prompts.capabilities.parse(replacement)
+    if (corrected.capability !== 'production.produce') throw new Error('生产修正必须保留生产要求')
+    const normalize = (value: string) => value.normalize('NFKC').replace(/\s+/g, '').toLowerCase()
+    const memberMatches = (name: string, target: string) => [name, ...prompts.game.memberAliases(name), prompts.game.entry(name)?.label ?? '', prompts.game.entry(name)?.englishName ?? ''].some(alias => normalize(alias) === normalize(target))
+    const families = prompts.game.roles().filter(role => !role.match && role.members.length && (prompts.game.roleForAlias(previous.params.target) === role.id || role.members.some(member => memberMatches(member.name, previous.params.target))))
+    if (families.some(role => prompts.game.roleForAlias(corrected.params.target) !== role.id && !role.members.some(member => memberMatches(member.name, corrected.params.target)))) throw new Error('生产修正不能丢弃具体项目类别，例如把核电站改成普通电厂')
+    return prompts.capabilities.parse({ ...corrected, params: { ...previous.params, target: corrected.params.target } })
+  }
   if(previous.capability==='combat.hold'&&(previous.params.defendBase||isBaseRegion(previous.params.regionName))) {
     const corrected=prompts.capabilities.parse(replacement)
     if(corrected.capability!=='combat.hold')throw new Error('基地防守修正必须保留基地分区与原地待命，不能降为普通移动或进攻')
@@ -38,7 +47,7 @@ export function retainBindingScope(original: unknown, replacement: unknown, prom
   if (!ATTACKS.has(corrected.capability)) throw new Error('攻击绑定修正不能改成建队或其他全局操作')
   const before = previous.params as Record<string, unknown>, after = corrected.params as Record<string, unknown>
   const acceptedFields = prompts.capabilities.definitions().find(definition => definition.id === corrected.capability)!.parameters
-  for (const field of ['formationId', 'selector', 'unitIds', 'regionName', 'target', 'targetId', 'targetSelectors', 'targetDomain', 'quantity']) {
+  for (const field of ['formationId', 'selector', 'unitIds', 'regionName', 'target', 'targetId', 'targetSelectors', 'targetDomain', 'splitTargets', 'quantity']) {
     if (before[field] === undefined) continue
     if (!(field in acceptedFields)) throw new Error(`修正不能丢弃原攻击的 ${field} 范围`)
     after[field] = before[field]

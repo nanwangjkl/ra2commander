@@ -2,8 +2,9 @@ import { matchingAttackTargets, attackMembership, type ActionRequest, type Actio
 
 interface AttackMember {
   unitId: number
+  name?: string
   aircraft: boolean
-  phase: 'pending' | 'ready' | 'attacking' | 'fired' | 'lost' | 'released'
+  phase: 'pending' | 'ready' | 'attacking' | 'fired' | 'lost' | 'released' | 'unobservable'
   lastAmmo?: number
   lastCooldown?: number
   acceptedAt?: number
@@ -13,16 +14,24 @@ export interface AttackState { members: AttackMember[] }
 export const initialAttack = (): AttackState => ({ members: [] })
 
 /** 只依据本次已接受的攻击和真实弹药/武器变化确认出击，不用接口成功代替开火。 */
-export function planAttack(spec: AttackGoal, snap: Snapshot, ids: number[], previous: AttackState, preparing: boolean, retainedIds = spec.unitIds) {
+export function planAttack(spec: AttackGoal, snap: Snapshot, ids: number[], previous: AttackState, preparing: boolean, retainedIds = spec.unitIds, releasedIds: number[] = []) {
   const state = structuredClone(previous)
   state.members = state.members.filter(member => retainedIds.includes(member.unitId))
   const selected = retainedIds
-  for (const id of selected) if (!state.members.some(member => member.unitId === id)) state.members.push({ unitId: id, aircraft: snap.self.find(unit => unit.id === id)?.type === 1 || spec.aircraftIds.includes(id), phase: 'pending' })
-  const readyIds: number[] = [], pendingIds: number[] = [], attackingIds: number[] = [], firedIds: number[] = [], lostIds: number[] = [], groundIds: number[] = []
+  for (const id of selected) if (!state.members.some(member => member.unitId === id)) {
+    const unit = snap.self.find(unit => unit.id === id)
+    const name = unit?.name ?? spec.memberNames?.[id]
+    state.members.push({ unitId: id, ...(name ? {name} : {}), aircraft: unit?.type === 1 || spec.aircraftIds.includes(id), phase: 'pending' })
+  }
+  const readyIds: number[] = [], pendingIds: number[] = [], attackingIds: number[] = [], firedIds: number[] = [], lostIds: number[] = [], groundIds: number[] = [], unobservableIds: number[] = []
   for (const member of state.members) {
     const unit = snap.self.find(unit => unit.id === member.unitId)
+    if (unit) member.name = unit.name
+    const temporary = !!member.name && !!spec.temporaryAbsenceNames?.includes(member.name)
+    if (unit && temporary && member.phase === 'lost') member.phase = 'pending'
     if (!['fired', 'lost', 'released'].includes(member.phase)) {
-      if (!unit) member.phase = preparing ? 'pending' : 'lost'
+      if (releasedIds.includes(member.unitId)) member.phase = 'released'
+      else if (!unit) member.phase = temporary ? 'unobservable' : preparing ? 'pending' : 'lost'
       else if (!ids.includes(unit.id)) member.phase = preparing ? 'pending' : 'released'
       else if (!member.aircraft) member.phase = 'ready'
       else {
@@ -39,6 +48,7 @@ export function planAttack(spec: AttackGoal, snap: Snapshot, ids: number[], prev
     }
     if (member.phase === 'fired') firedIds.push(member.unitId)
     else if (member.phase === 'lost' || member.phase === 'released') lostIds.push(member.unitId)
+    else if (member.phase === 'unobservable') unobservableIds.push(member.unitId)
     else if (member.phase === 'pending') pendingIds.push(member.unitId)
     else if (member.phase === 'attacking') attackingIds.push(member.unitId)
     else { readyIds.push(member.unitId); if (!member.aircraft) groundIds.push(member.unitId) }
@@ -47,7 +57,7 @@ export function planAttack(spec: AttackGoal, snap: Snapshot, ids: number[], prev
   const totalAircraft = state.members.filter(member => member.aircraft).length
   const emptyPreparation = !state.members.length && attackMembership(spec).kind === 'prepared'
   const detail = emptyPreparation && !preparing ? '本次准备目标已结束，但没有可接管的匹配成员，未追加生产' : `${totalAircraft ? `已投弹${firedIds.length}/${totalAircraft}架；等待装弹/交接${pendingIds.length}架；出击中${attackingIds.length}架` : `指挥${readyIds.length}个现有单位攻击`}${preparing ? '；等待本次编队准备完成' : ''}${lostIds.length ? `；损失或转交${lostIds.length}个成员` : ''}${!targets.length ? '；等待发现匹配敌人' : ''}`
-  const view: NonNullable<GoalView['attack']> = { readyIds, pendingIds, attackingIds, firedIds, lostIds, totalAircraft, groundIds, targets, preparing, detail }
+  const view: NonNullable<GoalView['attack']> = { readyIds, pendingIds, attackingIds, firedIds, lostIds, unobservableIds, totalAircraft, groundIds, targets, preparing, detail: detail + (unobservableIds.length ? `；${unobservableIds.length}个成员暂时不可观测，可能寄生离场，保留命令等待重现` : '') }
   const finished = !preparing && (state.members.length > 0 || emptyPreparation) && state.members.every(member => ['fired', 'lost', 'released'].includes(member.phase))
   return { state, view, finished, outcome: emptyPreparation ? 'failed' as const : lostIds.length ? firedIds.length ? 'partial' as const : 'failed' as const : 'completed' as const }
 }

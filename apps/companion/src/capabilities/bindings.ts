@@ -263,8 +263,11 @@ export const bindings: Binders = {
     const previous = point ? context.movementGoals.get(formationId) : undefined
     const route = previous?.destination && point ? [...(previous.route ?? [previous.destination]), point] : undefined
     const patrol = !!(params.patrol || previous?.patrol)
+    const catalog = await context.catalog()
     const covered = context.ctx.runtime.hasCover(formationId) || [...context.ctx.runtime.goals.values()].some(goal => ['pending', 'active'].includes(goal.status) && goal.spec.kind === 'formation' && goal.spec.request.formationId === formationId && goal.spec.cover)
     const goal: CombatGoal = { id: previous?.id ?? id(), kind: 'combat', rawText: context.text, formationId, region, ...(covered ? { executionMode: 'native' as const } : {}),
+      temporaryAbsenceNames:catalog.all.filter(item=>catalog.isRole(item.name,'terrorDrone',item.type)).map(item=>item.name),
+      memberNames:Object.fromEntries(context.ctx.runtime.unobservableMembers(formationId).map(member=>[member.id,member.name])),
       allowedActions: patrol ? ['move', 'gather', 'stop', 'attack', 'attackMove'] : ['move', 'gather', 'stop'],
       ...(point ? { destination: route?.[0] ?? point } : {}), ...(route ? { route } : {}), ...(patrol ? { patrol: true } : {}), ...(params.label ? { label: params.label } : {}) }
     const places = route ?? (point ? [point] : [])
@@ -289,7 +292,9 @@ export const bindings: Binders = {
       const x = members[0]?.rx ?? 0, y = members[0]?.ry ?? 0
       region = rectangle(snap, [Math.max(0, Math.floor(x - 8)), Math.max(0, Math.floor(y - 8)), Math.min(snap.mapWidth - 1, Math.ceil(x + 8)), Math.min(snap.mapHeight - 1, Math.ceil(y + 8))])
     }
-    const goal: CombatGoal = { id: id(), kind: 'combat', rawText: context.text, formationId, region, mode: params.mode, ...(ctx.runtime.hasCover(formationId) ? { executionMode: 'native' as const } : {}), allowedActions: params.mode === 'move' ? ['move', 'gather', 'stop'] : params.mode === 'assault' ? ['move', 'attack', 'attackMove', 'gather', 'stop'] : ['move', 'attack', 'stop'], ...(params.label ? { label: params.label } : {}), ...(point ? { destination: point } : {}) }
+    const catalog = await context.catalog()
+    const goal: CombatGoal = { id: id(), kind: 'combat', rawText: context.text, formationId, region, mode: params.mode, ...(ctx.runtime.hasCover(formationId) ? { executionMode: 'native' as const } : {}), allowedActions: params.mode === 'move' ? ['move', 'gather', 'stop'] : params.mode === 'assault' ? ['move', 'attack', 'attackMove', 'gather', 'stop'] : ['move', 'attack', 'stop'], ...(params.label ? { label: params.label } : {}), ...(point ? { destination: point } : {}),
+      temporaryAbsenceNames:catalog.all.filter(item=>catalog.isRole(item.name,'terrorDrone',item.type)).map(item=>item.name),memberNames:Object.fromEntries(ctx.runtime.unobservableMembers(formationId).map(member=>[member.id,member.name])) }
     if (params.retreatLoss !== undefined) {
       if (params.retreatX === undefined || params.retreatY === undefined) throw new Error('战损回撤缺少完整回撤点')
       checkPoint(snap, params.retreatX, params.retreatY)

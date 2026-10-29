@@ -5,14 +5,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CapabilityCall } from '../packages/command/src/index.ts'
 import { loadPrompts } from '../packages/command/src/index.ts'
-import { inTargetRegion, type SnapshotUnit } from '../packages/contracts/src/index.ts'
+import { inTargetRegion, matchingAttackTargets, type SnapshotUnit } from '../packages/contracts/src/index.ts'
 import { FormationRegistry, persistState, restoreState } from '../packages/runtime/src/index.ts'
 import { StepExecutor } from '../packages/js-worker/src/index.ts'
 import { ProgramController } from '../apps/companion/src/controller.ts'
 import type { CommandContext } from '../apps/companion/src/commands.ts'
 import { runTranscript } from '../apps/companion/src/transcript.ts'
 import { executeCapabilities } from '../apps/companion/src/capabilities/index.ts'
-import { retainBindingRepairs } from '../apps/companion/src/capabilities/binding-recovery.ts'
+import { retainBindingRepairs, retainBindingScope } from '../apps/companion/src/capabilities/binding-recovery.ts'
 import { loadGameCatalog } from '../apps/companion/src/game-catalog.ts'
 import { normalizeOperations } from '../apps/companion/src/transcript-plan.ts'
 import { loadIceMap } from '../apps/companion/src/map-binding.ts'
@@ -33,7 +33,7 @@ async function fixture(units: SnapshotUnit[] = []) {
     generations++; return { text: source, model: 'fixture', durationMs: 0 }
   } }
   const ctx = { ...h, controller: new ProgramController({ runtime: h.runtime, executor, provider: () => provider as never }), currentProvider: () => provider,
-    bridge: { rules: async (name: string) => prompts.game.entry(name) },
+    bridge: { rules: async (name: string) => ({...prompts.game.entry(name),isBaseDefense:['GAPILL','NASAM','GTGCAN'].includes(name)}) },
   } as unknown as CommandContext
   return { ...h, ctx, own, root, executor,
     calls: () => ({ interpretations, generations }),
@@ -122,5 +122,155 @@ test('掩护修正统一生产且保留数量、来源；当前人数排除阵�
     assert.match(result.choices.join(' '),/2个现有单位/)
     assert.ok(f.formations.membersOf('1队').includes(50),'历史保留，人数按当前存活事实显示')
     assert.equal(f.calls().generations,0)
+  } finally {await f.dispose()}
+})
+
+test('胜局反馈：部队与防御建筑保留并集，实际攻击步兵、车辆和防御设施，排除普通建筑', async () => {
+  const f = await fixture([member(101,'HTNK'),{...member(102,'HTNK'),rx:134},{...member(103,'HTNK'),rx:139}])
+  try {
+    f.formations.create('1队',[101,102,103])
+    const enemies:SnapshotUnit[]=[
+      {id:201,name:'E1',type:3,rx:130,ry:85,isIdle:true},
+      {id:202,name:'MTNK',type:7,rx:135,ry:85,isIdle:true},
+      {id:203,name:'GAPILL',type:2,rx:140,ry:85,isIdle:true},
+      {id:204,name:'NAREFN',type:2,rx:129,ry:85,isIdle:true},
+    ]
+    await f.tick(enemies)
+    await f.voice('1队消灭敌方部队和防御建筑',[{capability:'combat.attack',params:{formationId:'1队',target:'buildings',targetSelectors:['infantry','vehicle','building']}}])
+    await f.tick(enemies)
+    const goal=[...f.runtime.goals.values()].find(goal=>goal.spec.kind==='attack')!
+    if(goal.spec.kind!=='attack')throw new Error('missing attack')
+    assert.deepEqual(matchingAttackTargets(goal.spec,enemies).map(unit=>unit.id),[201,202,203])
+    const attacked=new Set<number>()
+    let remaining=enemies
+    for(let i=0;i<3;i++) {
+      const target=f.submitted.find(action=>action.kind==='attack'&&!attacked.has(action.targetId))
+      assert.ok(target?.kind==='attack')
+      attacked.add(target.targetId);remaining=remaining.filter(unit=>unit.id!==target.targetId)
+      await f.tick(remaining)
+    }
+    assert.deepEqual([...attacked].sort(),[201,202,203],'集中攻击依次处理并集目标，不攻击普通建筑')
+    assert.deepEqual(f.calls(),{interpretations:1,generations:0})
+    const catalog=await loadGameCatalog(f.ctx,()=>{},prompts.game)
+    const partial=normalizeOperations('1队攻击大兵和自定义威胁',[{capability:'combat.attack',params:{formationId:'1队',targetSelectors:['E1','MTNK']}}],undefined,catalog)
+    assert.ok(partial[0]!.capability==='combat.attack'&&partial[0]!.params.targetSelectors!.includes('MTNK'),'局部词命中不再覆盖模型识别的其余目标')
+  } finally {await f.dispose()}
+})
+
+test('胜局反馈：核电站尚未解锁也绑定核子反应炉，修正不能降为普通电厂',async()=>{
+  const f=await fixture()
+  try {
+    await f.voice('造作战实验室，出核电站',[
+      {capability:'production.produce',params:{target:'NATECH',quantity:1}},
+      {capability:'production.produce',params:{target:'核电站',quantity:1}},
+    ])
+    assert.deepEqual([...f.runtime.goals.values()].flatMap(goal=>goal.spec.kind==='production'?[goal.spec.target]:[]),['NATECH','NANRCT'])
+    assert.deepEqual(f.calls(),{interpretations:1,generations:1},'别名直接绑定，无额外失败重决策')
+    const catalog=await loadGameCatalog(f.ctx,()=>{},prompts.game)
+    assert.ok(catalog.forTranscript('造核电站').some(item=>item.name==='NANRCT'&&!item.available))
+    const original={capability:'production.produce',params:{target:'核电站',quantity:2,placementDirections:['up']}}
+    assert.throws(()=>retainBindingScope(original,{capability:'production.produce',params:{target:'NAPOWR'}},prompts),/不能丢弃具体项目类别/)
+    const corrected=retainBindingScope(original,{capability:'production.produce',params:{target:'NANRCT',quantity:99}},prompts)
+    assert.ok(corrected.capability==='production.produce'&&corrected.params.quantity===2)
+    assert.ok(corrected.capability==='production.produce'&&corrected.params.placementDirections?.[0]==='up')
+  } finally {await f.dispose()}
+})
+
+test('胜局反馈：蜘蛛离场等待，同 ID 重现继续攻击，恢复与暂停不丢命令，停止后不复活',async()=>{
+  const first=member(101,'DRON'),second=member(102,'DRON'),f=await fixture([first,second])
+  try {
+    f.formations.create('2队',[101,102])
+    const enemies:SnapshotUnit[]=[{id:201,name:'MTNK',type:7,rx:130,ry:85,isIdle:true},{id:202,name:'V3',type:7,rx:140,ry:85,isIdle:true}]
+    await f.tick(enemies)
+    await f.voice('2队攻击视野内任何车辆单位',[{capability:'combat.attack',params:{formationId:'2队',target:'units',targetSelectors:['vehicle']}}])
+    await f.tick(enemies)
+    let goal=[...f.runtime.goals.values()].find(goal=>goal.spec.kind==='attack')!
+    f.own.splice(f.own.findIndex(unit=>unit.id===101),1);await f.tick(enemies)
+    f.own.splice(f.own.findIndex(unit=>unit.id===102),1);f.submitted.length=0;await f.tick(enemies)
+    assert.equal(goal.status,'active')
+    assert.equal(f.runtime.goalExecution(goal.spec.id)!.state,'pending')
+    assert.match(f.runtime.goalExecution(goal.spec.id)!.detail!,/暂时不可观测/)
+    assert.deepEqual(f.submitted,[])
+    await f.voice('2队攻击敌方V3',[{capability:'combat.attack',params:{formationId:'2队',targetSelectors:['V3']}}])
+    assert.equal(goal.status,'cancelled','离场期间的新命令替换旧任务')
+    goal=[...f.runtime.goals.values()].find(goal=>goal.spec.kind==='attack'&&goal.status==='active')!
+    await f.tick(enemies)
+    assert.equal(f.runtime.goalExecution(goal.spec.id)!.state,'pending')
+    const restored=await harness(f.executor,{formations:new FormationRegistry()})
+    await restored.runtime.onSnapshot(f.runtime.snapshot!);restoreState(restored.runtime,persistState(f.runtime))
+    const tick=()=>restored.runtime.onSnapshot({...restored.runtime.snapshot!,self:f.own,enemies,seq:restored.runtime.snapshot!.seq+1,tick:restored.runtime.snapshot!.tick+30})
+    f.own.push(member(109,'DRON'));await tick()
+    assert.equal(restored.submitted.length,0,'不自动接管同型新单位')
+    f.own.push({...first,isIdle:false});await tick()
+    assert.deepEqual(restored.submitted,[{kind:'attack',unitIds:[101],targetId:202}],'同一身份重现后按新命令发令，不受离场前旧动作去重影响')
+    restored.runtime.pause('formation:2队');restored.submitted.length=0
+    f.own.push(second);await tick();assert.equal(restored.submitted.length,0)
+    restored.runtime.resume('formation:2队');await tick()
+    assert.ok(restored.submitted.some(action=>action.kind==='attack'&&action.unitIds.includes(102)))
+    await restored.runtime.stop('formation:2队');restored.submitted.length=0
+    await tick();assert.equal(restored.submitted.length,0)
+    assert.equal(restored.runtime.goalExecution(goal.spec.id)!.state,'cancelled')
+  } finally {await f.dispose()}
+})
+
+test('蜘蛛编队全图作战同样保留离场成员，掩护不因暂时离场解除，普通坦克全灭仍结束',async()=>{
+  const drone=member(101,'DRON'),escort=member(102,'HTNK'),f=await fixture([drone,escort])
+  try {
+    f.formations.create('2队',[101,102])
+    f.runtime.setCover('2队',{runId:'cover-drone',version:'0.2.4',escortIds:[102],gap:4,resumeGap:2,retryTicks:90})
+    const enemies:SnapshotUnit[]=[{id:201,name:'MTNK',type:7,rx:130,ry:85,isIdle:true}]
+    await f.tick(enemies)
+    await f.voice('2队摧毁全部敌人',[{capability:'combat.attack-all',params:{formationId:'2队'}}]);await f.tick(enemies)
+    const goal=[...f.runtime.goals.values()].find(goal=>goal.spec.kind==='combat')!
+    f.own.splice(f.own.findIndex(unit=>unit.id===101),1);await f.tick(enemies)
+    assert.ok(f.formations.coverOf('2队'),'受护蜘蛛暂时离场不算一侧全灭')
+    f.own.splice(f.own.findIndex(unit=>unit.id===102),1);await f.tick(enemies)
+    assert.equal(goal.status,'active')
+    assert.equal(f.runtime.goalExecution(goal.spec.id)!.state,'pending')
+    await f.voice('2队继续摧毁全部敌人',[{capability:'combat.attack-all',params:{formationId:'2队'}}]);await f.tick(enemies)
+    const current=[...f.runtime.goals.values()].find(goal=>goal.spec.kind==='combat'&&goal.status==='active')!
+    assert.equal(f.runtime.goalExecution(current.spec.id)!.state,'pending','全队离场时也能给原编队改令')
+    f.own.push(drone);await f.tick(enemies)
+    assert.equal(current.status,'active')
+    assert.equal(f.runtime.goalExecution(current.spec.id)!.state,'continuous')
+    f.own.push(escort);assert.equal(f.formations.create('3队',[102],{force:true}).ok,true)
+    await f.voice('3队摧毁全部敌人',[{capability:'combat.attack-all',params:{formationId:'3队'}}]);await f.tick(enemies)
+    const ordinary=[...f.runtime.goals.values()].find(goal=>goal.spec.kind==='combat'&&goal.spec.formationId==='3队')!
+    f.own.splice(f.own.findIndex(unit=>unit.id===102),1);await f.tick(enemies)
+    assert.equal(ordinary.status,'failed','普通单位仍按既有全灭规则收尾')
+  } finally {await f.dispose()}
+})
+
+test('普通编队攻击矿车共用稳定主目标，目标失效再切换，明确分头攻击才分散',async()=>{
+  const f=await fixture([{...member(101,'HTNK'),rx:100},{...member(102,'HTNK'),rx:140}])
+  try {
+    f.formations.create('2队',[101,102])
+    let enemies:SnapshotUnit[]=[{id:201,name:'HARV',type:7,rx:101,ry:85,isIdle:true},{id:202,name:'HARV',type:7,rx:139,ry:85,isIdle:true}]
+    await f.tick(enemies)
+    await f.voice('2队攻击敌方矿车',[{capability:'combat.attack',params:{formationId:'2队',targetSelectors:['harvester']}}]);await f.tick(enemies)
+    assert.deepEqual(f.submitted,[{kind:'attack',unitIds:[101,102],targetId:201}])
+    f.submitted.length=0;enemies[1]!.rx=120;await f.tick(enemies)
+    assert.ok(f.submitted.every(a=>a.kind!=='attack'||a.targetId===201),'目标仍有效时不随最近距离摇摆')
+    f.submitted.length=0;enemies=enemies.filter(u=>u.id!==201);await f.tick(enemies)
+    assert.deepEqual(f.submitted,[{kind:'attack',unitIds:[101,102],targetId:202}])
+    enemies=[{id:201,name:'HARV',type:7,rx:101,ry:85,isIdle:true},{id:202,name:'HARV',type:7,rx:139,ry:85,isIdle:true}]
+    await f.tick(enemies);f.submitted.length=0
+    await f.voice('2队分头攻击敌方矿车',[{capability:'combat.attack',params:{formationId:'2队',targetSelectors:['harvester']}}]);await f.tick(enemies)
+    assert.deepEqual(f.submitted.filter(a=>a.kind==='attack').map(a=>a.targetId).sort(),[201,202])
+  } finally {await f.dispose()}
+})
+
+test('坦克仍在生产时的攻击摘要和待准备兵种只引用实际来源，保留混编现有成员',async()=>{
+  const f=await fixture([member(101,'HTNK'),{...member(102,'E2'),type:3}])
+  try {
+    f.formations.create('1队',[101,102])
+    await f.voice('造10辆坦克编入1队',[{capability:'production.produce',params:{target:'HTNK',quantity:10,formationId:'1队'}}])
+    const result=await f.voice('1队攻击最近敌军',[{capability:'combat.attack',params:{formationId:'1队'}}])
+    assert.doesNotMatch(result,/飞机|满弹|投弹/)
+    const attack=[...f.runtime.goals.values()].find(goal=>goal.spec.kind==='attack')!
+    assert.ok(attack.spec.kind==='attack'&&attack.spec.membership?.kind==='prepared')
+    assert.deepEqual(attack.spec.membership.names.sort(),['E2','HTNK'])
+    await f.tick([{id:201,name:'HTNK',type:7,rx:130,ry:85,isIdle:true}])
+    assert.ok(f.submitted.some(a=>a.kind==='attack'&&a.unitIds.includes(102)),'现有动员兵不能因待产项目只有坦克而被排除')
   } finally {await f.dispose()}
 })

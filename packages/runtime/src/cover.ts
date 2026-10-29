@@ -1,6 +1,10 @@
 import type { ActionRequest, ActionResult, CoverPolicy, GoalView, Region, Snapshot } from '@ra2c/contracts'
+import { coverCohort, type CoverCohesion } from './cover-cohesion.ts'
 
 export interface CoverMotion {
+  pausedAt?: number
+  cohesion?: CoverCohesion
+  focusTargetId?: number
   heldIds: number[]
   gathering?: boolean
   orders: Record<string, { kind: 'move' | 'stop' | 'attack'; x?: number; y?: number; targetId?: number; tick: number }>
@@ -10,6 +14,12 @@ export interface CoverMotion {
 }
 export const emptyCoverMotion = (): CoverMotion => ({ heldIds: [], orders: {} })
 export function validateCoverMotion(state: CoverMotion | undefined): void {
+  if(state?.pausedAt!==undefined&&!Number.isFinite(state.pausedAt))throw new Error('掩护暂停进度非法')
+  if(state?.focusTargetId!==undefined&&!Number.isSafeInteger(state.focusTargetId))throw new Error('编队主目标非法')
+  if(state?.cohesion) {
+    const c=state.cohesion
+    if([c.coreIds,c.catchingUpIds,c.regroupIds??[]].some(ids=>!Array.isArray(ids)||new Set(ids).size!==ids.length||ids.some(id=>!Number.isSafeInteger(id)))||c.coreIds.some(id=>c.catchingUpIds.includes(id))||c.regroupSince!==undefined&&!Number.isFinite(c.regroupSince))throw new Error('掩护追赶进度非法')
+  }
   if (state && (!Array.isArray(state.heldIds) || state.heldIds.some(id => !Number.isSafeInteger(id)) || !state.orders || typeof state.orders !== 'object' || Array.isArray(state.orders)
     || Object.values(state.orders).some(order => !order || !['move', 'stop', 'attack'].includes(order.kind) || !Number.isFinite(order.tick) || order.kind === 'move' && (!Number.isFinite(order.x) || !Number.isFinite(order.y)) || order.kind === 'attack' && !Number.isSafeInteger(order.targetId)))) throw new Error('掩护行军事实非法')
   if (state?.positions && (typeof state.positions !== 'object' || Array.isArray(state.positions) || Object.values(state.positions).some(position => !position || ![position.x, position.y, position.tick, position.stalls].every(Number.isFinite) || !Number.isSafeInteger(position.stalls) || position.stalls < 0))) throw new Error('掩护位置事实非法')
@@ -37,11 +47,13 @@ export const movementPerTick = (speed: number | undefined) => Number.isFinite(sp
 /** 最慢成员直达终点，其余成员追随规则速度推算的前视点；停车仅处理严重脱队。 */
 export function coverMoves(policy: CoverPolicy, snap: Snapshot, ids: number[], destination: { x: number; y: number }, previous: CoverMotion,
   options: { region?: Region; threat?: { rx: number; ry: number }; directDestination?: boolean } = {}) {
-  const { members, escorts, protectedUnits, slowest } = coverMembers(policy, snap, ids)
+  const all=coverMembers(policy,snap,ids),cohort=coverCohort(all.members,policy,snap.tick,previous.cohesion)
+  const { members, escorts, protectedUnits, slowest } = coverMembers(policy, snap, cohort.core.map(unit=>unit.id))
   const state = structuredClone(previous), actions: ActionRequest[] = []
-  state.orders = Object.fromEntries(Object.entries(state.orders).filter(([id]) => members.some(unit => unit.id === Number(id))))
+  state.cohesion=cohort.state
+  state.orders = Object.fromEntries(Object.entries(state.orders).filter(([id]) => all.members.some(unit => unit.id === Number(id))))
   const remaining = (unit: { rx: number; ry: number }) => Math.hypot(destination.x - unit.rx, destination.y - unit.ry)
-  const rear = Math.max(0, ...members.map(remaining)), span = Math.max(policy.gap, Math.sqrt(members.length))
+  const span = Math.max(policy.gap, Math.sqrt(members.length))
   const known = slowest.filter(unit => movementPerTick(unit.speed) > 0), drivers = known.length ? known : slowest
   const anchor = drivers.find(unit => unit.id === previous.prediction?.guideId) ?? [...drivers].sort((a, b) => remaining(b) - remaining(a) || a.id - b.id)[0]
   const coordinated = !!escorts.length && !!protectedUnits.length
@@ -71,17 +83,18 @@ export function coverMoves(policy: CoverPolicy, snap: Snapshot, ids: number[], d
   const stop: number[] = [], targets: Record<number, { x: number; y: number }> = {}
   state.heldIds = []
   if (members.length && protectedUnits.length) for (const unit of members) {
-    const lead = rear - remaining(unit)
-    const held = coordinated && lead > (previous.heldIds.includes(unit.id) ? span + policy.resumeGap : span * 3)
+    const driver=drivers.some(driver=>driver.id===unit.id)
+    const lead=anchor?(unit.rx-anchor.rx)*dx+(unit.ry-anchor.ry)*dy:0
+    const held = cohort.regroup.length ? !cohort.regroup.some(lagging=>lagging.id===unit.id) : coordinated&&!driver&&lead>(previous.cohesion&&previous.heldIds.includes(unit.id)?span:span*2)
     if (held) state.heldIds.push(unit.id)
     const order = previous.orders[unit.id]
     if (held) {
       if ((!unit.isIdle && (!order || order.kind !== 'stop' || snap.tick - order.tick >= 15)) || order?.kind === 'move') stop.push(unit.id)
       continue
     }
-    const direct = !coordinated || options.directDestination || drivers.some(driver => driver.id === unit.id)
-    let target = destination
-    if (!direct && anchor) {
+    const direct = !coordinated || options.directDestination || driver
+    let target = cohort.regroup.length&&cohort.point?clip(cohort.point.rx,cohort.point.ry):destination
+    if (!direct && anchor && !cohort.regroup.length) {
       const escort = policy.escortIds.includes(unit.id), role = escort ? escorts : protectedUnits
       const offset = (Number(escort) - Number(anchorEscort)) * Math.min(2, span / 2)
       const lane = (role.findIndex(member => member.id === unit.id) - (role.length - 1) / 2) * Math.min(1.2, span / Math.max(1, role.length))
@@ -101,14 +114,20 @@ export function coverMoves(policy: CoverPolicy, snap: Snapshot, ids: number[], d
     const retry = unit.isIdle && Math.hypot(unit.rx - target.x, unit.ry - target.y) > 2 && snap.tick - (order?.tick ?? -Infinity) >= (direct ? policy.retryTicks : 15)
     if (changed || direct && order?.kind === 'move' && (order.x !== target.x || order.y !== target.y) || !direct && movedTarget && (turned || snap.tick - order!.tick >= replanTicks) || retry) targets[unit.id] = target
   }
+  const body=anchor??cohort.point
+  if(body) for(const unit of cohort.catchingUp) {
+    const forward=Math.min(goalDistance,guideSpeed*predictionTicks)
+    const target=clip(body.rx+dx*forward,body.ry+dy*forward),old=previous.orders[unit.id]
+    if(!old||old.kind!=='move'||Math.hypot(old.x!-target.x,old.y!-target.y)>=2&&snap.tick-old.tick>=replanTicks||unit.isIdle&&Math.hypot(unit.rx-target.x,unit.ry-target.y)>2&&snap.tick-old.tick>=policy.retryTicks)targets[unit.id]=target
+  }
   if (stop.length) actions.push({ kind: 'stop', unitIds: stop })
   for (const [id, target] of Object.entries(targets)) {
     const grouped = actions.find(action => action.kind === 'move' && action.x === target.x && action.y === target.y)
     if (grouped && 'unitIds' in grouped) grouped.unitIds.push(Number(id))
     else actions.push({ kind: 'move', unitIds: [Number(id)], ...target })
   }
-  const view: NonNullable<GoalView['cover']> = { protectedIds: protectedUnits.map(unit => unit.id), escortIds: escorts.map(unit => unit.id), slowestIds: slowest.map(unit => unit.id), heldIds: [...state.heldIds],
-    detail: `被掩护${protectedUnits.length}、掩护${escorts.length}；${state.heldIds.length ? '严重脱队，临时重聚' : stalled ? '领行受阻，近身靠拢' : '最慢成员直达终点，其余按规则速度预测跟随'}${members.some(unit => unit.speed === undefined) ? '（部分速度规则待就绪）' : ''}` }
+  const view: NonNullable<GoalView['cover']> = { protectedIds: all.protectedUnits.map(unit => unit.id), escortIds: all.escorts.map(unit => unit.id), slowestIds: slowest.map(unit => unit.id), heldIds: [...state.heldIds],catchingUpIds:cohort.state.catchingUpIds,
+    detail: `被掩护${all.protectedUnits.length}、掩护${all.escorts.length}；${state.heldIds.length ? '严重脱队，有限重聚' : stalled ? '领行受阻，近身靠拢' : '最慢成员直达终点，其余按规则速度预测跟随'}${cohort.catchingUp.length?`；${cohort.catchingUp.length}个成员独立追赶主体`:''}${members.some(unit => unit.speed === undefined) ? '（部分速度规则待就绪）' : ''}` }
   return { actions, state, view }
 }
 export function recordCoverOrder(state: CoverMotion, request: ActionRequest, tick: number, results: ActionResult[]): void {

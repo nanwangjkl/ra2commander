@@ -1,5 +1,5 @@
 import { attackObjective, matchingAttackTargets, validTargetRegion } from '@ra2c/contracts'
-import { alive, baseConstraints, blocked, formationExists, formationPreparing, movementArrival, point, presentUnitIds, projection } from './common.ts'
+import { alive, baseConstraints, blocked, formationExists, formationPreparing, movementArrival, point, presentUnitIds, projection, stringsValid, unobservableMembers } from './common.ts'
 import type { GoalContext, GoalHandler } from './types.ts'
 import { coverMoves, emptyCoverMotion, validateCoverMotion } from '../cover.ts'
 import { directAttackOrders } from '../attack-orders.ts'
@@ -20,6 +20,8 @@ export const combat: GoalHandler<'combat'> = {
     if (!spec.formationId || !r || !point(map, r.x1, r.y1) || !point(map, r.x2, r.y2) || r.x1 > r.x2 || r.y1 > r.y2 || !Array.isArray(spec.allowedActions)) throw new Error('授权地域非法')
     if (spec.destination && !point(map, spec.destination.x, spec.destination.y) || spec.route && (!Array.isArray(spec.route) || !spec.route.length || spec.route.some(stop => !point(map, stop.x, stop.y)))) throw new Error('路线目的地非法')
     if (spec.attackRegion && !validTargetRegion(spec.attackRegion)) throw new Error('攻击范围非法')
+    if (spec.temporaryAbsenceNames && !stringsValid(spec.temporaryAbsenceNames)) throw new Error('暂时离场兵种非法')
+    if (spec.memberNames && Object.entries(spec.memberNames).some(([id,name])=>!Number.isSafeInteger(Number(id)) || typeof name!=='string' || !spec.temporaryAbsenceNames?.includes(name))) throw new Error('暂时离场成员身份非法')
     if (spec.baseDefense && (!validDefenseState(spec.baseDefense) || spec.mode !== 'hold' || spec.executionMode !== 'native' || !Array.isArray(spec.baseDefense.anchorNames) || !spec.baseDefense.anchorNames.length || spec.baseDefense.anchorNames.some(name=>typeof name!=='string'||!name) || spec.destination || spec.route || spec.objective || spec.attackRegion)) throw new Error('基地防守要求非法')
     if (spec.retreat && (!point(map, spec.retreat.x, spec.retreat.y) || !Number.isFinite(spec.retreat.lossAbove) || spec.retreat.lossAbove < 0 || spec.retreat.lossAbove >= 1)) throw new Error('回撤条件非法')
   },
@@ -38,7 +40,7 @@ export const combat: GoalHandler<'combat'> = {
       const selected = targets.filter(target => !ctx.spec.patrol || ctx.snap.self.some(unit => members(ctx).includes(unit.id) && Math.hypot(unit.rx - target.rx, unit.ry - target.ry) <= Math.max(unit.primaryWeapon?.maxRange ?? 0, unit.secondaryWeapon?.maxRange ?? 0)))
       if (selected.length) {
         const motion = ctx.goal.facts.coverMotion ??= emptyCoverMotion()
-        return directAttackOrders(ctx.snap, members(ctx), selected, motion)
+        return directAttackOrders(ctx.snap, members(ctx), selected, motion,attackObjective(ctx.spec)?.coordination==='focus')
       }
     }
     if (!destination) return []
@@ -54,6 +56,8 @@ export const combat: GoalHandler<'combat'> = {
     if (ctx.spec.baseDefense) observeBaseDefense(ctx)
     const { spec, goal: { facts }, snap } = ctx, converted: number[] = [], occupied = new Set(facts.members.map(member => member.id))
     let dead = 0
+    const unobservable = new Set(unobservableMembers(ctx))
+    for (const id of unobservable) if (facts.coverMotion) delete facts.coverMotion.orders[id]
     for (const member of facts.members) {
       let unit = snap.self.find(unit => unit.id === member.id)
       if (!unit) {
@@ -61,7 +65,7 @@ export const combat: GoalHandler<'combat'> = {
         unit = form ? snap.self.find(unit => unit.name === form && !occupied.has(unit.id) && Math.hypot(unit.rx - member.rx, unit.ry - member.ry) <= 2) : undefined
         if (unit) { occupied.add(unit.id); converted.push(unit.id); member.id = unit.id }
       }
-      if (unit) { member.name = unit.name; member.rx = unit.rx; member.ry = unit.ry } else dead++
+      if (unit) { member.name = unit.name; member.rx = unit.rx; member.ry = unit.ry } else if (!unobservable.has(member.id)) dead++
     }
     facts.lossRatio = facts.members.length ? dead / facts.members.length : 0
     if (spec.retreat && facts.lossRatio > spec.retreat.lossAbove) facts.retreatTriggered = true
@@ -71,7 +75,7 @@ export const combat: GoalHandler<'combat'> = {
     const { spec, goal } = ctx
     const present = presentUnitIds(ctx.snap)
     const trackedAlive = goal.facts.members.some(member => present.has(member.id) && (!ctx.formations.ownerOf(member.id) || ctx.formations.ownerOf(member.id) === spec.formationId))
-    if (!trackedAlive && !ctx.formations.membersOf(spec.formationId).some(id => present.has(id)) && !formationPreparing(ctx, spec.formationId)) {
+    if (!trackedAlive && !ctx.formations.membersOf(spec.formationId).some(id => present.has(id)) && !unobservableMembers(ctx).length && !formationPreparing(ctx, spec.formationId)) {
       goal.status = (goal.facts.routeIndex ?? 0) > 0 ? 'partial' : 'failed'
       goal.facts.outcomeDetail = `${spec.formationId} 已无存活成员，本次任务结束，保留队名；未自动补兵`
       return
@@ -100,6 +104,8 @@ export const combat: GoalHandler<'combat'> = {
     return spec.route ? { progress: { completed: goal.status === 'completed' ? spec.route.length : goal.facts.routeIndex ?? 0, total: spec.route.length, label: '已到达路点' }, ...(view.spec.kind === 'combat' && goal.status !== 'completed' ? { detail: `当前目的地：${view.spec.destination?.name ?? `${view.spec.destination?.x},${view.spec.destination?.y}`}；${view.cover?.detail ?? ''}` } : {}) } : view.cover ? { detail: view.cover.detail } : {}
   },
   execution(ctx) {
+    const missing = unobservableMembers(ctx)
+    if (!members(ctx).length && missing.length) return {state:'pending',detail:`${missing.length}个成员暂时不可观测，可能寄生离场，保留原任务等待重现；未自动补兵`}
     if (!ctx.spec.baseDefense) return
     if (!members(ctx).length && formationPreparing(ctx,ctx.spec.formationId)) return {state:'pending',detail:`等待${ctx.spec.formationId}本次生产和成员交接，防守基地要求已保留`}
     const area=defenseState(ctx).region, count=defenseTargets(ctx).length

@@ -21,10 +21,11 @@ export interface RuleFacts {
   label?: string | undefined; power?: number | undefined; category?: string | undefined
   harvester?: boolean | undefined; naval?: boolean | undefined; refinery?: boolean | undefined
   constructionYard?: boolean | undefined; engineer?: boolean | undefined
+  isBaseDefense?: boolean | undefined
 }
 const normalize = (value: string) => value.normalize('NFKC').replace(/\s+/g, '').toLowerCase()
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string' && !!item.trim())
-const FLAGS = ['harvester', 'naval', 'refinery', 'constructionYard', 'engineer']
+const FLAGS = ['harvester', 'naval', 'refinery', 'constructionYard', 'engineer', 'isBaseDefense']
 
 /** 只保存当前游戏的目录和角色提示；实时规则由引擎查询提供。 */
 export class GameProfile {

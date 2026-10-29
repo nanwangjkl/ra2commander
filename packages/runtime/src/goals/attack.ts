@@ -20,12 +20,14 @@ function plan(ctx: GoalContext<'attack'>) {
     return record.observedIds.includes(id) && source && ['active', 'pending'].includes(source.status) && source.spec.kind === 'production' && source.spec.formationId === ctx.spec.formationId
   })
   const preparing = ctx.spec.preparationGoalIds.some(id => { const goal = ctx.goals.get(id); return goal && ['pending', 'active'].includes(goal.status) }) || retained.some(id => ctx.snap.self.some(unit => unit.id === id) && (ctx.locked(id) || waitingAssignment(id)))
-  return planAttack(ctx.spec, ctx.snap, members(ctx), ctx.goal.facts.attack ?? initialAttack(), preparing, retained)
+  const released = preparing ? [] : retained.filter(id => ctx.formations.ownerOf(id) !== ctx.spec.formationId)
+  return planAttack(ctx.spec, ctx.snap, members(ctx), ctx.goal.facts.attack ?? initialAttack(), preparing, retained, released)
 }
 export const attack: GoalHandler<'attack'> = {
   validateSpec(spec) {
-    if (!idsValid(spec.unitIds, true) || !spec.unitIds.length && !spec.dynamicNames?.length && spec.membership?.kind !== 'prepared' || !idsValid(spec.aircraftIds, true) || spec.aircraftIds.some(id => !spec.unitIds.includes(id)) || !stringsValid(spec.preparationGoalIds) || !stringsValid(spec.targetNames) || spec.dynamicNames && !stringsValid(spec.dynamicNames, false) || !['enemies', 'base', 'units', 'buildings'].includes(spec.targetKind) || !spec.ammoCapacity || Object.values(spec.ammoCapacity).some(value => !Number.isFinite(value)) || spec.targetRegion && !validTargetRegion(spec.targetRegion)) throw new Error('攻击对象或目标范围非法')
+    if (!idsValid(spec.unitIds, true) || !spec.unitIds.length && !spec.dynamicNames?.length && spec.membership?.kind !== 'prepared' || !idsValid(spec.aircraftIds, true) || spec.aircraftIds.some(id => !spec.unitIds.includes(id)) || !stringsValid(spec.preparationGoalIds) || !stringsValid(spec.targetNames) || spec.dynamicNames && !stringsValid(spec.dynamicNames, false) || spec.temporaryAbsenceNames && !stringsValid(spec.temporaryAbsenceNames) || !['enemies', 'base', 'units', 'buildings'].includes(spec.targetKind) || !spec.ammoCapacity || Object.values(spec.ammoCapacity).some(value => !Number.isFinite(value)) || spec.targetRegion && !validTargetRegion(spec.targetRegion)) throw new Error('攻击对象或目标范围非法')
     if (spec.membership && (spec.membership.kind !== 'selected' && spec.membership.kind !== 'prepared' || spec.membership.kind === 'prepared' && (!spec.formationId || !stringsValid(spec.membership.goalIds, false) || !stringsValid(spec.membership.names, false) || spec.membership.limit !== undefined && (!Number.isSafeInteger(spec.membership.limit) || spec.membership.limit < 1)))) throw new Error('攻击成员来源非法')
+    if (spec.memberNames && Object.entries(spec.memberNames).some(([id,name])=>!spec.unitIds.includes(Number(id)) || typeof name!=='string' || !name)) throw new Error('攻击成员身份非法')
   },
   validateLive(ctx) {
     if (ctx.spec.formationId && !formationExists(ctx, ctx.spec.formationId, true)) throw new Error('攻击编队不存在或尚无准备目标')
@@ -35,13 +37,14 @@ export const attack: GoalHandler<'attack'> = {
     validateCoverMotion(facts.coverMotion)
     if (facts.coverReleasedIds && !idsValid(facts.coverReleasedIds, true)) throw new Error('解除掩护后的攻击成员非法')
     const state = facts.attack
-    if (state && (!Array.isArray(state.members) || new Set(state.members.map(member => member.unitId)).size !== state.members.length || state.members.some(member => !Number.isSafeInteger(member.unitId) || typeof member.aircraft !== 'boolean' || !['pending', 'ready', 'attacking', 'fired', 'lost', 'released'].includes(member.phase) || [member.lastAmmo, member.lastCooldown, member.acceptedAt, member.firedAt].some(value => value !== undefined && !Number.isFinite(value))))) throw new Error('攻击与投弹进度非法')
+    if (state && (!Array.isArray(state.members) || new Set(state.members.map(member => member.unitId)).size !== state.members.length || state.members.some(member => !Number.isSafeInteger(member.unitId) || typeof member.aircraft !== 'boolean' || member.name !== undefined && (typeof member.name !== 'string' || !member.name) || !['pending', 'ready', 'attacking', 'fired', 'lost', 'released', 'unobservable'].includes(member.phase) || [member.lastAmmo, member.lastCooldown, member.acceptedAt, member.firedAt].some(value => value !== undefined && !Number.isFinite(value))))) throw new Error('攻击与投弹进度非法')
     if (activeSpec && !state) throw new Error('攻击缺少执行进度')
   },
-  initialize({ goal }) { goal.facts.attack ??= initialAttack(); goal.facts.initialized = true },
+  initialize(ctx) { ctx.goal.facts.attack ??= initialAttack(); ctx.goal.facts.attack = plan(ctx).state; ctx.goal.facts.initialized = true },
   observe(ctx) {
     const planned = plan(ctx)
     ctx.goal.facts.attack = planned.state
+    for (const id of planned.view.unobservableIds ?? []) if (ctx.goal.facts.coverMotion) delete ctx.goal.facts.coverMotion.orders[id]
     if (paused(ctx)) for (const member of planned.state.members) if (member.acceptedAt !== undefined) member.acceptedAt = ctx.snap.tick
     if (planned.finished) { ctx.goal.status = planned.outcome; if (planned.outcome !== 'completed') ctx.goal.facts.outcomeDetail = planned.view.detail }
   },
@@ -51,7 +54,7 @@ export const attack: GoalHandler<'attack'> = {
   },
   execution(_ctx, { view }) {
     const attack = view.attack!
-    const waiting = !attack.readyIds.length && !attack.attackingIds.length && (attack.pendingIds.length > 0 || attack.preparing)
+    const waiting = !attack.readyIds.length && !attack.attackingIds.length && (attack.pendingIds.length > 0 || !!attack.unobservableIds?.length || attack.preparing)
     return { state: waiting ? 'pending' : attack.groundIds.length ? 'continuous' : 'running', detail: `${attack.detail}${view.cover ? `；${view.cover.detail}` : ''}`, ...(attack.totalAircraft ? { progress: { completed: attack.firedIds.length, total: attack.totalAircraft, label: '已实际发射一次' } } : {}) }
   },
   terminalExecution({ goal }) {
@@ -69,7 +72,7 @@ export const attack: GoalHandler<'attack'> = {
       ctx.goal.facts.coverMotion = result.state
       return result.actions
     }
-    return directAttackOrders(ctx.snap, planned.view.readyIds, planned.view.targets, motion)
+    return directAttackOrders(ctx.snap, planned.view.readyIds, planned.view.targets, motion,attackObjective(ctx.spec)?.coordination==='focus')
   },
   stopMembers: ctx => members(ctx).filter(id => !ctx.goal.facts.attack?.members.some(member => member.unitId === id && member.phase === 'fired')),
   afterSubmit({ goal, snap }, request, results) { recordAttack(goal.facts.attack ??= initialAttack(), request, results, snap) },

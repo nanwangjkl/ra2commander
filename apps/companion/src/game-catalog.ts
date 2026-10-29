@@ -107,7 +107,7 @@ export async function loadGameCatalog(ctx: CommandContext, check: () => void, pr
     const label = rule.label ?? entry?.label
     return { name, type, label, techLevel: rule.techLevel, limitation, power: rule.power ?? 0, deploysInto: rule.deploysInto, undeploysInto: rule.undeploysInto, deployer: rule.deployer ?? entry?.deployer, undeployDelay: rule.undeployDelay ?? entry?.undeployDelay, ammo: rule.ammo, available: available.has(name),
       factions: profile.factionsFor(name), roles: profile.rolesFor(name, type, { ...rule, label: `${label ?? ''} ${rule.label ?? ''}` }), aliases,
-      harvester: rule.harvester, naval: rule.naval, refinery: rule.refinery, constructionYard: rule.constructionYard, engineer: rule.engineer, unsellable: rule.unsellable }
+      harvester: rule.harvester, naval: rule.naval, refinery: rule.refinery, constructionYard: rule.constructionYard, engineer: rule.engineer, isBaseDefense: rule.isBaseDefense, unsellable: rule.unsellable }
   }))
   return new GameCatalog(all.filter((item): item is NonNullable<typeof item> => !!item).filter(item => item.techLevel === undefined || item.techLevel >= 0 || available.has(item.name) || snap.self.some(unit => unit.name === item.name) || !!profile.member(item.name)), snap, profile)
 }

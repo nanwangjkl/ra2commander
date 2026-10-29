@@ -46,6 +46,8 @@ export async function bindBaseDefense(params: ResolvedCapabilityParameters['comb
   const rule = catalog.all.find(item=>item.name===base.name)!
   const names = [base.name, rule.deploysInto, rule.undeploysInto].filter((name):name is string=>!!name)
   const goal: CombatGoal = {id:`command-${randomUUID().slice(0,8)}`,kind:'combat',rawText:context.text,formationId,executionMode:'native',mode:'hold',region:fullMap(snap),allowedActions:['move','attack','stop'],
+    temporaryAbsenceNames:catalog.all.filter(item=>catalog.isRole(item.name,'terrorDrone',item.type)).map(item=>item.name),
+    memberNames:Object.fromEntries(ctx.runtime.unobservableMembers(formationId).map(member=>[member.id,member.name])),
     baseDefense:{anchorId:base.id,anchorNames:[...new Set(names)],position:{x:base.rx,y:base.ry},region:{id:area.id,name:area.name,polygons:structuredClone(area.polygons)}},...(params.label?{label:params.label}:{})}
   if (params.retreatLoss !== undefined) {
     if (params.retreatX === undefined || params.retreatY === undefined || !Number.isInteger(params.retreatX) || !Number.isInteger(params.retreatY) || params.retreatX<0 || params.retreatY<0 || params.retreatX>=snap.mapWidth || params.retreatY>=snap.mapHeight) throw new Error('战损回撤缺少合法回撤点')

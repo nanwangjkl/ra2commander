@@ -4,10 +4,11 @@
 {
   "id": "combat.clear-region",
   "name": "清理指定分区敌人",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "binder": "combat.clear-region",
   "owner": "formation",
   "parameters": {
+    "splitTargets": {"type":"boolean","default":false,"description":"仅在明确要求分头、分散或各自攻击时为true；普通编队默认集中主目标"},
     "formationId": {
       "type": "string",
       "description": "编队名称或数字别名；使用当前 formations",
@@ -31,3 +32,5 @@
 三个攻击能力由同一攻击要求绑定目标类别、真实地域、搜索方式与结束条件。地面队在看不见敌人时仍进入指定分区搜索；混有飞机时地面部分也保留这一行为，飞机独立等待装弹和单次出击。
 
 本机直接执行：区内已有匹配敌人时立即下达 attack，由游戏处理接近，不先集结或到分区中心。只有没有匹配敌人时才前往区内搜索；沿途经过其他分区不扩大主动攻击范围。targetSelectors 和 targetDomain 同时限定敌方目标。
+
+普通编队默认集中攻击一个主要目标，目标失效后继续选择下一目标；不要求先集结或进入射程。玩家明确要求“分头／各自攻击”才填 splitTargets=true；目标兵种和区域要求照常保留。

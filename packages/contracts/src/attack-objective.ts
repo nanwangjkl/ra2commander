@@ -4,6 +4,7 @@ import { inTargetRegion, validTargetRegion, type TargetRegion } from './spatial.
 
 /** 攻击什么、在哪里寻找以及何时结束分别表达，兼容不同成员执行方式。 */
 export interface AttackObjective {
+  coordination?: 'focus' | 'independent'
   target: { kind: 'enemies' | 'base' | 'units' | 'buildings'; names: string[]; id?: number; region?: TargetRegion; unitNames?: string[]; unitTypes?: number[]; domain?: 'air' | 'ground' }
   search: { kind: 'visible' | 'region' | 'map'; destination?: { x: number; y: number; name?: string } }
   completion: { ground: 'continuous'; aircraft: 'single-shot' }
@@ -42,6 +43,7 @@ export function validAttackObjective(value: AttackObjective): boolean {
   return !!value && !!value.target && ['enemies', 'base', 'units', 'buildings'].includes(value.target.kind) && Array.isArray(value.target.names) && value.target.names.every(name => typeof name === 'string' && !!name)
     && (value.target.id === undefined || Number.isSafeInteger(value.target.id)) && (!value.target.region || validTargetRegion(value.target.region))
     && (value.target.domain === undefined || ['air', 'ground'].includes(value.target.domain))
+    && (value.coordination === undefined || ['focus','independent'].includes(value.coordination))
     && (value.target.unitNames === undefined || Array.isArray(value.target.unitNames) && value.target.unitNames.length > 0 && value.target.unitNames.every(name => typeof name === 'string' && !!name))
     && (value.target.unitTypes === undefined || Array.isArray(value.target.unitTypes) && value.target.unitTypes.length > 0 && value.target.unitTypes.every(type => [1, 2, 3, 7].includes(type)))
     && !!value.search && ['visible', 'region', 'map'].includes(value.search.kind) && (value.search.kind !== 'region' || !!value.target.region)

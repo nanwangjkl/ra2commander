@@ -9,6 +9,8 @@ index 是 failures 中的下标。最多返回8个调用，仅修正失败部分
 
 根据 catalog 的类型、别名和原生ID选项目。生产坦克并编队需要机动单位，不能选同名的部署建筑形态。available=false 可以递归补前置，不表示项目不存在。不要凭空创建叫“矿车”之类的编队；对现有未编队单位使用支持 selector 或 unitIds 的能力。无法表达的部分保留失败，其余部分继续。
 
+具体项目的同义词失败时改用相应原生ID，保留数量、编队和建造位置，不改成较泛的类别。“核电站／核电厂”是 nuclearPowerPlant（苏军 NANRCT），不能改成普通 NAPOWR；尚未解锁时补科技前置。
+
 “飞机”等类别名可通过 catalog.roles 选择具体项目，优先当前可造且适用本国的候选；存在匹配候选时不要返回空 repairs 或将生产改为现有单位攻击。
 
 攻击修正必须保留原 formationId、selector、unitIds、target/targetId、targetSelectors、targetDomain 和 regionName。编队还在创建时等待交接，不能通过删除 formationId 改成全部作战编队。按兵种攻击可用 combat.attack，禁止额外建数字编队或把其他小队带入行动。

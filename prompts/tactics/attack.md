@@ -19,3 +19,5 @@ attack 目标使用本步 g.attack.readyIds 和 g.attack.targets。只对 readyI
 当 search.kind=region 且有 search.destination 时，地面 groundIds 即使暂时没有匹配敌人，也应 move 前往该点并在区域内继续搜索/观察；到达不表示清空。攻击移动只能选择目标分区内部落点，进入区域前用 move 赶路，不主动清理沿途其他分区。只移动 groundIds，飞机仍只直接 attack。search.kind=map 的地面成员主动接近可见匹配敌人；无目标时继续观察，不猜隐藏敌人位置。混编时地面搜索和飞机等待/出击独立推进。
 
 membership.kind=selected 表示本次固定选中的现有 ID；prepared 表示还会从明确的生产/编队目标接入本次成员，宿主按真实产物和交接维护 readyIds，不按兵种无限纳入后来生产的单位。不要自行扩大名单，也不要因首批成员已经出击就丢弃其余待准备成员。
+
+新普通编队的 objective.coordination=focus 表示全队共用主要目标，仍按空地武器能力选相容敌人，不逐车分散追不同矿车；independent 才各自选敌。生成脚本回退时也保留该要求，不增加集结或射程前置。待准备兵种只来自本次真实生产／编队来源和当前选中成员，不按全部作战目录虚构飞机准备或出击说明。
