@@ -105,6 +105,36 @@ test('预测使用引擎规则速度和公开移动方向，转向与领行成�
   assert.ok(replacement.actions.every(action => !('unitIds' in action) || !action.unitIds.includes(1)))
 })
 
+test('直接攻击不等集结或射程，接敌途中仍兼容更快和更慢的掩护', () => {
+  for (const speeds of [[27.57,39.38],[27.57,20.48]]) {
+    const units = speeds.map((speed,i)=>({...snapshot().self[0]!,id:i+1,speed,rx:5,ry:5}))
+    const enemy = {id:99,name:'ENEMY',type:7,rx:80,ry:5,isIdle:true}
+    const orders = new Map<number, ActionRequest>(), target = {x:80,y:5}
+    let state=emptyCoverMotion(), maximum=0
+    for(let n=0;n<160;n++) {
+      const snap=snapshot({tick:n*15,self:units,enemies:[enemy]})
+      const ranges=units.map(unit=>({unitId:unit.id,targetId:99,canAttack:true,inRange:Math.hypot(unit.rx-80,unit.ry-5)<=6}))
+      const result=coverCombat(policy,snap,[1,2],{targets:[enemy],threats:[enemy],destination:target,region:{name:'全图',x1:0,y1:0,x2:99,y2:99},waiting:false},state,ranges)
+      state=result.state
+      if(n===0) assert.ok(result.actions.some(action=>action.kind==='attack'&&action.unitIds.includes(1)), '远处已有敌人时主战立即攻击')
+      for(const action of result.actions) {
+        for(const id of 'unitIds' in action?action.unitIds:[])orders.set(id,action)
+        recordCoverOrder(state,action,snap.tick,[{ok:true,submitted:1,session:1}])
+      }
+      for(const unit of units) {
+        const order=orders.get(unit.id), point=order?.kind==='move'?order:order?.kind==='attack'?target:undefined
+        const dx=(point?.x??unit.rx)-unit.rx,dy=(point?.y??unit.ry)-unit.ry,distance=Math.hypot(dx,dy)
+        const travel=order?.kind==='attack'&&distance<=6?0:Math.min(distance,unit.speed!*15/256)
+        unit.rx+=distance?dx/distance*travel:0;unit.ry+=distance?dy/distance*travel:0;unit.isIdle=!travel&&order?.kind!=='attack'
+        unit.velocity={x:distance?dx/distance*travel:0,y:0,z:distance?dy/distance*travel:0}
+      }
+      maximum=Math.max(maximum,Math.hypot(units[0]!.rx-units[1]!.rx,units[0]!.ry-units[1]!.ry))
+    }
+    assert.ok(maximum<policy.gap*2, `接敌途中不能因直接攻击而脱队：${maximum}`)
+    assert.ok(units.every(unit=>Math.hypot(unit.rx-80,unit.ry-5)<8),'双方均继续接近敌人')
+  }
+})
+
 async function fixture(escortSpeed = 12, mainSpeed = 6, prepare = true) {
   const own: SnapshotUnit[] = Array.from({ length: 10 }, (_, i) => ({ id: i + 1, name: i < 5 ? 'MTNK' : 'ADOG', type: i < 5 ? 7 : 3, rx: 5, ry: 5, isIdle: true, speed: i < 5 ? mainSpeed : escortSpeed, zone: 0 }))
   const env = await harness({ run: async () => outcome([]) }, { formations: new FormationRegistry() })
@@ -136,13 +166,8 @@ test('同句先编入5辆坦克、再用5条狗掩护，只建立一个十人队
       { capability: 'skill.run', params: { skillId: 'cover', formationId: '1队', selector: 'ADOG', quantity: 5 } },
     ], f.ctx, { text: '5辆坦克组成1队，5个警犬掩护', prompts: f.prompts, catalog: f.catalog })
     assert.deepEqual(result.skipped, [])
-    // 运行真实生成代码，非编译夹具的空结果。
-    const program = f.runtime.programs.get('global')!
-    const frame = f.runtime.compileFrame(f.runtime.beginCompile('global'))
-    const generated = await executor.run(program.script!.code, frame.snapshot, {}, frame.constraints)
-    assert.equal(generated.ok, true)
-    assert.equal(generated.actions[0]!.request.kind, 'createFormation')
-    // 使用同一生产级执行器继续运行提交、停车交接。
+    assert.equal(f.runtime.programs.get('global')!.script, undefined, '编入和掩护本机执行，不等待生成脚本')
+    // 恢复后继续真实本机提交与停车交接。
     const restored = await harness(executor, { formations: new FormationRegistry() })
     await restored.runtime.onSnapshot({ ...f.runtime.snapshot!, seq: f.runtime.snapshot!.seq + 1 })
     restoreState(restored.runtime, persistState(f.runtime))

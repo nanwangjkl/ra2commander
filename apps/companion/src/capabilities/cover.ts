@@ -7,7 +7,8 @@ import { matchesFutureMember } from '../unit-selection.ts'
 
 export async function bindCover(params: ResolvedCapabilityParameters['formation.cover'], context: BindingContext): Promise<BoundCapability> {
   const { ctx } = context, catalog = await context.catalog(); context.check()
-  const formationId = formationName(ctx, params.formationId, true), existing = ctx.formations.membersOf(formationId)
+  const present = new Set(ctx.runtime.snapshot!.self.map(unit => unit.id))
+  const formationId = formationName(ctx, params.formationId, true), existing = ctx.formations.membersOf(formationId).filter(id => present.has(id))
   const exists = ctx.formations.list().some(formation => formation.id === formationId)
   const planned = context.formationGoals.get(formationId)
   const plannedIds = planned && planned.request.kind !== 'dissolveFormation' ? planned.request.unitIds : []

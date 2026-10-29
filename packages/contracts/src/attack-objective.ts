@@ -4,7 +4,7 @@ import { inTargetRegion, validTargetRegion, type TargetRegion } from './spatial.
 
 /** 攻击什么、在哪里寻找以及何时结束分别表达，兼容不同成员执行方式。 */
 export interface AttackObjective {
-  target: { kind: 'enemies' | 'base' | 'units' | 'buildings'; names: string[]; id?: number; region?: TargetRegion }
+  target: { kind: 'enemies' | 'base' | 'units' | 'buildings'; names: string[]; id?: number; region?: TargetRegion; unitNames?: string[]; unitTypes?: number[]; domain?: 'air' | 'ground' }
   search: { kind: 'visible' | 'region' | 'map'; destination?: { x: number; y: number; name?: string } }
   completion: { ground: 'continuous'; aircraft: 'single-shot' }
 }
@@ -34,14 +34,26 @@ export function matchingAttackTargets(spec: AttackGoal | CombatGoal, enemies: re
   if (!objective) return [...enemies]
   const target = objective.target
   return enemies.filter(unit => (target.id === undefined || unit.id === target.id) && (!target.region || inTargetRegion(unit.rx, unit.ry, target.region))
+    && (!target.domain || isAirborne(unit) === (target.domain === 'air'))
+    && (!target.unitNames && !target.unitTypes || !!target.unitNames?.includes(unit.name) || !!target.unitTypes?.includes(unit.type))
     && (target.kind === 'enemies' || target.kind === 'base' && target.names.includes(unit.name) || target.kind === 'buildings' && unit.type === 2 || target.kind === 'units' && [1, 3, 7].includes(unit.type)))
 }
 export function validAttackObjective(value: AttackObjective): boolean {
   return !!value && !!value.target && ['enemies', 'base', 'units', 'buildings'].includes(value.target.kind) && Array.isArray(value.target.names) && value.target.names.every(name => typeof name === 'string' && !!name)
     && (value.target.id === undefined || Number.isSafeInteger(value.target.id)) && (!value.target.region || validTargetRegion(value.target.region))
+    && (value.target.domain === undefined || ['air', 'ground'].includes(value.target.domain))
+    && (value.target.unitNames === undefined || Array.isArray(value.target.unitNames) && value.target.unitNames.length > 0 && value.target.unitNames.every(name => typeof name === 'string' && !!name))
+    && (value.target.unitTypes === undefined || Array.isArray(value.target.unitTypes) && value.target.unitTypes.length > 0 && value.target.unitTypes.every(type => [1, 2, 3, 7].includes(type)))
     && !!value.search && ['visible', 'region', 'map'].includes(value.search.kind) && (value.search.kind !== 'region' || !!value.target.region)
     && (!value.search.destination || Number.isSafeInteger(value.search.destination.x) && Number.isSafeInteger(value.search.destination.y))
     && value.completion?.ground === 'continuous' && value.completion.aircraft === 'single-shot'
+}
+
+export const isAirborne = (unit: SnapshotUnit): boolean => unit.zone === 1 || unit.type === 1
+/** 只按公开武器空地能力选敌；距离和接近仍由游戏处理，缺少武器信息时不拒绝行动。 */
+export function canAttackTarget(unit: SnapshotUnit, target: SnapshotUnit): boolean {
+  const weapons = [unit.primaryWeapon, unit.secondaryWeapon].filter(weapon => !!weapon)
+  return !weapons.length || weapons.some(weapon => isAirborne(target) ? weapon.aa : weapon.ag)
 }
 
 /** 缺少新成员来源字段的 v4 目标按已捕获的准备目标兼容读取。 */

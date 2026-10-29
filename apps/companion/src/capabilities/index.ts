@@ -6,7 +6,7 @@ import { loadGameCatalog, type GameCatalog } from './selectors.ts'
 import { skillGoalIds } from '@ra2c/runtime'
 import { randomUUID } from 'node:crypto'
 import { relocationKey } from '../base-relocation.ts'
-import { retainBindingScope } from './binding-recovery.ts'
+import { retainBindingRepairs } from './binding-recovery.ts'
 import { InterruptedOperation, interruptTranscripts, priorityCall } from '../transcript-queue.ts'
 
 export function validateBindings(prompts: PromptLibrary): void { prompts.capabilities.assertBindings(Object.keys(bindings)) }
@@ -211,7 +211,7 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
         if (!Number.isInteger(correction.index) || !failures[correction.index] || handled.has(correction.index)) continue
         handled.add(correction.index)
         let scoped: CapabilityCall[]
-        try { scoped = correction.operations.map(value => retainBindingScope(failures[correction.index]!.operation, value, prompts)) }
+        try { scoped = retainBindingRepairs(failures[correction.index]!.operation, correction.operations, prompts, options.text) }
         catch (error) {
           skip(failures[correction.index]!.error)
           skip(`未采用绑定修正：${String(error)}`)

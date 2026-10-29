@@ -189,7 +189,7 @@ test('回放同句两队编入后出发：先交接再移动，改二队时仅�
     const text = '所有坦克编入1队，所有狗编入2队，一队去三楼左下，2队去三楼右上'
     const output = await f.say(text, [assign('tanks'), assign('scoutDog', '2队'), move('1队', '三楼左下'), move('2队', '三楼右上')])
     assert.doesNotMatch(output, /编队不存在/)
-    assert.deepEqual(f.calls, { interpret: 1, compile: 3 }, '整句理解一次，全局及两个编队各生成一次')
+    assert.deepEqual(f.calls, { interpret: 1, compile: 2 }, '编入现有成员本机执行，两个普通移动编队各生成一次')
     const combat = [...f.runtime.goals.values()].filter(goal => goal.spec.kind === 'combat')
     assert.equal(combat.length, 2)
     assert.ok(combat.every(goal => f.runtime.goalExecution(goal.spec.id)?.detail?.includes('等待')))

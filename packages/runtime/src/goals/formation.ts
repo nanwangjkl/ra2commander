@@ -26,5 +26,10 @@ export const formation: GoalHandler<'formation'> = {
     return projection(ctx, { ...baseConstraints(ctx), management: { kind, formationId: r.formationId, allowedUnitIds: allowed, maxUnits: needed.length, exact: true, ...(kind === 'createFormation' && r.kind === 'createFormation' ? { force: !!r.force } : {}) } }, blocked(ctx))
   },
   managedMembers: members,
-  nativeActions(ctx) { return ctx.goal.status === 'active' ? [ctx.spec.request] : [] },
+  nativeActions(ctx) {
+    const { constraints, view } = formation.project(ctx), management = constraints.management!
+    if (ctx.goal.status !== 'active' || view.blocked) return []
+    if (management.kind === 'dissolveFormation') return [{ kind: 'dissolveFormation', formationId: management.formationId }]
+    return management.allowedUnitIds.length ? [{ kind: management.kind, formationId: management.formationId, unitIds: management.allowedUnitIds, ...(management.force ? { force: true } : {}) }] : []
+  },
 }

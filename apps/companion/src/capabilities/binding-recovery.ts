@@ -1,15 +1,25 @@
 import type { CapabilityCall, PromptLibrary } from '@ra2c/command'
+import { isBaseRegion } from '../base-defense.ts'
 
 const ATTACKS = new Set(['combat.attack', 'combat.attack-all', 'combat.clear-region'])
 /** 绑定修正保留攻击范围和掩护职责，不能把失败的战术要求降为普通生产或编队。 */
-export function retainBindingScope(original: unknown, replacement: unknown, prompts: PromptLibrary): CapabilityCall {
+export function retainBindingScope(original: unknown, replacement: unknown, prompts: PromptLibrary, text = ''): CapabilityCall {
   let previous: CapabilityCall
   try { previous = prompts.capabilities.parse(original) } catch { return prompts.capabilities.parse(replacement) }
+  if(previous.capability==='combat.hold'&&(previous.params.defendBase||isBaseRegion(previous.params.regionName))) {
+    const corrected=prompts.capabilities.parse(replacement)
+    if(corrected.capability!=='combat.hold')throw new Error('基地防守修正必须保留基地分区与原地待命，不能降为普通移动或进攻')
+    const {regionName:_region,bounds:_bounds,...params}=previous.params
+    return prompts.capabilities.parse({capability:'combat.hold',params:{...params,defendBase:true,mode:'hold'}})
+  }
   const isCover = (call: CapabilityCall) => call.capability === 'formation.cover' || call.capability === 'skill.run' && prompts.skills.get(call.params.skillId)?.definition.id === 'cover'
   if (isCover(previous)) {
     const corrected = prompts.capabilities.parse(replacement)
     if (!isCover(corrected)) throw new Error('掩护绑定修正必须保留同队掩护，不能改成只生产、普通编队或其他 Skill')
     const before = previous.params as Record<string, unknown>, after = corrected.params as Record<string, unknown>
+    // 泛称的防空车来自玩家原话，IFV 只是模型误选；不能把误选固定为原始要求。
+    const selector = String(before.selector ?? ''), role = prompts.game.roleForAlias(selector)
+    if (/防空车|防空战车/.test(text) && !/IFV|FV|多功能/i.test(text) && !before.unitIds && (role === 'infantryFightingVehicle' || role === 'antiAirVehicle' || prompts.game.rolesFor(selector, 7).includes('antiAirVehicle'))) before.selector = 'antiAirVehicle'
     const acceptedFields = prompts.capabilities.definitions().find(definition => definition.id === corrected.capability)!.parameters
     for (const field of ['formationId', 'selector', 'unitIds', 'quantity', 'protectedSelector', 'protectedQuantity', 'protectedUnitIds', 'memberSource', 'useExisting']) {
       if (before[field] === undefined) continue
@@ -28,10 +38,20 @@ export function retainBindingScope(original: unknown, replacement: unknown, prom
   if (!ATTACKS.has(corrected.capability)) throw new Error('攻击绑定修正不能改成建队或其他全局操作')
   const before = previous.params as Record<string, unknown>, after = corrected.params as Record<string, unknown>
   const acceptedFields = prompts.capabilities.definitions().find(definition => definition.id === corrected.capability)!.parameters
-  for (const field of ['formationId', 'selector', 'unitIds', 'regionName', 'target', 'targetId', 'quantity']) {
+  for (const field of ['formationId', 'selector', 'unitIds', 'regionName', 'target', 'targetId', 'targetSelectors', 'targetDomain', 'quantity']) {
     if (before[field] === undefined) continue
     if (!(field in acceptedFields)) throw new Error(`修正不能丢弃原攻击的 ${field} 范围`)
     after[field] = before[field]
   }
   return prompts.capabilities.parse(corrected)
+}
+
+/** 掩护修正按整组审核，生产由掩护绑定器按固定份额统一建立，避免先造一份又补造。 */
+export function retainBindingRepairs(original: unknown, replacements: unknown[], prompts: PromptLibrary, text: string): CapabilityCall[] {
+  const previous = prompts.capabilities.parse(original)
+  const isCover = (call: CapabilityCall) => call.capability === 'formation.cover' || call.capability === 'skill.run' && call.params.skillId === 'cover'
+  if (!isCover(previous)) return replacements.map(value => retainBindingScope(original, value, prompts, text))
+  const parsed = replacements.map(value => prompts.capabilities.parse(value)), covers = parsed.filter(isCover)
+  if (covers.length !== 1 || parsed.some(call => !isCover(call) && call.capability !== 'production.produce')) throw new Error('掩护绑定修正必须保留同队掩护，不能改成只生产、普通编队或其他 Skill')
+  return [retainBindingScope(previous, covers[0], prompts, text)]
 }

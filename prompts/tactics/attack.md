@@ -10,6 +10,8 @@ attack 目标使用本步 g.attack.readyIds 和 g.attack.targets。只对 readyI
 
 地面 readyIds 有匹配敌人时优先直接 attack，由游戏处理接近、寻路和开火，不必先计算射程或等待全体进入射程。持续根据匹配敌人重选目标；无匹配敌人时继续观察，不猜隐藏敌军坐标或宣称全图胜利。生成代码不能缓存生成时的 ID/弹药或丢弃其他目标。
 
+新攻击默认本机执行；本主题保留给旧脚本和显式调试回退。objective.target.unitNames/unitTypes 是敌方名称或类别并集，domain 限定空中／地面，包含空中的步兵；不能当作己方选择器，也不能在修复时删除。普通攻击只按武器空地能力分配目标，不添加距离门槛。
+
 避免每步重复发令，但去重必须包含动作类型、目标和动态成员：发过 move/attackMove 只表示下达行军，不能据此跳过后续 attack；如确实先行军，到达目标附近后仍须下达攻击。仅实际返回 attack 动作时才能记为已下达攻击，不能用“目标 ID 相同”代替动作阶段。新加入的地面成员和新装满弹的飞机必须获得指令。
 
 攻击要求统一在 spec.objective：target 给出类别、ID 和可选真实分区；search.kind 分别为 visible（等待可见目标）、region（进入区域寻找）或 map（全图推进）；completion 区分地面持续作战与飞机单次发射。旧 targetKind/targetRegion 等仅为兼容字段，不扩大 objective 的目标范围。

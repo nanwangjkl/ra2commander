@@ -2,7 +2,7 @@
 
 ```capability
 {
-  "id":"combat.attack", "name":"选择单位攻击", "version":"1.0.0", "binder":"combat.attack", "owner":"selected",
+  "id":"combat.attack", "name":"选择单位攻击", "version":"1.1.0", "binder":"combat.attack", "owner":"selected",
   "parameters": {
     "selector":{"type":"string","default":"combat","description":"己方兵种/角色，如 aircraft、tanks、combat，或具体兵种名；不需要编队"},
     "unitIds":{"type":"integer[]","min":0,"minItems":1,"description":"明确选择的现有己方单位ID"},
@@ -10,6 +10,8 @@
     "quantity":{"type":"integer","min":1,"allowAll":true,"default":"all","description":"本次选中数量，默认全部匹配成员"},
     "target":{"type":"string","enum":["enemies","base","units","buildings"],"default":"enemies","description":"敌方目标类型：全部敌人、基地、机动单位、建筑"},
     "targetId":{"type":"integer","min":0,"description":"明确指定的敌人ID"},
+    "targetSelectors":{"type":"string[]","minItems":1,"description":"敌方兵种或类别的并集，如 [E1,JUMPJET]、[infantry]；与己方 selector 分开，不扩大为全部单位"},
+    "targetDomain":{"type":"string","enum":["all","air","ground"],"default":"all","description":"敌方空地范围；air 包含空中飞行兵，ground 只包括地面目标"},
     "regionName":{"type":"string","description":"只攻击这个地图分区内的敌人；省略不限定分区"}
   }
 }
@@ -19,3 +21,7 @@
 飞机默认一次出击：装弹未满保持 pending，不发攻击或移动；满弹后自动出击，每架实际发射一次后完成自己的任务，不要求摧毁目标。已满弹的先出击，不等其他飞机。地面单位按可见敌人持续攻击。没有敌人时观察，不编造隐藏位置，不额外生产。
 
 选择范围在下令时捕获。若同句明确先生产/编队再攻击，可等待这些具体准备目标的实际产物与交接，即使已有首批成员也继续接入本次其余成员；不能把后来无关生产的同型单位自动纳入。指定 unitIds 时只操作这些 ID。
+
+“1队攻击三楼左下的大兵和飞行兵”使用 formationId=1队、regionName=三楼左下、target=units、targetSelectors=[E1,JUMPJET]；“防空车攻击飞行兵”使用 selector=antiAirVehicle、targetSelectors=[JUMPJET]；“攻击空中敌人”设置 targetDomain=air。地域、兵种和空地要求同时保留，不能用己方 selector 表达敌方目标。已有目标直接 attack，不先集结或走到分区中心；暂时没有匹配敌人时地面成员进入指定区域搜索。一般“向某区移动，攻击区内敌人”合并为本能力，不增加独立集结要求。
+
+新攻击使用本机固定流程，理解后直接执行，不等待生成攻击脚本；飞机仍逐架等待装弹并确认实际发射。

@@ -1,4 +1,4 @@
-import type { ActionRequest, CoverPolicy, GoalView, Region, Snapshot, SnapshotUnit } from '@ra2c/contracts'
+import { canAttackTarget, isAirborne, type ActionRequest, type CoverPolicy, type GoalView, type Region, type Snapshot, type SnapshotUnit } from '@ra2c/contracts'
 import { coverMembers, coverMoves, type CoverMotion } from './cover.ts'
 
 export interface CoverRange { unitId: number; targetId: number; canAttack: boolean; inRange: boolean }
@@ -10,7 +10,7 @@ export interface CoverIntent {
   waiting: boolean
 }
 const distance = (a: { rx: number; ry: number }, b: { rx: number; ry: number }) => Math.hypot(a.rx - b.rx, a.ry - b.ry)
-export const airborne = (unit: SnapshotUnit) => unit.zone === 1 || unit.type === 1
+export const airborne = isAirborne
 
 /** 只查询本队附近候选；较大编队轮换查询，避免单位×全图敌人的笛卡尔积。 */
 export function coverRangePairs(policy: CoverPolicy, snap: Snapshot, ids: number[], intent: CoverIntent, previous: CoverMotion) {
@@ -41,6 +41,7 @@ export function coverCombat(policy: CoverPolicy, snap: Snapshot, ids: number[], 
   const marching = moving && !engaged
   const plan = coverMoves(policy, snap, ids, destination ?? { x: Math.round(center.rx), y: Math.round(center.ry) }, previous, { region: intent.region, ...(threat ? { threat } : {}) })
   const state = plan.state, desired = new Map<number, ActionRequest>(), held = new Set(state.heldIds)
+  const guide = slowest.find(unit => unit.id === state.prediction?.guideId) ?? slowest[0]
   state.positions = Object.fromEntries(members.map(unit => {
     const last = previous.positions?.[unit.id], order = previous.orders[unit.id]
     if (!last || distance(unit, { rx: last.x, ry: last.y }) >= 0.5) return [unit.id, { x: unit.rx, y: unit.ry, tick: snap.tick, stalls: 0 }]
@@ -63,8 +64,9 @@ export function coverCombat(policy: CoverPolicy, snap: Snapshot, ids: number[], 
   } else {
     for (const unit of protectedUnits) {
       if (unit.rx < intent.region.x1 || unit.rx > intent.region.x2 || unit.ry < intent.region.y1 || unit.ry > intent.region.y2) { offer(unit, { kind: 'move', unitIds: [unit.id], ...clip(unit.rx, unit.ry) }); continue }
-      const target = intent.targets.filter(enemy => inRange(unit, enemy)).sort((a, b) => distance(unit, a) - distance(unit, b) || a.id - b.id)[0]
-      if (target) offer(unit, { kind: 'attack', unitIds: [unit.id], targetId: target.id })
+      const target = intent.targets.filter(enemy => canAttackTarget(unit, enemy)).sort((a, b) => distance(unit, a) - distance(unit, b) || a.id - b.id)[0]
+      const pace = !!guide && unit.speed !== undefined && guide.speed !== undefined && unit.speed > guide.speed && distance(unit, guide) > policy.gap && !!target && !inRange(unit, target)
+      if (target && (!held.has(unit.id) || inRange(unit, target)) && !pace) offer(unit, { kind: 'attack', unitIds: [unit.id], targetId: target.id })
       else if (moving) {
         const action = plan.actions.find(action => 'unitIds' in action && action.unitIds.includes(unit.id))
         if (action && 'unitIds' in action) offer(unit, { ...action, unitIds: [unit.id] })
@@ -100,7 +102,7 @@ export function coverCombat(policy: CoverPolicy, snap: Snapshot, ids: number[], 
   }
   const actions: ActionRequest[] = []
   for (const request of desired.values()) {
-    const same = actions.find(action => action.kind === request.kind && (action.kind === 'move' && request.kind === 'move' ? action.x === request.x && action.y === request.y : action.kind === 'attack' && request.kind === 'attack' ? action.targetId === request.targetId : action.kind === 'stop'))
+    const same = actions.find(action => action.kind === request.kind && (action.kind === 'move' && request.kind === 'move' ? action.x === request.x && action.y === request.y : action.kind === 'attack' && request.kind === 'attack' ? action.targetId === request.targetId && action.holdPosition === request.holdPosition : action.kind === 'stop'))
     if (same && 'unitIds' in same && 'unitIds' in request) same.unitIds.push(...request.unitIds)
     else actions.push(request)
   }

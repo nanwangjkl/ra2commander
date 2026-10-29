@@ -15,6 +15,7 @@ import { bindBuildingOperation } from '../building-operations.ts'
 import { bindCover } from './cover.ts'
 import { bindFactoryRally } from '../factory-rally.ts'
 import { bindUnitDeployment } from '../unit-deployment.ts'
+import { bindBaseDefense, isBaseRegion } from '../base-defense.ts'
 
 export interface BindingContext {
   ctx: CommandContext
@@ -234,7 +235,7 @@ export const bindings: Binders = {
     const existing = context.formationGoals.get(formationId)
     const members = [...new Set([...(existing && existing.request.kind !== 'dissolveFormation' ? existing.request.unitIds : []), ...selected.map(unit => unit.id)])]
     const exists = ctx.formations.list().some(formation => formation.id === formationId)
-    const goal: FormationGoal = { id: existing?.id ?? id(), kind: 'formation', rawText: context.text, request: exists
+    const goal: FormationGoal = { id: existing?.id ?? id(), kind: 'formation', executionMode: 'native', rawText: context.text, request: exists
       ? { kind: 'transferUnits', formationId, unitIds: members }
       : { kind: 'createFormation', formationId, unitIds: members, force: members.some(unit => !!ctx.formations.ownerOf(unit)) } }
     const result = bound(goal, `将现有${members.length}个${!existing && params.selector === 'tanks' ? '坦克' : params.selector === 'combat' ? '战斗单位' : '匹配单位'}编入${formationId}（不新增生产）`)
@@ -270,6 +271,7 @@ export const bindings: Binders = {
     return bound(goal, `${formationId} ${patrol ? '沿路线巡逻' : route ? '按顺序前往' : '前往'}${places.length ? places.map(point => 'name' in point ? point.name : `(${point.x}, ${point.y})`).join(' → ') : '指定活动区'}`)
   },
   'combat.hold': async (params, context) => {
+    if (params.defendBase || isBaseRegion(params.regionName)) return bindBaseDefense(params,context)
     const { ctx } = context
     const snap = ctx.runtime.snapshot!
     const formationId = formationName(ctx, params.formationId, false, true)

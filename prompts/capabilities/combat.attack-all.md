@@ -4,10 +4,12 @@
 {
   "id": "combat.attack-all",
   "name": "全图进攻",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "binder": "combat.attack-all",
   "owner": "formation",
   "parameters": {
+    "targetSelectors": {"type":"string[]","minItems":1,"description":"可选敌方兵种或类别并集；不填表示全部敌人"},
+    "targetDomain": {"type":"string","enum":["all","air","ground"],"default":"all","description":"敌方空地范围，air 包括空中飞行兵"},
     "selector": { "type": "string", "description": "可选兵种选择，如 aircraft、tanks、combat；填写时可直接操作未编队成员" },
     "unitIds": { "type": "integer[]", "min": 0, "minItems": 1, "description": "明确选择的现有单位ID，不需要新建编队" },
     "formationId": {

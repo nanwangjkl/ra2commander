@@ -1,4 +1,4 @@
-import type { ActionRequest, ActionResult, FormationRequest, GoalConstraints, GoalExecution, GoalSpec, GoalView, Snapshot } from '@ra2c/contracts'
+import type { ActionRequest, ActionResult, FormationRequest, GoalConstraints, GoalExecution, GoalSpec, GoalView, Snapshot, TargetRegion } from '@ra2c/contracts'
 import type { FormationRegistry } from '../formation.ts'
 import type { ExplorationStore } from '../exploration.ts'
 import type { GoalFacts, GoalState, Handoff, ProductionRecord, ProgramState } from '../state.ts'
@@ -21,6 +21,7 @@ export interface GoalContext<K extends GoalKind = GoalKind> {
   exploration: ExplorationStore
   locked(id: number): boolean
   hasPlannedFormation(id: string): boolean
+  regionsAt?: (x: number, y: number) => TargetRegion[]
 }
 export interface GoalProjection { constraints: GoalConstraints; view: GoalView }
 export interface GoalHandler<K extends GoalKind = GoalKind> {

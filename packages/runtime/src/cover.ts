@@ -94,7 +94,7 @@ export function coverMoves(policy: CoverPolicy, snap: Snapshot, ids: number[], d
       if (reach > limit) { x *= limit / reach; y *= limit / reach }
       target = clip(anchor.rx + x, anchor.ry + y)
       // 已领先的成员沿现有路径自然靠拢，不因滚动预测点稍落后便掉头或停车。
-      if (!changedDestination && !turned && !stalled && goalDistance > 3 && (target.x - unit.rx) * dx + (target.y - unit.ry) * dy < -0.5 && Math.hypot(unit.rx - anchor.rx, unit.ry - anchor.ry) <= span * 2) continue
+      if (order?.kind === 'move' && !changedDestination && !turned && !stalled && goalDistance > 3 && (target.x - unit.rx) * dx + (target.y - unit.ry) * dy < -0.5 && Math.hypot(unit.rx - anchor.rx, unit.ry - anchor.ry) <= span * 2) continue
     }
     const changed = !order || order.kind !== 'move' || changedDestination
     const movedTarget = order?.kind === 'move' && Math.hypot(order.x! - target.x, order.y! - target.y) >= Math.max(2, span / 2)

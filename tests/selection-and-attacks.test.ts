@@ -37,7 +37,7 @@ const executor = { run: async (_code: string, value: unknown, memory: unknown) =
   return { ok: true, actions, memory }
 } }
 function context(runtime: Awaited<ReturnType<typeof harness>>['runtime']): CommandContext {
-  return { runtime, formations: runtime.formations, controller: { async refresh(owner: string) { const lease = runtime.beginCompile(owner); assert.equal(runtime.commitCompile(lease, 'function step(s,m){return {actions:[],memory:m}}'), true); return 'ok' } } } as unknown as CommandContext
+  return { runtime, formations: runtime.formations, controller: { activateNative(owner: string) { runtime.activateNativeGoals(owner); return '本机执行' }, async refresh(owner: string) { const lease = runtime.beginCompile(owner); assert.equal(runtime.commitCompile(lease, 'function step(s,m){return {actions:[],memory:m}}'), true); return 'ok' } } } as unknown as CommandContext
 }
 
 test('目录名称/角色同时用于生产、现有成员和待加入候选；先过滤归属再取数量', async () => {
@@ -111,6 +111,7 @@ test('混编队区域清敌保留地面搜索，飞机装弹等待，目标类�
   assert.equal(submitted[0]!.kind, 'move', '进入分区前将攻击移动转为普通行军')
   assert.deepEqual('unitIds' in submitted[0]! && submitted[0]!.unitIds, [12], '不对装弹飞机下移动命令')
   assert.equal(runtime.goals.get(goal.id)!.status, 'active')
+  runtime.useScriptExecution(['attack']) // 继续验证旧脚本回退的搜索契约。
   const lease = runtime.beginCompile('formation:1队'), frame = runtime.compileFrame(lease), view = frame.snapshot.control!.goals[0]!
   assert.equal(view.attack!.targets.length, 0, '区外可见敌人不能成为攻击目标')
   if (view.spec.kind !== 'attack') throw new Error('没有统一攻击目标')
@@ -137,6 +138,7 @@ test('回放坦克围住基地却不开火：拦截行军去重错误，反馈�
     await runtime.onSnapshot(snapshot({ seq: 2, self, enemies, mapWidth: 200, mapHeight: 200 }))
     const result = await executeCapabilities([{ capability: 'combat.attack', params: { selector: 'tanks', quantity: 'all', target: 'base' } }], context(runtime), { text: '所有坦克摧毁敌方基地', catalog: catalog(runtime.snapshot!) })
     assert.deepEqual(result.skipped, [])
+    runtime.useScriptExecution(['attack']) // 旧故障脚本仍须在回退入口被正确拦截。
     const lease = runtime.beginCompile('global'), frame = runtime.compileFrame(lease)
     const broken = readFileSync(new URL('./fixtures/ground-attack-move-dedup.js', import.meta.url), 'utf8')
     // 真实故障只改去重条件即可继续攻击，检查不应误拒绝正确的分阶段脚本。

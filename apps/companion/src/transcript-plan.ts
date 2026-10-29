@@ -3,10 +3,12 @@ import type { MapRegionIndex } from '../../../packages/maps/src/index.ts'
 import { chineseNumber, formationAlias, normalizeName } from './capabilities/selectors.ts'
 import type { GameCatalog } from './game-catalog.ts'
 import { normalizeDeployment } from './deployment-plan.ts'
+import { normalizeCombatIntent } from './combat-plan.ts'
+import { normalizeBaseDefense } from './base-defense.ts'
 
 /** 纠正已确认的编队/地域误解；原位替换，保留同句话各操作的先后关系。 */
 export function normalizeOperations(text: string, operations: CapabilityCall[], map?: MapRegionIndex, catalog?: GameCatalog): CapabilityCall[] {
-  operations = normalizeDeployment(text, operations, map, catalog)
+  operations = normalizeDeployment(text, normalizeCombatIntent(text, normalizeBaseDefense(text,operations), map, catalog), map, catalog)
   const raw = normalizeName(text)
   const role = (value: string, name: 'aircraft' | 'tank') => catalog?.selectorHasRole(value, name) ?? (name === 'aircraft' ? /^(?:aircraft|飞机|空军)$/i : /^(?:tanks?|坦克|所有坦克)$/i).test(value)
 
@@ -29,7 +31,7 @@ export function normalizeOperations(text: string, operations: CapabilityCall[], 
       }
       if (replaced) return []
       replaced = true
-      return [{ capability: 'combat.attack' as const, params: { selector: 'aircraft', target, ...(region ? { regionName: region.name } : {}) } }]
+      return [{ capability: 'combat.attack' as const, params: { selector: 'aircraft', target, ...('targetSelectors' in call.params && call.params.targetSelectors ? { targetSelectors: call.params.targetSelectors } : {}), ...('targetDomain' in call.params && call.params.targetDomain ? { targetDomain: call.params.targetDomain } : {}), ...(region ? { regionName: region.name } : {}) } }]
     })
   }
   const match = raw.match(/(?:编入|编到|归入|加入)([\d一二三四五六七八九十两]+)队/) ?? raw.match(/([\d一二三四五六七八九十两]+)队/)
@@ -90,9 +92,10 @@ export function normalizeOperations(text: string, operations: CapabilityCall[], 
       })
       continue
     }
+    const previousAttack = operations.find(call => ['combat.attack-all', 'combat.clear-region'].includes(call.capability) && 'formationId' in call.params && (!call.params.formationId || formationAlias(call.params.formationId) === targetId))
     if (region) replace(call => call.capability === 'combat.attack-all' ? !call.params.formationId || formationAlias(call.params.formationId) === targetId
       : (call.capability === 'combat.move' || call.capability === 'combat.clear-region') && formationAlias(call.params.formationId) === targetId,
-    { capability: 'combat.clear-region', params: { formationId: targetId, regionName: region.name } })
+    { capability: 'combat.clear-region', params: { formationId: targetId, regionName: region.name, ...(previousAttack && 'targetSelectors' in previousAttack.params && previousAttack.params.targetSelectors ? { targetSelectors: previousAttack.params.targetSelectors } : {}), ...(previousAttack && 'targetDomain' in previousAttack.params && previousAttack.params.targetDomain ? { targetDomain: previousAttack.params.targetDomain } : {}) } })
     else operations = operations.map(call => call.capability === 'combat.attack-all' && !call.params.formationId ? { ...call, params: { ...call.params, formationId: targetId } } : call)
   }
   return operations

@@ -167,14 +167,19 @@ test('飞机队的区域攻击沿用装弹等待；新攻击能力不被旧地�
   } finally { await f.dispose() }
 })
 
-test('首次没弹不能生成永久结束脚本；装弹状态显示 pending', async () => {
+test('本机攻击不受首次没弹的错误模型脚本影响；装弹状态显示 pending', async () => {
   const f = await fixture()
   try {
     f.script(`function step(s,m){const actions=[];for(const g of s.control.goals){if(g.spec.kind!=='attack')continue;if(!g.attack.readyIds.length)m.done=true;if(!m.done&&g.attack.targets.length)actions.push({goalId:g.spec.id,request:{kind:'attack',unitIds:g.attack.readyIds,targetId:g.attack.targets[0].id}});}return {actions,memory:m}}`)
     const catalog = await loadGameCatalog(f.ctx, () => {})
     const result = await executeCapabilities([{ capability: 'combat.attack', params: { selector: 'aircraft', unitIds: [11], target: 'base' } }], f.ctx, { text: '11号飞机攻击基地', catalog })
-    assert.match(result.results.join(' '), /脚本编译失败/)
-    assert.notEqual(f.goals()[0]!.status, 'active')
+    assert.match(result.results.join(' '), /本机执行/)
+    assert.equal(f.goals()[0]!.status, 'active')
+    assert.equal(f.runtime.programs.get('global')!.script, undefined)
+    await f.tick()
+    assert.equal(f.runtime.goalExecution(f.goals()[0]!.spec.id)!.state, 'pending')
+    f.ammo({11: 1}); await f.tick()
+    assert.ok(f.submitted.some(action => action.kind === 'attack' && action.unitIds.includes(11)))
     let card: CardData | undefined
     const events: CommandEvent[] = ['pending', 'running', 'completed'].map((state, seq) => ({ commandId: 'command', source: 'sidebar', at: 0, seq, stage: 'execution', goalId: 'g', execution: { state: state as 'pending' | 'running' | 'completed' } }))
     for (const event of events) { card = applyCommandEvent(event, card); assert.equal(card.stage, event.execution!.state) }

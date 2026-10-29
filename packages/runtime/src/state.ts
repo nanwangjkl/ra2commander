@@ -29,9 +29,10 @@ export interface GoalProgress {
   attack?: import('./attack.ts').AttackState
   building?: import('./building.ts').BuildingState
   unitDeployment?: import('./unit-deployment.ts').UnitDeploymentState
+  baseDefense?: import('./base-defense.ts').BaseDefenseState
 }
 export interface GoalFactKeys {
-  combat: 'routeIndex' | 'coverMotion' | 'coverEnded'
+  combat: 'routeIndex' | 'coverMotion' | 'coverEnded' | 'baseDefense'
   production: 'completedQuantity' | 'placementBlocked' | 'rallyBlocked' | 'cancelProduction'
   repair: 'repair'
   relocate: 'relocation'

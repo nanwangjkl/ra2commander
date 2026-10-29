@@ -4,6 +4,7 @@ import { attackRoster, validateAttackSources } from '../attack-selection.ts'
 import { baseConstraints, formationExists, idsValid, paused, projection, stringsValid, world } from './common.ts'
 import type { GoalContext, GoalHandler } from './types.ts'
 import { validateCoverMotion, emptyCoverMotion, coverMoves } from '../cover.ts'
+import { directAttackOrders } from '../attack-orders.ts'
 
 function roster(ctx: GoalContext<'attack'>) { return [...new Set([...attackRoster(ctx.spec, ctx.goals, ctx.production, ctx.snap, ctx.goal.facts.attack), ...(ctx.goal.facts.coverReleasedIds ?? [])])] }
 function members(ctx: GoalContext<'attack'>) {
@@ -68,8 +69,7 @@ export const attack: GoalHandler<'attack'> = {
       ctx.goal.facts.coverMotion = result.state
       return result.actions
     }
-    const ids = planned.view.readyIds.filter(id => motion.orders[id]?.kind !== 'attack' || motion.orders[id]?.targetId !== target.id || ctx.snap.self.find(unit => unit.id === id)?.isIdle)
-    return ids.length ? [{ kind: 'attack', unitIds: ids, targetId: target.id }] : []
+    return directAttackOrders(ctx.snap, planned.view.readyIds, planned.view.targets, motion)
   },
   stopMembers: ctx => members(ctx).filter(id => !ctx.goal.facts.attack?.members.some(member => member.unitId === id && member.phase === 'fired')),
   afterSubmit({ goal, snap }, request, results) { recordAttack(goal.facts.attack ??= initialAttack(), request, results, snap) },

@@ -57,6 +57,7 @@ export interface RuntimeDeps {
   factorySites?: (snap: Snapshot) => Promise<FactorySite[]>
   rallyTiles?: FactoryRallyDeps['tiles']
   rallyClear?: FactoryRallyDeps['clear']
+  regionsAt?: (x: number, y: number) => import('@ra2c/contracts').TargetRegion[]
   log?: (message: string) => void
 }
 
@@ -331,7 +332,7 @@ export class TaskRuntime {
   private goalContext(spec: GoalSpec, snap: Snapshot): GoalContext {
     return { spec, snap, goal: this.goals.get(spec.id) ?? { ownerId: ownerId(goalOwner(spec)), spec, status: 'pending', facts: emptyFacts() },
       goals: this.goals, programs: this.programs, formations: this.formations, production: this.production, pausedQueues: this.pausedQueues,
-      handoffs: this.handoffs, exploration: this.exploration, locked: id => this.locked(id), hasPlannedFormation: id => this.hasPlannedFormation(id) }
+      handoffs: this.handoffs, exploration: this.exploration, locked: id => this.locked(id), hasPlannedFormation: id => this.hasPlannedFormation(id), ...(this.deps.regionsAt ? { regionsAt:this.deps.regionsAt } : {}) }
   }
   private project(spec: GoalSpec, snap: Snapshot): GoalProjection {
     const result = handlerFor(spec).project(this.goalContext(spec, snap))
@@ -340,7 +341,7 @@ export class TaskRuntime {
       if (policy) {
         const escorts = policy.escortIds.filter(id => this.formations.ownerOf(id) === spec.formationId && snap.self.some(unit => unit.id === id) && !this.locked(id))
         result.constraints.allowedUnitIds = [...new Set([...result.constraints.allowedUnitIds, ...escorts])]
-        const targetRegion = attackObjective(spec)?.target.region
+        const targetRegion = result.constraints.targetRegion ?? attackObjective(spec)?.target.region
         result.constraints.coverFire = { unitIds: escorts, enemyIds: snap.enemies.filter(unit => airborne(unit) && (!targetRegion || inTargetRegion(unit.rx, unit.ry, targetRegion))).map(unit => unit.id) }
         const members = coverMembers(policy, snap, result.constraints.allowedUnitIds)
         result.view.cover = { protectedIds: members.protectedUnits.map(u => u.id), escortIds: escorts, slowestIds: members.slowest.map(u => u.id), heldIds: this.goals.get(spec.id)?.facts.coverMotion?.heldIds ?? [], detail: this.goals.get(spec.id)?.facts.coverMotion?.detail ?? '掩护配置生效，协调行军与近身支援' }
@@ -956,14 +957,15 @@ export class TaskRuntime {
     const policy = this.formations.coverOf(spec.formationId)
     if (!policy) return undefined
     const goal = this.goals.get(spec.id)!, projected = this.project(spec, snap), ids = projected.constraints.allowedUnitIds
-    if (this.formations.membersOf(spec.formationId).some(id => this.locked(id))) return []
+    // 基地防守无入侵者时全队原地待命，不由掩护待命流程追加站位移动。
+    if (spec.kind === 'combat' && spec.baseDefense && !projected.constraints.enemyIds.length) return undefined
     const previous = goal.facts.coverMotion ?? emptyCoverMotion()
     if (spec.kind === 'combat' && goal.facts.retreatTriggered && spec.retreat) {
       const plan = coverMoves(policy, snap, ids, spec.retreat, previous, { directDestination: true })
       goal.facts.coverMotion = plan.state
       return plan.actions
     }
-    const targetRegion = attackObjective(spec)?.target.region
+    const targetRegion = projected.constraints.targetRegion ?? attackObjective(spec)?.target.region
     const threats = snap.enemies.filter(unit => !targetRegion || inTargetRegion(unit.rx, unit.ry, targetRegion))
     let targets = snap.enemies.filter(unit => projected.constraints.enemyIds.includes(unit.id))
     if (spec.kind === 'combat' && !spec.allowedActions.includes('attack')) targets = []

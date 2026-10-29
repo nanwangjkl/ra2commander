@@ -4,7 +4,7 @@
 {
   "id": "ra2web-gonghui",
   "name": "ra2web 共和国之辉",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "catalogFile": "catalogs/ra2web-gonghui.json",
   "factions": [
     {
@@ -469,6 +469,25 @@
       }
     },
     {
+      "id": "gi",
+      "aliases": ["美国大兵", "大兵"],
+      "members": [{"name":"E1","type":3,"factions":["allied"],"aliases":["大兵"]}]
+    },
+    {
+      "id": "flyingInfantry",
+      "aliases": ["飞行兵", "火箭飞行兵"],
+      "members": [{"name":"JUMPJET","type":3,"factions":["allied"],"aliases":["飞行兵"]}]
+    },
+    {
+      "id": "antiAirVehicle",
+      "aliases": ["防空车", "防空战车", "antiAirVehicle"],
+      "members": [
+        {"name":"FV","type":7,"factions":["allied"]},
+        {"name":"HTK","type":7,"factions":["soviet"],"aliases":["防空履带车"]}
+      ],
+      "match": {"type":7,"labelIncludes":["防空"],"excludeFlags":["naval","harvester"]}
+    },
+    {
       "id": "infantryFightingVehicle",
       "aliases": [
         "ifv",
@@ -578,6 +597,8 @@
 本目录适用于当前本地 ra2web 的共和国之辉规则配置，覆盖盟军、苏军和中国。候选名称及角色别名帮助理解命令和查找规则，不声明所有候选在本局都存在或可造。
 
 当前引擎 rules()、production.available() 和实际单位观测优先。建造前置、队列类别、电力与可造性使用宿主查询结果；不把“电厂、矿场、重工”写成所有阵营固定的科技顺序。宿主会解析真实 prerequisite，包括 POWER、PROC 等类别，并复用已有或已提交的前置。
+
+泛称“防空车”使用 antiAirVehicle，苏军通常选择 HTK，盟军通常选择 FV；不能把它固定解释为 IFV。明确“IFV／多功能步兵车”仍指 FV。“飞行兵／火箭飞行兵”指 JUMPJET，“美国大兵／大兵”指 E1；目标名称依据完整目录解析，不把敌方兵种丢成全部单位。
 
 catalog 中角色用于理解“坦克”“侦察犬”等名称。同类有多个候选时，按当前可造项目、当前阵营和已有设施合理选择，简短反馈选择；精确可用的项目可跨阵营。角色映射不自动建立额外生产或扩张目标。
 

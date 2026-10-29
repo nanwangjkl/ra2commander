@@ -13,7 +13,7 @@
 # 编队作战
 
 combat：spec 含 formationId、region、allowedActions、retreat?。只操纵该目标动态 unitIds；根据可见敌人选择目标、分配火力和站位。move/attackMove 坐标必须在指定地域内；attack 指向当前目标集合中的敌人，接近、寻路及是否能开火由游戏处理；不得把射程作为停止执行的前提。没有 attackMove 能力时不要使用。retreatActive 为 true 时只能 move 到 spec.retreat 的指定点或 stop；回撤条件由宿主计算。不要假设生成时的单位永远在队内，暂时没有成员时返回空动作等待。
-- spec.attackRegion 如存在表示单个区域清敌目标。snapshot.enemies 和该目标 constraints.enemyIds 已按真实异形分区筛选，只能攻击这些敌人；不要重新寻找全图敌人。destination 是行军/搜索起点，不是完成条件。到达前使用 move 经过沿途区域，不沿途主动清理其他分区；进入目标区域后攻击可见区域内敌人或向区内目标 attackMove。没有可见敌人时继续前往目的地/观察，不能把暂时不可见当作清空整个区域。
+- spec.attackRegion 如存在表示单个区域清敌目标。snapshot.enemies 和该目标 constraints.enemyIds 已按真实异形分区、敌方兵种和空地要求筛选，只能攻击这些敌人；不要重新寻找全图敌人。已有匹配敌人就直接 attack，由游戏处理接近，不先集结或到达区域中心。destination 仅在没有可见匹配敌人时作为搜索落点；沿途经过其他分区不扩大主动攻击范围。到达或暂时看不见敌人不表示区域清空。
 - spec.destination 如存在是已经绑定的移动目的地，直接使用 x/y；name 是地名。前往地名的命令允许经过沿途其他分区，不能把目的地分区当作全程禁止离开的区域。
 - spec.route 是本次完整有序路线。宿主按部队主体到达推进并持久化进度，每步的 spec.destination 已更新为当前应到达的一站；直接读取本步 destination，禁止硬编码路点、猜坐标、跳到最后一站或在 memory 里另建循环。末站到达后由宿主完成目标，换脚本不会把路线重置到第一站。
 - spec.patrol=true 表示沿本次路线巡逻，途中遇敌可以交战，战斗结束继续当前路点；不因远处敌人改成全图清敌。路线未走完不能宣称结束，不默认无限重复；普通移动没有额外攻击权限。

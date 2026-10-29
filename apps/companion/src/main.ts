@@ -160,6 +160,7 @@ async function main(): Promise<void> {
   }
   const runtime: TaskRuntime = new TaskRuntime({
     executor: executors.runtime, formations,
+    regionsAt: (x,y) => iceMap.regions.regionsAt(x,y).map(region=>({id:region.id,name:region.name,polygons:region.polygons})),
     checkpoint: () => saveStateFile(STATE_FILE, persistState(runtime)),
     coverRanges: (pairs, snap) => gameBridge.coverRanges(pairs, snap.sessionKey),
     factorySites: snap => readFactorySites(gameBridge, snap),
