@@ -21,7 +21,7 @@ export interface BridgeState {
  * install() 必须在打开任何页面之前调用（exposeBinding/addInitScript 是 context 级）。
  */
 /** 桥版本（与 bridge.js 的 BRIDGE_VERSION 保持一致；升级后对已开页面重装）。 */
-const BRIDGE_VERSION = 20
+const BRIDGE_VERSION = 21
 
 export function isGameDocument(url: string, gameUrl: string): boolean {
   try {
@@ -37,10 +37,18 @@ export class WerhdBridge {
   private readonly listeners = new Set<(s: Snapshot) => void>()
   private targetFrame: Frame | undefined
 
-  constructor(private readonly context: BrowserContext, private readonly gameUrl?: string) {}
+  constructor(
+    private readonly context: BrowserContext,
+    private readonly gameUrl?: string,
+    private readonly buildingFoundations: Record<string, { width: number; height: number }> = {},
+  ) {}
+
+  private async source(): Promise<string> {
+    return this.bridgeSource ??= `window.__ra2cBuildingFoundations = ${JSON.stringify(this.buildingFoundations)};\n${await readFile(new URL('./bridge.js', import.meta.url), 'utf8')}`
+  }
 
   async install(): Promise<void> {
-    const source = await readFile(new URL('./bridge.js', import.meta.url), 'utf8')
+    const source = await this.source()
     await this.context.exposeBinding(BINDING.snapshot, (source, snapshot: Snapshot) => {
       if (this.gameUrl && !isGameDocument(source.frame.url(), this.gameUrl)) return
       if (source.frame !== this.findFrame()) return
@@ -157,7 +165,7 @@ export class WerhdBridge {
 
   /** 确保目标 frame 内桥已安装且为当前版本（可重入；刷新/重绑后自愈）。 */
   private async ensureBridge(frame: Frame): Promise<void> {
-    const source = (this.bridgeSource ??= await readFile(new URL('./bridge.js', import.meta.url), 'utf8'))
+    const source = await this.source()
     const ver = (await frame.evaluate(`window.__ra2cVersion ?? 0`).catch(() => 0)) as number
     if (ver < BRIDGE_VERSION) await frame.evaluate(source).catch(() => {})
   }

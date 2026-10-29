@@ -1,7 +1,7 @@
 import { ExplorationObserver } from './exploration.ts'
 import { MiningObserver } from './mining.ts'
 import { readFactorySites } from './factory-rally.ts'
-import { compileChecks } from '@ra2c/command'
+import { compileChecks, loadPrompts } from '@ra2c/command'
 import { scriptedFixedKinds } from './execution-modes.ts'
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
@@ -144,7 +144,9 @@ async function main(): Promise<void> {
   console.log('[companion] 浏览器常驻模式（CDP）：companion 重启不再关闭对局')
   // 游戏 CDN 对本地 origin 无 CORS 头，经 Node 侧转发并补头；资源随后缓存进 profile。
   await setupCdnProxy(context)
-  const gameBridge = new WerhdBridge(context, server.url)
+  const foundations = Object.fromEntries(loadPrompts().game.entries().flatMap(item =>
+    item.type === 2 && item.foundation ? [[item.name, item.foundation]] : []))
+  const gameBridge = new WerhdBridge(context, server.url, foundations)
   bridge = gameBridge
   await gameBridge.install()
 

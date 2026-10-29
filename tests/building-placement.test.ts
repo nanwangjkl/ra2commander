@@ -18,11 +18,11 @@ const building = (id: number, name: string, x: number, y: number): SnapshotUnit 
 const queue = (type: number, name?: string) => ({ type, status: name ? 3 : 0, size: name ? 1 : 0, maxSize: 1, items: name ? [{ name, quantity: 1, progress: 1, creditsEach: 1, creditsSpent: 1 }] : [] })
 async function fixture() {
   const executor = new StepExecutor(), submitted: ActionRequest[] = []
-  let blockCannon = false
+  let blockCannon = false, placementFailure = 'no-spot'
   const { runtime } = await harness(executor, { formations: new FormationRegistry(), submit: async (actions, ctx, guard) => {
     if (!guard()) return []
     submitted.push(...actions)
-    return actions.map(action => action.kind === 'place' && action.name === 'GTGCAN' && blockCannon ? { ok: false, reason: 'no-spot', submitted: 0, session: ctx.session } : { ok: true, submitted: 1, session: ctx.session })
+    return actions.map(action => action.kind === 'place' && action.name === 'GTGCAN' && blockCannon ? { ok: false, reason: placementFailure, submitted: 0, session: ctx.session } : { ok: true, submitted: 1, session: ctx.session })
   } })
   await runtime.onSnapshot(snapshot({ seq: 2, self: [base], production: { ...snapshot().production!, available: ['GTGCAN', 'GAPOWR'], queues: [queue(0), queue(1)] } }))
   const prompts = loadPrompts(), catalog = new GameCatalog([
@@ -38,7 +38,7 @@ async function fixture() {
     { capability: 'production.produce', params: { target: 'GTGCAN', quantity, ...(directions ? { placementDirections: directions, placementAnchor: '基地' } : {}) } },
     { capability: 'production.produce', params: { target: 'GAPOWR', quantity: 3 } },
   ], ctx, { text: directions ? '在基地上方，左边和下边各造一个巨炮，补3个电厂' : '造三个巨炮，补三个电厂', prompts, catalog })
-  return { runtime, executor, submitted, tick, run, block: (value: boolean) => { blockCannon = value } }
+  return { runtime, executor, submitted, tick, run, block: (value: boolean, reason = 'no-spot') => { blockCannon = value; placementFailure = reason } }
 }
 
 test('回放巨炮位置反馈：保留上左下三座要求，电厂无位置；真实落地推进，恢复不重置方位或生产', async () => {
@@ -95,10 +95,14 @@ test('未提方位沿用默认选址；方位受阻仍重试并推进电厂，�
     assert.equal(directed.runtime.goalExecution(id)!.state, 'blocked')
     assert.match(directed.runtime.goalExecution(id)!.detail!, /上方.*暂无合法位置/)
     assert.ok(directed.submitted.some(action => action.kind === 'place' && action.name === 'GAPOWR'))
-    const attempts = directed.submitted.filter(action => action.kind === 'place' && action.name === 'GTGCAN').length
-    await directed.tick(undefined, ['GTGCAN'])
-    assert.equal(directed.submitted.filter(action => action.kind === 'place' && action.name === 'GTGCAN').length, attempts + 1)
-    assert.equal(directed.runtime.programs.get('global')!.status, 'active')
+    for (const reason of ['no-spot', 'building-spacing', 'placement-footprint-unavailable:GTGCAN']) {
+      directed.block(true, reason)
+      const attempts = directed.submitted.filter(action => action.kind === 'place' && action.name === 'GTGCAN').length
+      await directed.tick(undefined, ['GTGCAN'])
+      assert.equal(directed.submitted.filter(action => action.kind === 'place' && action.name === 'GTGCAN').length, attempts + 1)
+      assert.equal(directed.runtime.goalExecution(id)!.state, 'blocked')
+      assert.equal(directed.runtime.programs.get('global')!.status, 'active')
+    }
     directed.block(false)
     await directed.tick(undefined, ['GTGCAN'])
     await directed.tick([base, building(101, 'GTGCAN', 54, 54)]) // 模拟外部实际落点与指定方向不同。

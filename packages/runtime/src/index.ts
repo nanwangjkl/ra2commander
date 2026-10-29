@@ -1225,9 +1225,12 @@ export class TaskRuntime {
         phase = 'receipt'
         if (handler.afterSubmit?.(this.goalContext(goal.activeSpec, snap), request, results)) continue
         if (mode === 'script') this.recovery.trace(program.id, this.recoveryKey(program), snap.tick, { goalId: item.goalId, request, results })
-        if (request.kind === 'place' && results.length && results.every(result => !result.ok && result.submitted === 0 && ['no-spot', 'cannot-place'].includes(result.reason ?? ''))) {
+        if (request.kind === 'place' && results.length && results.every(result => !result.ok && result.submitted === 0 && (['no-spot', 'cannot-place', 'building-spacing'].includes(result.reason ?? '') || result.reason?.startsWith('placement-footprint-unavailable:')))) {
           goal.facts.placementBlocked = true
-          goal.facts.blocked = request.placement ? `${request.name} 在${request.placement.anchor.name ?? '参照点'}${directionLabels[request.placement.direction]}暂无合法位置，保留就绪建筑并继续尝试该方向` : `${request.name} 暂无可放置位置，保留就绪建筑并继续重试`
+          const missing = results.find(result => result.reason?.startsWith('placement-footprint-unavailable:'))?.reason?.split(':')[1]
+          goal.facts.blocked = missing ? `缺少${missing}的建筑占地数据，保留就绪建筑并继续重试`
+            : request.placement ? `${request.name} 在${request.placement.anchor.name ?? '参照点'}${directionLabels[request.placement.direction]}暂无合法位置，保留就绪建筑并继续尝试该方向`
+            : `${request.name} 暂无可放置位置，保留就绪建筑并继续重试`
           program.stats.rejected++
           continue
         }

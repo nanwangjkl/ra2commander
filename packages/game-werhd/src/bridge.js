@@ -9,7 +9,7 @@
 // 且带性能护栏（超预算自动降频）。
 (() => {
   'use strict';
-  var BRIDGE_VERSION = 20;
+  var BRIDGE_VERSION = 21;
   if (window.__ra2cInstalled && window.__ra2cVersion === BRIDGE_VERSION) return;
   var upgrading = false;
   if (window.__ra2cInstalled && window.__ra2cSessionKey && typeof window.__ra2cSubmit === 'function') {
@@ -39,6 +39,9 @@
     window.__ra2cSessionKey = crypto.randomUUID();
     lastSampleTick = -1;
     placeTried = {};
+    placeNoSpots = {};
+    placementRules = {};
+    pendingPlacements = [];
     identities = {};
     window.__ra2cUnitIdentities = identities;
   }
@@ -46,10 +49,53 @@
   // place 自动选址记忆（name -> 已尝试格），跳过引擎静默拒绝过的位置。
   var placeTried = {};
   var placeNoSpots = {};
+  var placementRules = {};
+  var pendingPlacements = [];
+
+  function buildingShape(w, name) {
+    var rule = placementRules[name];
+    if (!rule) {
+      var raw = typeof w.rules === 'function' && w.rules(name, 2);
+      rule = placementRules[name] = { wall: !!(raw && raw.wall), defense: !!(raw && raw.isBaseDefense) };
+    }
+    var foundation = window.__ra2cBuildingFoundations && window.__ra2cBuildingFoundations[name];
+    return { name: name, wall: rule.wall, defense: rule.defense, width: foundation && foundation.width, height: foundation && foundation.height };
+  }
+
+  // 放置在 tick 之外处理，按公开类别标记与导入占地检查，不能只比较建筑原点。
+  function placementScene(w) {
+    var self = w.units('self') || [], known = {}, buildings = [], tick = w.tick();
+    var units = self.concat(w.units('allied') || [], w.units('hostile') || []);
+    for (var i = 0; i < units.length; i++) {
+      var unit = units[i];
+      if (unit.type !== 2 || known[unit.id] || !unit.tile) continue;
+      known[unit.id] = true;
+      buildings.push(Object.assign(buildingShape(w, unit.name), { x: unit.tile.rx, y: unit.tile.ry }));
+    }
+    pendingPlacements = pendingPlacements.filter(function (item) {
+      // API place 无回执；短期预留防止同帧相邻落点，实际出现后以活建筑为准。
+      // 静默拒绝的预留会释放，不能永久占住空地。
+      return tick >= item.tick && tick - item.tick < 90 && !buildings.some(function (building) { return building.name === item.name && building.x === item.x && building.y === item.y });
+    });
+    return { self: self, buildings: buildings.concat(pendingPlacements) };
+  }
+
+  function missingFoundation(shape) {
+    return !shape.wall && (!Number.isSafeInteger(shape.width) || !Number.isSafeInteger(shape.height) || shape.width < 1 || shape.height < 1);
+  }
+
+  function placementSpacing(shape, x, y, scene) {
+    if (shape.wall) return true;
+    return scene.buildings.every(function (other) {
+      if (other.wall || shape.defense && other.defense) return true;
+      // 半开占地之间还必须有一列或一行空格；斜角紧邻同样不允许。
+      return x + shape.width < other.x || other.x + other.width < x || y + shape.height < other.y || other.y + other.height < y;
+    });
+  }
 
   /** 以建造厂为圆心环形搜 canPlace 可用格（跳过已试）。 */
-  function findPlacementSpot(w, name, placement, region) {
-    var self = w.units('self') || [];
+  function findPlacementSpot(w, name, placement, region, shape, scene) {
+    var self = scene.self;
     var base = null;
     var points = region && region.polygons.reduce(function (all, polygon) { return all.concat(polygon.outer) }, []);
     var center = points && { x: points.reduce(function (n, p) { return n + p[0] }, 0) / points.length, y: points.reduce(function (n, p) { return n + p[1] }, 0) / points.length };
@@ -76,7 +122,7 @@
           var tile = placement && w.map.tile ? w.map.tile(x, y) : null;
           var elevation = tile && Number.isFinite(tile.z) ? tile.z : anchor.elevation || 0;
           if (placement && placementDirection(anchor, x, y, elevation) !== placement.direction) continue;
-          if (w.canPlace(name, x, y)) { delete placeNoSpots[keyName]; tried.push(key); if (tried.length > (placement || region ? 128 : 24)) tried.shift(); return { x: x, y: y, elevation: elevation } }
+          if (placementSpacing(shape, x, y, scene) && w.canPlace(name, x, y)) { delete placeNoSpots[keyName]; tried.push(key); if (tried.length > (placement || region ? 128 : 24)) tried.shift(); return { x: x, y: y, elevation: elevation } }
         }
       }
     }
@@ -283,10 +329,13 @@
           return { ok: true, submitted: 1, session: session };
         }
         case 'place': {
+          var shape = buildingShape(w, action.name), scene = placementScene(w);
+          var missing = !shape.wall && (missingFoundation(shape) ? shape : scene.buildings.find(function (building) { return !building.wall && !(shape.defense && building.defense) && missingFoundation(building); }));
+          if (missing) return { ok: false, reason: 'placement-footprint-unavailable:' + missing.name, submitted: 0, session: session };
           var px = action.x, py = action.y, elevation;
           if (!Number.isFinite(px) || !Number.isFinite(py)) {
             // 宿主自动选址（几何与选位是宿主原语；引擎对非法格静默丢弃，脚本无法感知）。
-            var spot = findPlacementSpot(w, action.name, action.placement, action.placementRegion);
+            var spot = findPlacementSpot(w, action.name, action.placement, action.placementRegion, shape, scene);
             if (!spot) return { ok: false, reason: 'no-spot', submitted: 0, session: session };
             px = spot.x; py = spot.y; elevation = spot.elevation;
           } else if (w.canPlace && !w.canPlace(action.name, px, py)) {
@@ -298,7 +347,10 @@
             elevation = targetTile && Number.isFinite(targetTile.z) ? targetTile.z : action.placement.anchor.elevation || 0;
             if (placementDirection(action.placement.anchor, px, py, elevation) !== action.placement.direction) return { ok: false, reason: 'wrong-placement', submitted: 0, session: session };
           }
-          w.place(action.name, px, py); return { ok: true, submitted: 1, session: session, placement: { x: px, y: py, elevation: elevation || 0 } };
+          if (!placementSpacing(shape, px, py, scene)) return { ok: false, reason: 'building-spacing', submitted: 0, session: session };
+          w.place(action.name, px, py);
+          pendingPlacements.push(Object.assign({}, shape, { x: px, y: py, tick: w.tick() }));
+          return { ok: true, submitted: 1, session: session, placement: { x: px, y: py, elevation: elevation || 0 } };
         }
         case 'pauseQueue': w.pause(action.queueType); return { ok: true, submitted: 1, session: session };
         case 'resumeQueue': w.resume(action.queueType); return { ok: true, submitted: 1, session: session };

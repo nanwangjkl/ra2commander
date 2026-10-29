@@ -4,10 +4,14 @@ import { readFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { runInNewContext } from 'node:vm'
 import { WerhdBridge } from '../packages/game-werhd/src/page-bridge.ts'
+import { loadPrompts } from '../packages/command/src/index.ts'
 import { snapshot } from './helpers.ts'
 import { placementDirection, inTargetRegion, type TargetRegion, type PlacementDirection } from '../packages/contracts/src/index.ts'
 
-function pageBridge() {
+const buildingFoundations = Object.fromEntries(loadPrompts().game.entries().flatMap(item =>
+  item.type === 2 && item.foundation ? [[item.name, item.foundation]] : []))
+const bridgeSource = readFileSync(new URL('../packages/game-werhd/src/bridge.js', import.meta.url), 'utf8')
+function pageBridge(source = `window.__ra2cBuildingFoundations = ${JSON.stringify(buildingFoundations)};\n${bridgeSource}`) {
   let poll!: () => void
   let onTick!: (context: { tick: number }) => void
   let tick = 15
@@ -31,7 +35,7 @@ function pageBridge() {
     rules: (_name: string, _type: number) => ({ unsellable: false }),
   }
   const window: Record<string, any> = { werhd: api, __ra2cSnapshot: (s: ReturnType<typeof snapshot>) => snapshots.push(s) }
-  const install = () => runInNewContext(readFileSync(new URL('../packages/game-werhd/src/bridge.js', import.meta.url), 'utf8'), {
+  const install = () => runInNewContext(source, {
     // 固定采集耗时，避免测试并行调度触发实机采样降频而读到上一帧。
     window, crypto: { randomUUID }, performance: { now: () => 0 }, setInterval: (fn: () => void) => { poll = fn; return 1 }, clearInterval: () => {},
   })
@@ -138,6 +142,85 @@ test('分区内建造遵守异形边界和孔洞，无落点时不退回基地�
   assert.equal(submit().reason, 'no-spot', '基地原点和孔洞中的合法引擎格都不能代替分区落点')
   assert.equal(submit(50, 50).reason, 'wrong-placement-region')
   assert.equal(page.submitted.length, before)
+})
+
+test('建筑间隔按完整占地留一格，包含斜角、盟友及可见敌方建筑', () => {
+  const page = pageBridge(), template = page.own[0]!
+  const building = (id: number, name: string, x: number, y: number) => ({ ...template, id, name, type: 2, tile: { rx: x, ry: y } })
+  page.own.splice(0, page.own.length, building(100, 'GAWEAP', 20, 20)) // 5×3 占地。
+  const allied = [building(101, 'GAREFN', 40, 40)]
+  page.enemy.splice(0, page.enemy.length, building(102, 'GAPOWR', 60, 60))
+  page.api.units = relation => relation === 'self' ? page.own : relation === 'allied' ? allied : page.enemy
+  const snap = page.sample()
+  const place = (x: number, y: number) => page.window.__ra2cSubmit(snap.session, { kind: 'place', name: 'GAPOWR', x, y }, snap.seq, snap.sessionKey)
+  for (const [x, y] of [[25, 20], [25, 23], [18, 20], [20, 18], [44, 40], [62, 60]]) {
+    assert.equal(place(x!, y!).reason, 'building-spacing', `不能紧贴建筑：${x},${y}`)
+  }
+  assert.equal(page.submitted.length, 0)
+  for (const [x, y] of [[26, 20], [17, 20], [20, 24], [20, 17], [63, 60]]) {
+    assert.equal(place(x!, y!).ok, true, `留一格后可放置：${x},${y}`)
+  }
+})
+
+test('只有防御建筑之间可紧贴；围墙任一侧豁免间距，仍须满足引擎放置规则', () => {
+  const page = pageBridge(), template = page.own[0]!
+  page.own.push(
+    { ...template, id: 100, name: 'GTGCAN', type: 2, tile: { rx: 20, ry: 20 } },
+    { ...template, id: 101, name: 'GAWALL', type: 2, tile: { rx: 40, ry: 40 } },
+    { ...template, id: 102, name: 'GAPOWR', type: 2, tile: { rx: 60, ry: 60 } },
+  )
+  page.api.rules = name => ({ unsellable: false, wall: name === 'GAWALL', isBaseDefense: ['GAPILL', 'GTGCAN'].includes(name) })
+  const snap = page.sample()
+  const place = (name: string, x: number, y: number) => page.window.__ra2cSubmit(snap.session, { kind: 'place', name, x, y }, snap.seq, snap.sessionKey)
+  assert.equal(place('GAPILL', 22, 20).ok, true)
+  assert.equal(place('GAPOWR', 22, 21).reason, 'building-spacing', '普通建筑不能紧贴防御建筑')
+  assert.equal(place('GTGCAN', 62, 60).reason, 'building-spacing', '防御建筑不能紧贴普通建筑')
+  assert.equal(place('GAWALL', 62, 60).ok, true)
+  assert.equal(place('GAPOWR', 41, 40).ok, true)
+  page.api.canPlace = () => false
+  assert.equal(place('GAWALL', 61, 60).reason, 'cannot-place')
+  assert.equal(place('GAPILL', 23, 20).reason, 'cannot-place')
+})
+
+test('宿主向页面注入建筑占地，自动选址和分区方位选址都避开紧邻及未显现的放置', async () => {
+  let source = ''
+  const bridge = new WerhdBridge({ pages: () => [], exposeBinding: async () => {}, addInitScript: async (value: string) => { source = value } } as never, undefined, buildingFoundations)
+  await bridge.install()
+  const page = pageBridge(source)
+  page.own.push({ ...page.own[0]!, id: 100, name: 'GACNST', type: 2, tile: { rx: 50, ry: 50 } })
+  page.api.canPlace = (_name, x, y) => [54, 55, 57, 58].includes(x) && y === 50
+  const snap = page.sample()
+  const submit = (action: object) => page.window.__ra2cSubmit(snap.session, action, snap.seq, snap.sessionKey)
+  const first = submit({ kind: 'place', name: 'GAPOWR' })
+  assert.equal(first.ok, true)
+  assert.equal(first.placement.x, 55)
+  assert.equal(submit({ kind: 'place', name: 'GAWEAP', x: 57, y: 50 }).reason, 'building-spacing')
+  const region: TargetRegion = { id: 'right', name: '右侧', polygons: [{ outer: [[54, 49], [62, 49], [62, 53], [54, 53], [54, 49]], holes: [] }] }
+  const second = submit({ kind: 'place', name: 'GAWEAP', placementRegion: region, placement: { id: 'factory-right', anchor: { x: 50, y: 50 }, direction: 'down-right' } })
+  assert.equal(second.ok, true)
+  assert.equal(second.placement.x, 58)
+  assert.ok(inTargetRegion(second.placement.x, second.placement.y, region))
+  assert.equal(placementDirection({ x: 50, y: 50 }, second.placement), 'down-right')
+  page.api.canPlace = (_name, x, y) => x === 54 && y === 50
+  assert.equal(submit({ kind: 'place', name: 'GAREFN' }).reason, 'no-spot')
+})
+
+test('放置预留在建筑出现后转为实时占地，拆除后可重用，静默失败不永久占位', () => {
+  const page = pageBridge()
+  let snap = page.sample()
+  const place = (name: string, x: number, y: number) => page.window.__ra2cSubmit(snap.session, { kind: 'place', name, x, y }, snap.seq, snap.sessionKey)
+  assert.equal(place('GAPOWR', 10, 10).ok, true)
+  assert.equal(place('GTGCAN', 12, 10).reason, 'building-spacing')
+  page.own.push({ ...page.own[0]!, id: 100, name: 'GAPOWR', type: 2, tile: { rx: 10, ry: 10 } })
+  snap = page.next()
+  assert.equal(place('GTGCAN', 12, 10).reason, 'building-spacing')
+  page.own.pop()
+  snap = page.next()
+  assert.equal(place('GTGCAN', 12, 10).ok, true)
+  assert.equal(place('GAPOWR', 30, 30).ok, true)
+  assert.equal(place('GTGCAN', 32, 30).reason, 'building-spacing')
+  page.setTick(snap.tick + 120); snap = page.sample()
+  assert.equal(place('GTGCAN', 32, 30).ok, true)
 })
 
 test('建筑维修原语幂等开启扳手，出售不接受车辆、敌人或禁止出售建筑', () => {
