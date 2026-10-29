@@ -8,6 +8,8 @@ export interface ExitUnit {
   phase: 'exiting' | 'rallying' | 'ready'
   position: { x: number; y: number }; progressAt: number; attempts: number
   sentAt?: number; halted?: boolean; detail?: string
+  /** 改点移动确认前继续保护旧位置；已经就绪的成员不召回。 */
+  redirectFrom?: { x: number; y: number }
 }
 export interface ExitBlockage {
   factoryId: number; unitId: number; attempts: number; lastAttempt?: number
@@ -42,6 +44,7 @@ export class ProductionExits {
   relocatePending(factoryId: number, before: { x: number; y: number }, after: { x: number; y: number }, snap: Snapshot): void {
     for (const job of this.state.units) {
       if (job.factoryId !== factoryId || job.phase === 'ready' || job.point?.x !== before.x || job.point.y !== before.y) continue
+      job.redirectFrom ??= { ...before }
       job.point = { ...after }; job.progressAt = snap.time; job.attempts = 0; delete job.sentAt
       job.detail = '原集结点有障碍，等待抵达更换后的开阔位置'
     }
@@ -85,12 +88,16 @@ export class ProductionExits {
       const point = { x: unit.rx, y: unit.ry }
       if (distance(point, job.position) >= 1) { job.position = point; job.progressAt = snap.time }
       const outside = factory ? !inFactoryExit(unit, factory) : job.factoryId !== undefined && !snap.self.some(unit => unit.id === job.factoryId)
-      if (job.point && clear(job.point) && outside && distance(point, job.point) <= 4 && (unit.isIdle || snap.time - job.progressAt >= 1)) {
+      if (job.point && !job.redirectFrom && clear(job.point) && outside && distance(point, job.point) <= 4 && (unit.isIdle || snap.time - job.progressAt >= 1)) {
         job.phase = 'ready'; job.detail = '已抵达集结点'
         continue
       }
       job.phase = factory && insideFactory(unit, factory) ? 'exiting' : 'rallying'
       job.detail = !job.point ? '等待确认生产建筑及集结点' : job.phase === 'exiting' ? '等待驶出生产建筑并抵达集结点' : '前往集结点，暂不交接'
+      if (job.redirectFrom) {
+        job.detail = job.attempts >= 3 ? '集结改点移动尚未确认，有限重试已用尽' : '等待确认改点移动，暂不交接或占用旧集结区'
+        continue
+      }
       if (factory && snap.time - job.progressAt >= 3 && !paused && !job.halted) {
         if (job.phase === 'exiting') {
           const previous = this.state.blockages.find(block => block.factoryId === factory.id)
@@ -113,7 +120,7 @@ export class ProductionExits {
 export function validateProductionExits(state: ProductionExitState, snap: Snapshot): void {
   if (!state || !Array.isArray(state.units) || !Array.isArray(state.blockages) || !Array.isArray(state.yields) || new Set(state.units.map(unit => unit.unitId)).size !== state.units.length || new Set(state.yields.map(order => order.unitId)).size !== state.yields.length) throw new Error('出厂交接状态非法')
   const point = (p: { x: number; y: number }) => p && Number.isFinite(p.x) && Number.isFinite(p.y) && p.x >= 0 && p.y >= 0 && p.x < snap.mapWidth && p.y < snap.mapHeight
-  for (const unit of state.units) if (!Number.isSafeInteger(unit.unitId) || !unit.name || ![3, 7].includes(unit.type) || !point(unit.born) || !point(unit.position) || unit.point && !point(unit.point) || !['exiting', 'rallying', 'ready'].includes(unit.phase) || !Number.isFinite(unit.progressAt) || !Number.isSafeInteger(unit.attempts) || unit.attempts < 0 || unit.factoryId !== undefined && !Number.isSafeInteger(unit.factoryId) || unit.sentAt !== undefined && !Number.isFinite(unit.sentAt) || unit.halted !== undefined && typeof unit.halted !== 'boolean') throw new Error('出厂成员进度非法')
+  for (const unit of state.units) if (!Number.isSafeInteger(unit.unitId) || !unit.name || ![3, 7].includes(unit.type) || !point(unit.born) || !point(unit.position) || unit.point && !point(unit.point) || unit.redirectFrom && !point(unit.redirectFrom) || !['exiting', 'rallying', 'ready'].includes(unit.phase) || !Number.isFinite(unit.progressAt) || !Number.isSafeInteger(unit.attempts) || unit.attempts < 0 || unit.factoryId !== undefined && !Number.isSafeInteger(unit.factoryId) || unit.sentAt !== undefined && !Number.isFinite(unit.sentAt) || unit.halted !== undefined && typeof unit.halted !== 'boolean') throw new Error('出厂成员进度非法')
   for (const block of state.blockages) if (!Number.isSafeInteger(block.factoryId) || !Number.isSafeInteger(block.unitId) || !Number.isSafeInteger(block.attempts) || block.attempts < 0 || !['blocked', 'clearing', 'recovered', 'unresolved'].includes(block.state) || block.lastAttempt !== undefined && !Number.isFinite(block.lastAttempt) || typeof block.detail !== 'string') throw new Error('出口疏通进度非法')
   for (const order of state.yields) if (!Number.isSafeInteger(order.unitId) || !Number.isSafeInteger(order.factoryId) || !point(order.point) || !Number.isFinite(order.sentAt) || !order.owner || !Number.isSafeInteger(order.revision) || !Number.isSafeInteger(order.generation) || order.resume && (!order.resume.goalId || !order.resume.request || !['move', 'attack', 'attackMove', 'gather', 'guard'].includes(order.resume.request.kind))) throw new Error('出口让路记录非法')
 }

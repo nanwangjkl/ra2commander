@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 import type { SnapshotUnit } from '@ra2c/contracts'
 import { readGameData, type GameData, type GameDataEntry } from './game-data.ts'
 
-interface Member { name: string; type: number; factions?: string[]; aliases?: string[] }
+interface Member { name: string; type: number; factions?: string[]; aliases?: string[]; attackAliases?: string[] }
 interface Role {
   id: string
   aliases: string[]
@@ -83,6 +83,8 @@ export class GameProfile {
   }
   factions() { return structuredClone(this.definition.factions) }
   roles() { return structuredClone(this.definition.roles) }
+  /** 音近词只用于攻击目标，不加入生产或己方成员的普通别名。 */
+  attackAliases() { return this.definition.roles.flatMap(role => role.members.flatMap(member => (member.attackAliases ?? []).map(alias => ({ alias, name: member.name })))) }
   members(): Member[] { return [...new Map(this.definition.roles.flatMap(role => role.members).map(member => [member.name, structuredClone(member)])).values()] }
   member(name: string): Member | undefined {
     const member = this.definition.roles.flatMap(role => role.members).find(member => member.name.toLowerCase() === name.toLowerCase())
@@ -141,7 +143,7 @@ export function readGameProfile(file = new URL('../../../prompts/games/current-m
       roles.add(role.id)
       const names = new Set<string>()
       for (const member of role.members) {
-        if (typeof member?.name !== 'string' || !/^[A-Za-z0-9_]+$/.test(member.name) || names.has(member.name) || ![1, 2, 3, 7].includes(member.type) || (member.factions !== undefined && (!strings(member.factions) || member.factions.some(id => !factions.has(id)))) || (member.aliases !== undefined && !strings(member.aliases))) throw new Error(`角色 ${role.id} 的候选声明非法`)
+        if (typeof member?.name !== 'string' || !/^[A-Za-z0-9_]+$/.test(member.name) || names.has(member.name) || ![1, 2, 3, 7].includes(member.type) || (member.factions !== undefined && (!strings(member.factions) || member.factions.some(id => !factions.has(id)))) || (member.aliases !== undefined && !strings(member.aliases)) || (member.attackAliases !== undefined && (!strings(member.attackAliases) || member.attackAliases.some(alias => alias.trim().length < 2)))) throw new Error(`角色 ${role.id} 的候选声明非法`)
         names.add(member.name)
       }
       if (role.prerequisiteCategories !== undefined && !strings(role.prerequisiteCategories)) throw new Error(`角色 ${role.id} 的前置类别非法`)

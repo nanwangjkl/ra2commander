@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { CapabilityId, GameProfile, PromptLibrary, ResolvedCapabilityParameters as CapabilityParameters } from '@ra2c/command'
 import type { SkillRun } from '@ra2c/runtime'
-import { directionLabels, type CombatGoal, type FormationGoal, type GoalSpec, type ProductionGoal } from '@ra2c/contracts'
+import { directionLabels, type CombatGoal, type FormationGoal, type GoalSpec, type ProductionGoal, type TargetRegion } from '@ra2c/contracts'
 import type { CommandContext } from '../commands.ts'
 import { checkPoint, destination, formationAlias, formationName, fullMap, rectangle, regionDestination, resolveOwner, selectUnits, selectUnitSet, type GameCatalog } from './selectors.ts'
 import { prepareExploration } from '../exploration.ts'
@@ -10,7 +10,7 @@ import { bindBuildingPlacement, bindPlacementRegion } from '../building-placemen
 import { normalizeName } from './selectors.ts'
 import { bindRelocation } from '../base-relocation.ts'
 import { bindMining, releaseGlobalOrders } from '../mining.ts'
-import { bindAttack, bindClearRegion, bindAttackAll } from '../attack.ts'
+import { bindAttack, bindClearRegion, bindAttackAll, enemySelection } from '../attack.ts'
 import { bindBuildingOperation } from '../building-operations.ts'
 import { bindCover } from './cover.ts'
 import { bindFactoryRally } from '../factory-rally.ts'
@@ -279,9 +279,11 @@ export const bindings: Binders = {
     const snap = ctx.runtime.snapshot!
     const formationId = formationName(ctx, params.formationId, false, true)
     let region = params.bounds ? rectangle(snap, params.bounds) : undefined
+    let targetRegion: TargetRegion | undefined
     let point: Awaited<ReturnType<typeof regionDestination>>['destination'] | undefined
     if (params.regionName) {
       const selected = await regionDestination(ctx, params.regionName, context.check)
+      targetRegion = { id: selected.region.id, name: selected.region.name, polygons: structuredClone(selected.region.polygons) }
       point = selected.destination
       const vertices = selected.region.polygons.flatMap(polygon => polygon.outer)
       region ??= rectangle(snap, [Math.max(0, Math.floor(Math.min(...vertices.map(p => p[0])))), Math.max(0, Math.floor(Math.min(...vertices.map(p => p[1])))), Math.min(snap.mapWidth - 1, Math.ceil(Math.max(...vertices.map(p => p[0])))), Math.min(snap.mapHeight - 1, Math.ceil(Math.max(...vertices.map(p => p[1]))))])
@@ -293,16 +295,19 @@ export const bindings: Binders = {
       region = rectangle(snap, [Math.max(0, Math.floor(x - 8)), Math.max(0, Math.floor(y - 8)), Math.min(snap.mapWidth - 1, Math.ceil(x + 8)), Math.min(snap.mapHeight - 1, Math.ceil(y + 8))])
     }
     const catalog = await context.catalog()
-    const goal: CombatGoal = { id: id(), kind: 'combat', rawText: context.text, formationId, region, mode: params.mode, ...(ctx.runtime.hasCover(formationId) ? { executionMode: 'native' as const } : {}), allowedActions: params.mode === 'move' ? ['move', 'gather', 'stop'] : params.mode === 'assault' ? ['move', 'attack', 'attackMove', 'gather', 'stop'] : ['move', 'attack', 'stop'], ...(params.label ? { label: params.label } : {}), ...(point ? { destination: point } : {}),
+    targetRegion ??= { id: `guard:${formationId}`, name: region.name, polygons: [{ outer: [[region.x1, region.y1], [region.x2, region.y1], [region.x2, region.y2], [region.x1, region.y2], [region.x1, region.y1]], holes: [] }] }
+    const goal: CombatGoal = { id: id(), kind: 'combat', rawText: context.text, formationId, region: params.mode === 'move' ? region : fullMap(snap), mode: params.mode, ...(params.mode !== 'move' || ctx.runtime.hasCover(formationId) ? { executionMode: 'native' as const } : {}), allowedActions: params.mode === 'move' ? ['move', 'gather', 'stop'] : params.mode === 'assault' ? ['move', 'attack', 'attackMove', 'gather', 'stop'] : ['move', 'attack', 'stop'], ...(params.label ? { label: params.label } : {}), ...(point && params.mode === 'move' ? { destination: point } : {}),
+      ...(params.mode !== 'move' ? { objective: { target: { kind: 'enemies', names: [], region: targetRegion, ...enemySelection(params, context, catalog) }, search: { kind: 'visible' }, completion: { ground: 'continuous', aircraft: 'single-shot' }, coordination: 'focus' } } : {}),
       temporaryAbsenceNames:catalog.all.filter(item=>catalog.isRole(item.name,'terrorDrone',item.type)).map(item=>item.name),memberNames:Object.fromEntries(ctx.runtime.unobservableMembers(formationId).map(member=>[member.id,member.name])) }
     if (params.retreatLoss !== undefined) {
       if (params.retreatX === undefined || params.retreatY === undefined) throw new Error('战损回撤缺少完整回撤点')
       checkPoint(snap, params.retreatX, params.retreatY)
       goal.retreat = { lossAbove: params.retreatLoss, x: params.retreatX, y: params.retreatY }
     } else if (params.retreatX !== undefined || params.retreatY !== undefined) throw new Error('回撤点缺少战损阈值')
-    if (await ctx.runtime.clearLostCover(formationId)) delete goal.executionMode
+    await ctx.runtime.clearLostCover(formationId)
     context.check()
-    return bound(goal, `${formationId} ${params.mode === 'move' ? '赶路' : '守卫'}${region.name}`)
+    const targets = params.targetSelectors?.map(selector => context.game.roles().find(role => role.id === context.game.roleForAlias(selector))?.aliases[0] ?? selector).join('、')
+    return bound(goal, `${formationId} ${params.mode === 'move' ? '赶路' : '守卫'}${params.regionName ?? (params.bounds ? region.name : '队伍附近')} ${params.targetDomain === 'air' ? '空中' : params.targetDomain === 'ground' ? '地面' : ''}${targets ?? '敌人'}${params.mode !== 'move' ? '，无匹配目标原地待命' : ''}`)
   },
   'combat.clear-region': bindClearRegion,
   'combat.attack-all': bindAttackAll,

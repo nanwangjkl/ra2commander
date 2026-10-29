@@ -4,7 +4,7 @@
 {
   "id": "combat.hold",
   "name": "编队守区",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "binder": "combat.hold",
   "owner": "formation",
   "parameters": {
@@ -28,6 +28,17 @@
       "min": 0,
       "minItems": 4,
       "maxItems": 4
+    },
+    "targetSelectors": {
+      "type": "string[]",
+      "minItems": 1,
+      "description": "持续监视的敌方兵种或类别并集，如 flyingInfantry、JUMPJET；省略则守卫全部敌人，与己方编队成员分开"
+    },
+    "targetDomain": {
+      "type": "string",
+      "enum": ["all", "air", "ground"],
+      "default": "all",
+      "description": "敌方空地范围；air 包含处于空中的飞行兵，不能只按飞机类型识别"
     },
     "mode": {
       "type": "string",
@@ -64,6 +75,8 @@
 ```
 
 持续守卫指定分区，按当前快照选择区内目标和站位。玩家明确战损回撤时同时填写比例与回撤坐标。守区持续到取消或改令，不因当前没有敌人就完成。普通攻击交给游戏处理接近与开火。
+
+“2队监视任何出现的飞行兵，只要出现就干掉”使用 combat.hold(formationId=2队,mode=hold,targetSelectors=[flyingInfantry])；“2队警戒空中敌人”使用 targetDomain=air。敌方兵种与空地范围同时保留，由本机统一筛选；飞行兵是步兵类型，空中状态按公开 zone 识别，不能把 type=1 当成所有空中单位。省略地点时守住队伍附近，不自动巡逻、集结到中心或搜索全图。没有匹配目标时原地待命，目标离开守区或不再符合要求时停止追击，新目标出现后继续响应。
 
 “3队防守基地”“1队守卫基地附近”只返回 combat.hold(formationId=对应队,defendBase=true)。防区是基地车（展开后为建造厂）所在的完整地图分区，保留异形边界与孔洞，不按队伍当前位置画矩形。直接攻击进入防区的可见敌人，包括地面和空中；没有敌人或目标离区时停止追击、原地待命，不自动去区域中心集结或绕行。基地移动跨区后跟随更新防区，展开与收起不丢失关联。多座基地时优先基地车，其余按离所选部队最近的己方建造厂合理选择，并反馈实际分区。
 

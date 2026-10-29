@@ -114,7 +114,7 @@ export type ActionRequest =
   | { kind: 'guard'; unitIds: number[] }
   | { kind: 'produce'; name: string; quantity: number }
   | { kind: 'cancel'; name: string; quantity: number }
-  | { kind: 'place'; name: string; x?: number; y?: number; placement?: import('./placement.ts').PlacementSlot; placementRegion?: import('./spatial.ts').TargetRegion }
+  | { kind: 'place'; name: string; x?: number; y?: number; placement?: import('./placement.ts').PlacementSlot; placementRegion?: import('./spatial.ts').TargetRegion; rallyPoints?: Array<{ x: number; y: number }> }
   | { kind: 'pauseQueue'; queueType: number }
   | { kind: 'resumeQueue'; queueType: number };
 

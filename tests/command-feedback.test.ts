@@ -91,6 +91,9 @@ test('生成被停止不会报生效，合并目标等真实提交后再更新�
     oldResume.resolve()
     await first
     assert.equal(render(merged.commandLog!.since(0)).get(oldId)!.stage, 'merged')
+    assert.ok(merged.commandLog!.since(0).filter(event => event.stage === 'merged').every(event => !event.error), '正常合并不记为错误')
+    assert.equal(render(merged.commandLog!.since(0)).get(oldId)!.error, '')
+    assert.ok([...render(merged.commandLog!.since(0)).get(oldId)!.goals.values()].every(goal => !goal.error))
     nextResume.resolve()
     await second
     const cards = [...render(merged.commandLog!.since(0)).values()]

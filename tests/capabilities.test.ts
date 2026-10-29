@@ -184,15 +184,18 @@ test('坐标移动、守区与指定队进攻共用对象选择，单队停止�
     const goalA = [...f.runtime.goals.values()].find(goal => goal.ownerId === 'formation:A')!.spec
     assert.equal(goalA.kind, 'combat')
     if (goalA.kind === 'combat') assert.deepEqual(goalA.destination, { x: 30, y: 40 })
-    const versionB = f.runtime.programs.get('formation:B')!.script!.version
+    const guardB = [...f.runtime.goals.values()].find(goal => goal.ownerId === 'formation:B')!
+    const specB = structuredClone(guardB.activeSpec)
+    assert.equal(specB!.executionMode, 'native')
     await f.voice([{ capability: 'combat.attack-all', params: { formationId: 'A' } }])
-    assert.equal(f.runtime.programs.get('formation:B')!.script!.version, versionB)
+    assert.deepEqual(f.runtime.goals.get(guardB.spec.id)!.activeSpec, specB)
     await f.runtime.onSnapshot({ ...f.runtime.snapshot!, seq: f.runtime.snapshot!.seq + 1, mapWidth: 256, mapHeight: 256 })
     await f.voice([{ capability: 'combat.hold', params: { formationId: 'B', regionName: '三楼右下' } }])
     const hold = [...f.runtime.goals.values()].filter(goal => goal.ownerId === 'formation:B').at(-1)!
-    if (hold.spec.kind !== 'combat' || !hold.spec.destination) throw new Error('缺少守区就位点')
-    const point = hold.spec.destination
-    await f.runtime.onSnapshot({ ...f.runtime.snapshot!, seq: f.runtime.snapshot!.seq + 1, self: f.runtime.snapshot!.self.map(unit => unit.id === 2 ? { ...unit, rx: point.x, ry: point.y } : unit) })
+    if (hold.spec.kind !== 'combat' || !hold.spec.objective?.target.region) throw new Error('缺少持续守区范围')
+    assert.equal(hold.spec.objective.target.region.name, '三楼右下')
+    assert.equal(hold.spec.destination, undefined, '无敌人时不先去中心集结')
+    await f.runtime.onSnapshot({ ...f.runtime.snapshot!, seq: f.runtime.snapshot!.seq + 1 })
     assert.equal(hold.status, 'active')
     assert.equal(f.runtime.goalExecution(hold.spec.id)!.state, 'continuous')
     await f.voice([{ capability: 'control.stop', params: { scope: 'formation', formationId: 'A' } }])

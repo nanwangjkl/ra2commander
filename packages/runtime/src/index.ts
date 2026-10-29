@@ -55,11 +55,14 @@ export interface RuntimeDeps {
   recovery?: { stallTicks?: number; cooldownTicks?: number }
   coverRanges?: (pairs: Array<{ unitId: number; targetId: number }>, snap: Snapshot) => Promise<CoverRange[]>
   factorySites?: (snap: Snapshot) => Promise<FactorySite[]>
+  buildingFoundation?: (name: string) => { width: number; height: number } | undefined
   rallyTiles?: FactoryRallyDeps['tiles']
   rallyClear?: FactoryRallyDeps['clear']
   regionsAt?: (x: number, y: number) => import('@ra2c/contracts').TargetRegion[]
   log?: (message: string) => void
 }
+
+interface StepBudget { remaining: number; placementAttempts: Set<string> }
 
 export class TaskRuntime {
   battleResult: Snapshot['battle'] | undefined
@@ -148,6 +151,8 @@ export class TaskRuntime {
     const exitIds = new Set(spec.kind === 'production' ? view.observed[spec.target] ?? [] : [])
     const factories = new Set(this.productionExits.state.units.filter(unit => exitIds.has(unit.unitId)).map(unit => unit.factoryId))
     const exitNotices = this.productionExits.state.blockages.filter(block => factories.has(block.factoryId) && block.state !== 'recovered').map(block => block.detail)
+    const redirects = this.productionExits.state.units.filter(unit => exitIds.has(unit.unitId) && unit.redirectFrom)
+    if (redirects.length) exitNotices.push(`${redirects.length} 个新产物等待确认集结改点${redirects.some(unit => unit.attempts >= 3) ? '，部分移动有限重试已用尽' : ''}`)
     const notice = [goal.facts.coverEnded, ...exitNotices].filter(Boolean).join('；')
     if (execution) return { ...execution, ...(notice ? { detail: [notice, execution.detail].filter(Boolean).join('；') } : {}) }
     const currentProgress = activeHandler.progress?.(ctx, view) ?? {}
@@ -833,7 +838,7 @@ export class TaskRuntime {
         // 在 await 前交棒；当前计算若被新快照抢占，下一轮也不会从它重新开始。
         this.nextProgram = (index + 1) % programs.length
         if (program.status === 'active') {
-          const budget = { remaining: 20 }
+          const budget: StepBudget = { remaining: 20, placementAttempts: new Set() }
           if (this.activeSpecs(program).some(spec => goalExecutionMode(spec) === 'native')) await this.nativeStep(program, snap, budget)
           if (this.latest !== snap) continue
           if (program.status === 'active' && program.script) await this.step(program, snap, budget)
@@ -913,7 +918,25 @@ export class TaskRuntime {
     }
     if (!this.exitAllowed()) return
     let budget = 6
+    // 新建筑／换点后优先修正未就绪产物的移动，不能等下一批生产才更新。
+    for (const job of store.state.units) {
+      if (!job.redirectFrom || !job.point || job.phase === 'ready' || job.halted || !this.exitAllowed(job.unitId) || job.attempts >= 3 || job.sentAt !== undefined && snap.time - job.sentAt < 3) continue
+      const before = job.redirectFrom, point = job.point, stamp = { unitId: job.unitId, ...this.exitStamp(job.unitId) }
+      const guard = () => this.latest === snap && this.sameExitOwner(stamp) && store.waiting(job.unitId) && job.redirectFrom === before && job.point === point
+      await this.deps.checkpoint()
+      if (!guard()) continue
+      let results: ActionResult[]
+      try { results = await this.deps.submit([{ kind: 'move', unitIds: [job.unitId], ...point }], snap, guard) }
+      catch { results = [] }
+      if (guard()) {
+        job.sentAt = snap.time
+        if (results.length && results.every(result => result.ok)) { delete job.redirectFrom; job.attempts = 0; job.progressAt = snap.time; job.detail = '已改去新集结点，等待抵达后交接' }
+        else { job.attempts++; job.detail = job.attempts >= 3 ? '集结改点移动尚未确认，有限重试已用尽' : '集结改点移动尚未确认，保留旧位置等待重试' }
+      }
+      if (--budget === 0) return
+    }
     for (const block of store.state.blockages) {
+      if (store.state.units.some(job => job.unitId === block.unitId && job.redirectFrom)) continue
       if (!this.exitAllowed(block.unitId) || block.state === 'recovered' || block.state === 'unresolved' || block.lastAttempt !== undefined && snap.time - block.lastAttempt < 3) continue
       const factory = sites.find(site => site.id === block.factoryId)
       if (!factory) continue
@@ -949,7 +972,7 @@ export class TaskRuntime {
       }
     }
     for (const job of store.state.units) {
-      if (job.phase !== 'rallying' || !job.point || job.halted || store.state.yields.some(order => order.unitId === job.unitId) || !this.exitAllowed(job.unitId) || snap.time - job.progressAt < 3 || job.sentAt !== undefined && snap.time - job.sentAt < 3 || job.attempts >= 3) continue
+      if (job.phase !== 'rallying' || !job.point || job.redirectFrom || job.halted || store.state.yields.some(order => order.unitId === job.unitId) || !this.exitAllowed(job.unitId) || snap.time - job.progressAt < 3 || job.sentAt !== undefined && snap.time - job.sentAt < 3 || job.attempts >= 3) continue
       const stamp = { unitId: job.unitId, ...this.exitStamp(job.unitId) }
       job.attempts++; job.sentAt = snap.time
       await this.deps.checkpoint()
@@ -984,8 +1007,8 @@ export class TaskRuntime {
     const policy = this.formations.coverOf(spec.formationId)
     if (!policy) return undefined
     const goal = this.goals.get(spec.id)!, projected = this.project(spec, snap), ids = projected.constraints.allowedUnitIds
-    // 基地防守无入侵者时全队原地待命，不由掩护待命流程追加站位移动。
-    if (spec.kind === 'combat' && spec.baseDefense && !projected.constraints.enemyIds.length) return undefined
+    // 持续守卫无匹配目标时全队原地待命，不由掩护流程追加站位移动。
+    if (spec.kind === 'combat' && (spec.baseDefense || spec.objective && (spec.mode === 'hold' || spec.mode === 'assault')) && !projected.constraints.enemyIds.length) return undefined
     const previous = goal.facts.coverMotion ?? emptyCoverMotion()
     if (spec.kind === 'combat' && goal.facts.retreatTriggered && spec.retreat) {
       const plan = coverMoves(policy, snap, ids, spec.retreat, previous, { directDestination: true })
@@ -1094,7 +1117,7 @@ export class TaskRuntime {
     this.deps.log?.(`[runtime] ${goal.spec.id} 本机执行出错：${goal.facts.nativeError}`)
   }
 
-  private async nativeStep(program: ProgramState, snap: Snapshot, budget: { remaining: number }): Promise<void> {
+  private async nativeStep(program: ProgramState, snap: Snapshot, budget: StepBudget): Promise<void> {
     const generation = program.generation, formationRevision = this.formations.revision
     const valid = () => this.programs.get(program.id) === program && program.status === 'active' && program.generation === generation && this.sessionKey === snap.sessionKey && this.latest === snap && this.formations.revision === formationRevision
     const specs = this.activeSpecs(program).filter(spec => goalExecutionMode(spec) === 'native')
@@ -1114,7 +1137,7 @@ export class TaskRuntime {
     }
   }
 
-  private async step(program: ProgramState, snap: Snapshot, budget: { remaining: number }): Promise<void> {
+  private async step(program: ProgramState, snap: Snapshot, budget: StepBudget): Promise<void> {
     const script = program.script!
     const generation = program.generation
     const formationRevision = this.formations.revision
@@ -1122,6 +1145,12 @@ export class TaskRuntime {
     const valid = () => authorized() && this.latest === snap && formationRevision === this.formations.revision
     const specs = this.activeSpecs(program).filter(spec => goalExecutionMode(spec) === 'script')
     if (!specs.length || !budget.remaining) return
+    // 就绪建筑按本次生产台账放置，不能被脚本的同名建筑判断或空动作漏掉。
+    for (const spec of specs) {
+      const requests = handlerFor(spec).requiredActions?.(this.goalContext(spec, snap)) ?? []
+      if (requests.length && !await this.submitActions(program, snap, requests.map(request => ({ goalId: spec.id, request })), 'script', valid, budget)) return
+    }
+    if (!valid() || !budget.remaining) return
     if (program.owner.kind === 'formation' && this.formations.coverOf(program.owner.formationId) && specs.every(spec => spec.kind === 'combat' || spec.kind === 'attack' && !spec.aircraftIds.length)) {
       for (const spec of specs) {
         const actions = (await this.coverActions(spec, snap) ?? []).map(request => ({ goalId: spec.id, request }))
@@ -1144,14 +1173,14 @@ export class TaskRuntime {
     program.stats.steps++
     this.recovery.trace(program.id, this.recoveryKey(program), snap.tick, { kind: 'script', actions: outcome.actions, ...(!outcome.ok ? { error: outcome.error } : {}) })
     if (!outcome.ok) { await this.fault(program, outcome.error ?? '执行失败', snap); return }
-    outcome.actions = liveScriptActions(outcome.actions, frame.constraints, frame.snapshot)
+    outcome.actions = liveScriptActions(outcome.actions, frame.constraints, frame.snapshot).filter(item => item?.request?.kind !== 'place' || !budget.placementAttempts.has(item.request.name))
     const outputError = validateScriptActions(outcome.actions, frame.constraints, frame.snapshot)
     if (outputError) { await this.fault(program, outputError, snap); return }
     if (!await this.submitActions(program, snap, outcome.actions, 'script', valid, budget)) return
     if (authorized()) { program.memory = outcome.memory; program.stats.errors = 0 }
   }
-  /** 两种动作来源只在这里接入游戏；预算、即时校验、台账和回执共享。 */
-  private async submitActions(program: ProgramState, snap: Snapshot, actions: ScriptAction[], mode: 'script' | 'native', valid: () => boolean, budget: { remaining: number }): Promise<boolean> {
+  /** 脚本、固定流程及宿主子步骤共用预算、即时校验、台账和回执。 */
+  private async submitActions(program: ProgramState, snap: Snapshot, actions: ScriptAction[], mode: 'script' | 'native', valid: () => boolean, budget: StepBudget): Promise<boolean> {
     let deferred = false
     const failure = async (goal: GoalState, error: string) => {
       if (mode === 'native') this.nativeFault(goal, error)
@@ -1160,6 +1189,7 @@ export class TaskRuntime {
     for (const item of actions) {
       if (!valid() || !budget.remaining) return false
       const goal = this.goals.get(item?.goalId)
+      if (item?.request?.kind === 'place' && budget.placementAttempts.has(item.request.name)) continue
       // 单目标取消/完成不使其他目标失效，也不把陈旧引用当作脚本异常。
       if (!goal || goal.ownerId !== program.id || goal.status !== 'active' || !goal.activeSpec || !program.activeGoalIds.includes(item.goalId) || goalExecutionMode(goal.activeSpec) !== mode || goal.facts.nativeError) continue
       const activeSpec = goal.activeSpec
@@ -1171,6 +1201,7 @@ export class TaskRuntime {
       if (error) { await failure(goal, error); return false }
       budget.remaining--
       const request = item.request
+      if (request.kind === 'place') budget.placementAttempts.add(request.name)
       if (request.kind === 'createFormation' || request.kind === 'transferUnits' || request.kind === 'dissolveFormation') {
         try { await this.manage(goal, request, snap); program.stats.actions++; program.stats.errors = 0 }
         catch (err) { goal.facts.blocked = String(err); await failure(goal, String(err)) }
@@ -1212,6 +1243,12 @@ export class TaskRuntime {
         if (!valid() || goal.status !== 'active') { record.state = 'rejected'; return false }
       }
       const guard = () => valid() && goal.status === 'active' && this.goals.get(item.goalId) === goal && goal.activeSpec === activeSpec
+      if (request.kind === 'place') {
+        // 该字段只由宿主按最新集结事实填写，不接受生成脚本自行放宽或伪造。
+        const points = this.factoryRallies.protectedPoints(snap, this.productionExits.state.units)
+        if (points.length) request.rallyPoints = points
+        else delete request.rallyPoints
+      }
       let phase: 'prepare' | 'submit' | 'receipt' = 'prepare'
       try {
         const handler = handlerFor(activeSpec)
@@ -1225,6 +1262,22 @@ export class TaskRuntime {
         phase = 'receipt'
         if (handler.afterSubmit?.(this.goalContext(goal.activeSpec, snap), request, results)) continue
         if (mode === 'script') this.recovery.trace(program.id, this.recoveryKey(program), snap.tick, { goalId: item.goalId, request, results })
+        if (request.kind === 'place' && results.length && results.every(result => !result.ok && result.submitted === 0 && result.reason === 'building-rally-conflict')) {
+          goal.facts.placementBlocked = true
+          const location = results[0]!.placement, foundation = this.deps.buildingFoundation?.(request.name)
+          if (!location || !foundation) goal.facts.blocked = '无法确认建筑占地及替代集结点，保留就绪建筑'
+          else {
+            try {
+              const checked = await this.factoryRallies.beforePlacement({ id: -1, name: request.name, x: location.x, y: location.y, foundation, factory: 0 }, snap, guard, this.productionExits.state.units)
+              if (!guard()) return false
+              goal.facts.blocked = checked.ok ? '已避开建筑落点调整集结点，下一步继续放置' : checked.reason ?? '集结点尚未安全换点，保留就绪建筑'
+            } catch (error) {
+              if (!guard()) return false
+              goal.facts.blocked = `放置前集结点调整未完成，保留就绪建筑：${String(error).slice(0, 120)}`
+            }
+          }
+          continue
+        }
         if (request.kind === 'place' && results.length && results.every(result => !result.ok && result.submitted === 0 && (['no-spot', 'cannot-place', 'building-spacing'].includes(result.reason ?? '') || result.reason?.startsWith('placement-footprint-unavailable:')))) {
           goal.facts.placementBlocked = true
           const missing = results.find(result => result.reason?.startsWith('placement-footprint-unavailable:'))?.reason?.split(':')[1]

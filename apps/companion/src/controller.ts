@@ -60,7 +60,7 @@ export class ProgramController {
       this.publish({ owner: lease.ownerId, sessionKey: lease.sessionKey, goalIds: [spec.id],
         stage: active ? 'effective' : merged ? 'merged' : 'cancelled',
         ...(active && program?.script ? { version: program.script.version } : {}),
-        ...(!active ? { error: merged ? '已合并到后续脚本生成，目标仍保留' : retained ? '本次生成已停止，目标仍保留待生效' : '已停止、被新目标替换或对局已变化' } : {}),
+        ...(!active && !merged ? { error: retained ? '本次生成已停止，目标仍保留待生效' : '已停止、被新目标替换或对局已变化' } : {}),
       })
     }
     return '本次生成已停止或并入后续变更；目标状态以实际生效结果为准'
@@ -86,7 +86,7 @@ export class ProgramController {
   useScriptExecution(kinds: readonly GoalSpec['kind'][]): void {
     const runtime = this.deps.runtime
     for (const goalId of runtime.useScriptExecution(kinds)) {
-      this.publish({ stage: 'merged', owner: runtime.goals.get(goalId)!.ownerId, sessionKey: runtime.battleKey, goalIds: [goalId], executionMode: 'script', error: '已关闭该能力的本机执行，保留进度并等待脚本接管' })
+      this.publish({ stage: 'merged', owner: runtime.goals.get(goalId)!.ownerId, sessionKey: runtime.battleKey, goalIds: [goalId], executionMode: 'script' })
     }
   }
 

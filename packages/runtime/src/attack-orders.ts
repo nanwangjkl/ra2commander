@@ -20,3 +20,13 @@ export function directAttackOrders(snap: Snapshot, ids: number[], targets: reado
   }
   return [...groups].map(([targetId, unitIds]) => ({ kind: 'attack', targetId, unitIds }))
 }
+
+/** 持续守卫只追击当前匹配目标；离区、消失或无目标时结束旧追击，不去中心集结。 */
+export function guardAttackOrders(snap: Snapshot, ids: number[], targets: readonly SnapshotUnit[], motion: CoverMotion, focus = false): ActionRequest[] {
+  const attacks = directAttackOrders(snap, ids, targets, motion, focus)
+  const stops = snap.self.filter(unit => ids.includes(unit.id)
+    && (!targets.length || motion.orders[unit.id]?.kind === 'attack' && !targets.some(target => target.id === motion.orders[unit.id]?.targetId))
+    && !attacks.some(action => 'unitIds' in action && action.unitIds.includes(unit.id))
+    && (motion.orders[unit.id]?.kind === 'attack' || motion.orders[unit.id]?.kind === 'move' || !unit.isIdle && (motion.orders[unit.id]?.kind !== 'stop' || snap.tick - motion.orders[unit.id]!.tick >= 90))).map(unit => unit.id)
+  return [...attacks, ...(stops.length ? [{ kind: 'stop' as const, unitIds: stops }] : [])]
+}

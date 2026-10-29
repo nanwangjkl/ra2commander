@@ -1,4 +1,5 @@
 import { inTargetRegion, validTargetRegion, validateActions, type ActionRequest, type ActionResult, type Snapshot, type TargetRegion } from '@ra2c/contracts'
+import type { ExitUnit } from './production-exit.ts'
 
 /** 占地来源为当前游戏目录的 art.ini；factory 使用本局公开规则。 */
 export interface FactorySite {
@@ -14,6 +15,8 @@ export interface RallySetting {
   status: 'prepared' | 'submitted' | 'unknown' | 'failed'
   attempts: number; tick: number; reason?: string
   region?: TargetRegion
+  /** 换点回执未确认时仍保护旧位置，不能先在那里放建筑。 */
+  relocatedFrom?: { x: number; y: number }
 }
 export interface FactoryRallyState { enabled: boolean; settings: RallySetting[] }
 export interface FactoryRallyDeps {
@@ -64,6 +67,53 @@ export class FactoryRallies {
   }
   private prune(snap: Snapshot): void {
     this.state.settings = this.state.settings.filter(setting => snap.self.some(unit => unit.type === 2 && unit.id === setting.factoryId && unit.name === setting.name && unit.rx === setting.origin.x && unit.ry === setting.origin.y))
+  }
+  private claims(snap: Snapshot, pending: readonly ExitUnit[]) {
+    return [
+      ...this.state.settings.filter(setting => snap.self.some(unit => unit.id === setting.factoryId && unit.type === 2 && unit.name === setting.name && unit.rx === setting.origin.x && unit.ry === setting.origin.y)).flatMap(setting =>
+        [setting.point, setting.relocatedFrom].flatMap(point => point ? [{ factoryId: setting.factoryId, point }] : [])),
+      ...pending.filter(unit => unit.phase !== 'ready').flatMap(unit => [unit.point, unit.redirectFrom].flatMap(point => point ? [{ factoryId: unit.factoryId, point }] : [])),
+    ]
+  }
+  protectedPoints(snap: Snapshot, pending: readonly ExitUnit[]): Array<{ x: number; y: number }> {
+    return [...new Map(this.claims(snap, pending).map(claim => [`${claim.point.x},${claim.point.y}`, { ...claim.point }])).values()]
+  }
+  /** 仅在无避让落点时调用；先迁移集结点和未就绪成员，再允许建筑占用原位置。 */
+  async beforePlacement(building: FactorySite, snap: Snapshot, valid: () => boolean, pending: readonly ExitUnit[]): Promise<{ ok: boolean; reason?: string }> {
+    const check = () => { if (!valid() || this.deps.current()?.sessionKey !== snap.sessionKey) throw new Error('建筑放置前集结点检查已失效') }
+    check()
+    const conflicts = this.claims(snap, pending).filter(claim => inFootprint(claim.point.x, claim.point.y, building, 1))
+    if (!conflicts.length) return { ok: true }
+    const sites = await this.sites(snap); check()
+    const planned = [...sites, building]
+    for (const factoryId of new Set(conflicts.map(claim => claim.factoryId))) {
+      const factory = sites.find(site => site.id === factoryId)
+      const previous = factory && this.state.settings.find(setting => sameSite(setting, factory))
+      if (!factory || !previous?.point) return { ok: false, reason: '原集结位置仍有待交接成员，但无法确认生产建筑及新集结点，保留就绪建筑' }
+      if (previous.status === 'prepared' || previous.status === 'unknown') return { ok: false, reason: '集结点设置回执尚未确认，保留就绪建筑，未占用原位置' }
+      let destination = previous.point
+      if (previous.status !== 'submitted' || !(await this.open([destination], planned, snap, factory.factory === 4, previous.source === 'player')).length) {
+        check()
+        if (this.state.settings.find(setting => setting.factoryId === factory.id) !== previous) return { ok: false, reason: '集结点已被新命令修改，按最新设置重查放置' }
+        const candidates = previous.source === 'player' ? this.nearby(previous, planned, snap) : rallyCandidates(factory, planned, snap, this.state.settings)
+        const [point] = await this.open(candidates, planned, snap, factory.factory === 4, false, previous.source === 'automatic' ? factory.elevation : undefined)
+        check()
+        if (this.state.settings.find(setting => setting.factoryId === factory.id) !== previous) return { ok: false, reason: '集结点已被新命令修改，按最新设置重查放置' }
+        if (!point) return { ok: false, reason: `${factory.name} #${factory.id} 暂无可替代的开阔集结点，保留就绪建筑，未占用原位置` }
+        const setting = await this.set(factory, point, previous.source, snap, check, previous.commandId, previous.region, previous.point)
+        if (setting.status !== 'submitted') return { ok: false, reason: `集结点换点尚未确认，保留就绪建筑：${setting.reason ?? setting.status}` }
+        destination = point
+        setting.reason = '建筑无法避让原集结区，已先换点并更新未就绪成员'
+        this.deps.notify?.(setting)
+      }
+      check()
+      for (const claim of conflicts.filter(claim => claim.factoryId === factory.id)) {
+        if (claim.point.x !== destination.x || claim.point.y !== destination.y) this.deps.relocated?.(factory.id, claim.point, destination, snap)
+      }
+    }
+    await this.deps.checkpoint(); check()
+    const waiting = pending.filter(unit => unit.phase !== 'ready' && unit.redirectFrom && inFootprint(unit.redirectFrom.x, unit.redirectFrom.y, building, 1))
+    return waiting.length ? { ok: false, reason: waiting.some(unit => unit.attempts >= 3) ? '未就绪成员改点移动尚未确认，有限重试已用尽；保留就绪建筑及原位置' : '已更换集结点，等待未就绪成员确认改点后放置建筑' } : { ok: true }
   }
   async point(factory: FactorySite, sites: FactorySite[], snap: Snapshot, extra: Array<{ x: number; y: number }> = []): Promise<{ x: number; y: number } | undefined> {
     const candidates = rallyCandidates(factory, sites, snap, this.state.settings).filter(point => extra.every(other => Math.hypot(point.x - other.x, point.y - other.y) >= 2))
@@ -130,6 +180,7 @@ export class FactoryRallies {
     const previous = this.state.settings.find(setting => sameSite(setting, factory))
     const setting: RallySetting = { factoryId: factory.id, name: factory.name, origin: { x: factory.x, y: factory.y }, ...(point ? { point } : {}), source, ...(commandId ? { commandId } : {}), status: point ? 'prepared' : 'failed', attempts: source === 'automatic' ? (previous?.attempts ?? 0) + 1 : 1, tick: snap.tick,
       ...(region ? { region: structuredClone(region) } : {}),
+      ...(previous?.relocatedFrom || relocatedFrom ? { relocatedFrom: { ...(previous?.relocatedFrom ?? relocatedFrom!) } } : {}),
       ...(!point ? { reason: factory.foundation ? '附近没有已知可用集结位置' : '缺少可靠的建筑占地，未猜测默认集结位置' } : {}) }
     this.state.settings = this.state.settings.filter(item => item.factoryId !== factory.id)
     this.state.settings.push(setting)
@@ -152,6 +203,7 @@ export class FactoryRallies {
       const results = await this.deps.submit(action, snap, valid)
       if (this.state.settings.includes(setting)) {
         setting.status = results.length === 1 && results[0]!.ok && results[0]!.submitted === 1 ? 'submitted' : 'failed'
+        if (setting.status === 'submitted') delete setting.relocatedFrom
         if (setting.status === 'failed') setting.reason = results[0]?.reason ?? '集结点动作未提交'
       }
     } catch (error) {
@@ -188,17 +240,19 @@ export class FactoryRallies {
   async poll(snap: Snapshot): Promise<void> {
     this.prune(snap)
     const siteKey = JSON.stringify(snap.self.filter(unit => unit.type === 2).map(unit => [unit.id, unit.name, unit.rx, unit.ry, unit.elevation]))
-    if (siteKey !== this.siteKey) { await this.sites(snap); if (this.deps.current()?.sessionKey !== snap.sessionKey) return; this.siteKey = siteKey }
+    const layoutChanged = siteKey !== this.siteKey
+    if (layoutChanged) { await this.sites(snap); if (this.deps.current()?.sessionKey !== snap.sessionKey) return; this.siteKey = siteKey; this.staticChecked = new WeakSet() }
     if (!this.state.enabled && !this.state.settings.some(setting => setting.point && !this.staticChecked.has(setting))) return
-    if (!this.deps.automaticAllowed() || snap.tick - this.polledAt < 30) return
+    if (!this.deps.automaticAllowed() || !layoutChanged && snap.tick - this.polledAt < 30) return
     this.polledAt = snap.tick
     const sites = this.knownSites
     if (this.deps.current()?.sessionKey !== snap.sessionKey) return
     let budget = 2
-    // 新补丁加载／同局恢复后也检查旧点，不依赖还有下一批生产。
+    // 建筑布局变化、新补丁加载及同局恢复都复查旧点，不依赖下一批入队。
     for (const previous of [...this.state.settings]) {
-      if (!previous.point || this.staticChecked.has(previous)) continue
-      if (this.clear(previous.point)) { this.staticChecked.add(previous); continue }
+      if (!previous.point || this.staticChecked.has(previous) || previous.status === 'prepared' || previous.status === 'unknown') continue
+      const obstructed = sites.some(site => inFootprint(previous.point!.x, previous.point!.y, site, 1))
+      if (this.clear(previous.point) && !obstructed) { this.staticChecked.add(previous); continue }
       const factory = sites.find(site => sameSite(previous, site))
       if (!factory) continue
       const candidates = previous.source === 'player' ? this.nearby(previous, sites, snap) : rallyCandidates(factory, sites, snap, this.state.settings)
@@ -207,12 +261,12 @@ export class FactoryRallies {
       this.staticChecked.add(previous)
       if (!point) {
         previous.status = 'failed'
-        previous.reason = '原集结点周围有静态树石障碍，附近暂无已知开阔位置，等待换点'
+        previous.reason = '原集结点周围有建筑或静态树石障碍，附近暂无已知开阔位置，等待换点'
         await this.deps.checkpoint(); this.deps.notify?.(previous)
       } else {
         const check = () => { if (!this.deps.automaticAllowed()) throw new Error('集结点复查已暂停') }
         const setting = await this.set(factory, point, previous.source, snap, check, previous.commandId, previous.region, previous.point)
-        if (setting.status === 'submitted') setting.reason = '原集结点周围有静态树石障碍，已更换开阔位置并更新待集结成员'
+        if (setting.status === 'submitted') setting.reason = '原集结点周围有建筑或静态树石障碍，已更换开阔位置并更新待集结成员'
         await this.deps.checkpoint(); this.deps.notify?.(setting)
       }
       if (--budget === 0) return
@@ -235,4 +289,5 @@ export function validateFactoryRallies(state: FactoryRallyState, snap: Snapshot)
   if (!state || typeof state.enabled !== 'boolean' || !Array.isArray(state.settings) || new Set(state.settings.map(setting => setting.factoryId)).size !== state.settings.length) throw new Error('生产建筑集结状态非法')
   for (const setting of state.settings) if (!Number.isSafeInteger(setting.factoryId) || !setting.name || !setting.origin || ![setting.origin.x, setting.origin.y, setting.point?.x ?? 0, setting.point?.y ?? 0].every(Number.isSafeInteger) || setting.point && (setting.point.x < 0 || setting.point.y < 0 || setting.point.x >= snap.mapWidth || setting.point.y >= snap.mapHeight) || !['automatic', 'player'].includes(setting.source) || !['prepared', 'submitted', 'unknown', 'failed'].includes(setting.status) || !Number.isSafeInteger(setting.attempts) || setting.attempts < 1 || !Number.isFinite(setting.tick) || setting.status !== 'failed' && !setting.point) throw new Error('生产建筑集结记录非法')
   for (const setting of state.settings) if (setting.region && !validTargetRegion(setting.region)) throw new Error('生产集结分区非法')
+  for (const setting of state.settings) if (setting.relocatedFrom && (![setting.relocatedFrom.x, setting.relocatedFrom.y].every(Number.isSafeInteger) || setting.relocatedFrom.x < 0 || setting.relocatedFrom.y < 0 || setting.relocatedFrom.x >= snap.mapWidth || setting.relocatedFrom.y >= snap.mapHeight)) throw new Error('待确认的旧集结点非法')
 }

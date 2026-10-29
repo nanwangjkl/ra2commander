@@ -21,6 +21,11 @@ export function retainBindingScope(original: unknown, replacement: unknown, prom
     const {regionName:_region,bounds:_bounds,...params}=previous.params
     return prompts.capabilities.parse({capability:'combat.hold',params:{...params,defendBase:true,mode:'hold'}})
   }
+  if (previous.capability === 'combat.hold') {
+    const corrected = prompts.capabilities.parse(replacement)
+    if (corrected.capability !== 'combat.hold') throw new Error('持续守卫修正必须保留监视、敌方兵种和范围，不能改成普通移动或进攻')
+    return prompts.capabilities.parse({ ...corrected, params: { ...corrected.params, ...previous.params } })
+  }
   const isCover = (call: CapabilityCall) => call.capability === 'formation.cover' || call.capability === 'skill.run' && prompts.skills.get(call.params.skillId)?.definition.id === 'cover'
   if (isCover(previous)) {
     const corrected = prompts.capabilities.parse(replacement)

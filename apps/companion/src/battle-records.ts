@@ -342,7 +342,7 @@ export class BattleRecords {
           lines.push(`- ${goalId}${goal.executionMode === 'native' ? '（本机执行）' : ''}：${state === 'partial' ? '部分完成' : labels[state] ?? state}${execution?.detail ? `，${execution.detail}` : ''}${execution?.progress ? `（${execution.progress.completed}/${execution.progress.total}）` : ''}${goal.error ? `；${goal.error}` : ''}`)
         }
       }
-      const errors = new Set(events.filter(event => event.error).map(event => event.error!))
+      const errors = new Set(events.filter(event => event.error && event.stage !== 'merged').map(event => event.error!))
       for (const error of errors) lines.push(`- 过程错误／未执行项：${error}`)
       const goals = new Set(events.flatMap(event => event.goalId ? [event.goalId] : []))
       const compiles = [...new Set(record.compilations.filter(item => item.commandId === id || item.goalIds.some(goal => goals.has(goal))).map(item => item.id))]

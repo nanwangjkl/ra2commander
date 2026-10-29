@@ -63,11 +63,13 @@ test('文本入口驱动两队与全局；新增建设延续生产进度，改�
     await runtime.onSnapshot(snapshot({ seq: 4, self: [...current, ...units, { ...current[0]!, id: 16, name: 'NAPOWR', type: 2 }] }))
     assert.ok([...runtime.goals.values()].filter(g => g.spec.kind === 'production').every(g => g.status === 'completed'))
     const globalVersion = runtime.programs.get('global')!.script!.version
-    const secondVersion = runtime.programs.get('formation:B')!.script!.version
+    const guardB = [...runtime.goals.values()].find(goal => goal.ownerId === 'formation:B')!
+    const secondSpec = structuredClone(guardB.activeSpec)
+    assert.equal(secondSpec!.executionMode, 'native')
     await handleCommand('task new 新任务 @A --region=0,0,10,10 换位置', ctx)
     assert.equal(runtime.programs.size, 3)
     assert.equal(runtime.programs.get('global')!.script!.version, globalVersion)
-    assert.equal(runtime.programs.get('formation:B')!.script!.version, secondVersion)
+    assert.deepEqual(runtime.goals.get(guardB.spec.id)!.activeSpec, secondSpec)
     // 全局脚本实际抛错只暂停全局，两队继续执行。
     activate(runtime, production({ id: 'bad-global' }), "function step(s,m){throw new Error('fault')}")
     for (const seq of [5, 6, 7]) await runtime.onSnapshot(snapshot({ seq }))

@@ -21,7 +21,7 @@ export interface BridgeState {
  * install() 必须在打开任何页面之前调用（exposeBinding/addInitScript 是 context 级）。
  */
 /** 桥版本（与 bridge.js 的 BRIDGE_VERSION 保持一致；升级后对已开页面重装）。 */
-const BRIDGE_VERSION = 21
+const BRIDGE_VERSION = 23
 
 export function isGameDocument(url: string, gameUrl: string): boolean {
   try {
@@ -88,8 +88,9 @@ export class WerhdBridge {
   /** 只读查询当前实际武器；掩护协调按批次调用，保持 tick 采样轻量。 */
   async coverRanges(pairs: Array<{ unitId: number; targetId: number }>, sessionKey: string): Promise<Array<{ unitId: number; targetId: number; inRange: boolean; canAttack: boolean }>> {
     return this.frame.evaluate(({ pairs, sessionKey }) => {
-      const win = window as unknown as { __ra2cSessionKey?: string; werhd?: { weaponVs(a: number, b: number, mode: string): { inRange: boolean } | undefined } }
+      const win = window as unknown as { __ra2cSessionKey?: string; __ra2cCoverRanges?: (pairs: Array<{ unitId: number; targetId: number }>) => Array<{ unitId: number; targetId: number; canAttack: boolean; inRange: boolean }>; werhd?: { weaponVs(a: number, b: number, mode: string): { inRange: boolean } | undefined } }
       if (win.__ra2cSessionKey !== sessionKey || !win.werhd) return []
+      if (win.__ra2cCoverRanges) return win.__ra2cCoverRanges(pairs)
       return pairs.slice(0, 64).map(pair => {
         try { const weapon = win.werhd!.weaponVs(pair.unitId, pair.targetId, 'current'); return { ...pair, canAttack: !!weapon, inRange: weapon?.inRange === true } }
         catch { return { ...pair, canAttack: false, inRange: false } }

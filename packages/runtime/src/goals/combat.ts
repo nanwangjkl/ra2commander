@@ -2,7 +2,7 @@ import { attackObjective, matchingAttackTargets, validTargetRegion } from '@ra2c
 import { alive, baseConstraints, blocked, formationExists, formationPreparing, movementArrival, point, presentUnitIds, projection, stringsValid, unobservableMembers } from './common.ts'
 import type { GoalContext, GoalHandler } from './types.ts'
 import { coverMoves, emptyCoverMotion, validateCoverMotion } from '../cover.ts'
-import { directAttackOrders } from '../attack-orders.ts'
+import { directAttackOrders, guardAttackOrders } from '../attack-orders.ts'
 import { defenseOrders, defenseState, defenseTargets, observeBaseDefense, validDefenseState } from '../base-defense.ts'
 
 const members = (ctx: GoalContext<'combat'>) => alive(ctx, ctx.formations.membersOf(ctx.spec.formationId))
@@ -34,6 +34,9 @@ export const combat: GoalHandler<'combat'> = {
   nativeActions(ctx) {
     const retreat = ctx.goal.facts.retreatTriggered ? ctx.spec.retreat : undefined
     if (!retreat && ctx.spec.baseDefense) return defenseOrders(ctx)
+    if (!retreat && ctx.spec.objective && (ctx.spec.mode === 'hold' || ctx.spec.mode === 'assault')) {
+      return guardAttackOrders(ctx.snap, members(ctx), matchingAttackTargets(ctx.spec, ctx.snap.enemies), ctx.goal.facts.coverMotion ??= emptyCoverMotion(), ctx.spec.objective.coordination === 'focus')
+    }
     const destination = retreat ?? ctx.spec.route?.[ctx.goal.facts.routeIndex ?? 0] ?? ctx.spec.destination
     if (!retreat && !ctx.formations.coverOf(ctx.spec.formationId) && ctx.spec.allowedActions.includes('attack')) {
       const targets = matchingAttackTargets(ctx.spec, ctx.snap.enemies).filter(target => ctx.spec.mode !== 'hold' && ctx.spec.mode !== 'assault' || target.rx >= ctx.spec.region.x1 && target.rx <= ctx.spec.region.x2 && target.ry >= ctx.spec.region.y1 && target.ry <= ctx.spec.region.y2)
@@ -106,6 +109,11 @@ export const combat: GoalHandler<'combat'> = {
   execution(ctx) {
     const missing = unobservableMembers(ctx)
     if (!members(ctx).length && missing.length) return {state:'pending',detail:`${missing.length}个成员暂时不可观测，可能寄生离场，保留原任务等待重现；未自动补兵`}
+    if (ctx.spec.objective && (ctx.spec.mode === 'hold' || ctx.spec.mode === 'assault')) {
+      if (!members(ctx).length && formationPreparing(ctx, ctx.spec.formationId)) return { state: 'pending', detail: `等待${ctx.spec.formationId}本次生产和成员交接，持续守卫要求已保留` }
+      const count = matchingAttackTargets(ctx.spec, ctx.snap.enemies).length
+      return { state: 'continuous', detail: ctx.goal.facts.retreatTriggered ? '已触发明确的战损回撤' : `守卫${ctx.spec.objective.target.region?.name ?? ctx.spec.region.name}；${count ? `发现${count}个匹配敌人，持续响应` : '无匹配敌人，原地待命'}` }
+    }
     if (!ctx.spec.baseDefense) return
     if (!members(ctx).length && formationPreparing(ctx,ctx.spec.formationId)) return {state:'pending',detail:`等待${ctx.spec.formationId}本次生产和成员交接，防守基地要求已保留`}
     const area=defenseState(ctx).region, count=defenseTargets(ctx).length

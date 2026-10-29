@@ -76,14 +76,19 @@ export class GameCatalog {
   }
   forTranscript(text: string) {
     const input = normalized(text)
+    const targets = input.split(/[，,。；;\n]/).flatMap(clause => {
+      const verb = clause.match(/攻击|进攻|摧毁|消灭|清理|清除|扫清|轰炸|监视|警戒|盯住/)
+      return verb ? [clause.slice(verb.index! + verb[0].length)] : []
+    })
+    const corrections = this.profile.attackAliases().filter(item => targets.some(target => target.includes(normalized(item.alias))))
     const roles = new Set(this.profile.roles().filter(role => role.aliases.some(alias => input.includes(normalized(alias)))).map(role => role.id))
-    const named = this.all.filter(item => [item.name, item.label ?? '', ...item.aliases].some(alias => alias.length >= 2 && input.includes(normalized(alias))))
+    const named = this.all.filter(item => corrections.some(correction => correction.name === item.name) || [item.name, item.label ?? '', ...item.aliases].some(alias => alias.length >= 2 && input.includes(normalized(alias))))
     // 各类别分别保留候选，避免复合命令中的大类挤掉另一项（如电厂 + 飞机）。
     const groups = [...roles].map(role => this.items.filter(item => item.roles.includes(role)))
     const representatives = Array.from({ length: 8 }, (_, index) => groups.flatMap(items => items[index] ? [items[index]!] : [])).flat()
     const matched = [...new Map([...named, ...representatives].map(item => [item.name, item])).values()]
     const selected = matched.length ? matched.slice(0, 48) : this.items.slice(0, 32)
-    return selected.map(({ name, label, type, available, aliases, roles, limitation }) => ({ name, label, type, available, aliases, roles, ...(limitation ? { limitation } : {}) }))
+    return selected.map(({ name, label, type, available, aliases, roles, limitation }) => ({ name, label, type, available, aliases, roles, ...(limitation ? { limitation } : {}), ...(corrections.some(item => item.name === name) ? { attackAliases: corrections.filter(item => item.name === name).map(item => item.alias) } : {}) }))
   }
   powerPlant(): CatalogItem | undefined { return this.items.find(item => item.roles.includes('powerPlant') && item.power > 0) }
 }

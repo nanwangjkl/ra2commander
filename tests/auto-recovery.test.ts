@@ -127,6 +127,10 @@ test('正常等待、实际进展与同 tick 采样不会误触发；停滞诊�
   assert.match(observe(660)!, /没有实际进展/)
   assert.equal(observe(690), undefined)
   assert.match(observe(720)!, /没有实际进展/)
+  goal.productionPlan!.availableToProduce = []
+  goal.productionPlan!.readyToPlace = ['NAPOWR']
+  assert.equal(observe(750), undefined)
+  assert.equal(observe(1000), undefined, '宿主接管的就绪放置不再触发无效脚本重编')
 })
 
 test('自动修复按当前目标限次，新目标重置；停滞修复的迟到结果不能越过停止', async () => {

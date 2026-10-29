@@ -144,6 +144,38 @@ test('分区内建造遵守异形边界和孔洞，无落点时不退回基地�
   assert.equal(page.submitted.length, before)
 })
 
+test('自动建筑放置优先避开集结点周围 3×3，不改变原集结点', () => {
+  const page = pageBridge()
+  page.own.splice(0, page.own.length, { ...page.own[0]!, id: 3237, name: 'NAWEAP', type: 2, tile: { rx: 82, ry: 38 } })
+  page.own.push({ ...page.own[0]!, id: 3200, name: 'GACNST', tile: { rx: 82, ry: 48 } })
+  page.api.canPlace = (_name, x, y) => [91, 95].includes(x) && y === 38
+  const snap = page.sample()
+  const result = page.window.__ra2cSubmit(snap.session, { kind: 'place', name: 'NAPOWR', rallyPoints: [{ x: 92, y: 39 }] }, snap.seq, snap.sessionKey)
+  assert.equal(result.ok, true)
+  assert.equal(result.placement.x, 95, '避开最新对局中电厂 91,38 与集结点 92,39 的冲突')
+  assert.equal(page.submitted.length, 1)
+})
+
+test('唯一合法落点占用集结区时只提出候选，换点前不放置、不预占失败落点', () => {
+  const page = pageBridge()
+  page.own.splice(0, page.own.length, { ...page.own[0]!, id: 3237, name: 'NAWEAP', type: 2, tile: { rx: 82, ry: 38 } })
+  page.api.canPlace = (_name, x, y) => x === 91 && y === 38
+  const snap = page.sample(), region: TargetRegion = { id: 'right', name: '指定区', polygons: [{ outer: [[90, 37], [94, 37], [94, 41], [90, 41], [90, 37]], holes: [] }] }
+  const place = (rallyPoints: Array<{ x: number; y: number }>, explicit = false) => page.window.__ra2cSubmit(snap.session, {
+    kind: 'place', name: 'NAPOWR', placementRegion: region, rallyPoints,
+    placement: { id: 'power', anchor: { x: 82, y: 38 }, direction: 'down-right' }, ...(explicit ? { x: 91, y: 38 } : {}),
+  }, snap.seq, snap.sessionKey)
+  for (const explicit of [false, true, false]) {
+    const result = place([{ x: 92, y: 39 }], explicit)
+    assert.equal(result.reason, 'building-rally-conflict')
+    assert.equal(result.placement.x, 91)
+    assert.equal(result.submitted, 0)
+  }
+  assert.equal(page.submitted.length, 0)
+  assert.equal(place([{ x: 92, y: 43 }]).ok, true, '原候选未计入实际放置或占地预留，换点后仍可放置')
+  assert.equal(page.submitted.length, 1)
+})
+
 test('建筑间隔按完整占地留一格，包含斜角、盟友及可见敌方建筑', () => {
   const page = pageBridge(), template = page.own[0]!
   const building = (id: number, name: string, x: number, y: number) => ({ ...template, id, name, type: 2, tile: { rx: x, ry: y } })
@@ -284,6 +316,53 @@ test('页面桥可以提交正常动作，并丢弃过期、跨局或目标已�
   page.poll()
   assert.equal(page.window.__ra2cSubmit(second.session, action, second.seq, second.sessionKey).ok, false)
   assert.equal(page.submitted.length, 3)
+})
+
+test('已公开的敌方幻影使用强制对象攻击，普通敌人仍用普通攻击，不查射程阻止接近', () => {
+  const page = pageBridge()
+  page.enemy[0]!.name = 'MGTK'
+  const snap = page.sample()
+  page.api.inRange = () => { throw new Error('普通进攻不应预判射程') }
+  const attack = (targetId = 99) => page.window.__ra2cSubmit(snap.session, { kind: 'attack', unitIds: [1, 2], targetId }, snap.seq, snap.sessionKey)
+  const forced = attack()
+  assert.equal(forced.reason, 'mirage-force-attack')
+  assert.equal(forced.submitted, 2)
+  assert.deepEqual(JSON.parse(JSON.stringify(page.submitted)), [[[1, 2], { type: 3, target: { objectId: 99 } }]])
+  page.api.order = () => false
+  assert.equal(attack().reason, 'order-rejected', '回执拒绝不能算成功')
+  page.enemy[0]!.name = 'MTNK'
+  assert.equal(attack().ok, true)
+  assert.deepEqual(JSON.parse(JSON.stringify(page.submitted.at(-1))), [[1, 2], 99])
+  assert.equal(attack(1).reason, 'invisible-target', '不能强攻己方单位')
+  page.enemy.length = 0
+  assert.equal(attack().reason, 'invisible-target', '不以历史 ID 强攻已不在公开敌人列表的目标')
+  assert.equal(page.submitted.length, 2)
+})
+
+test('幻影伪装不阻断掩护射程查询；仅射程内成员强攻，防空主武器不放宽对地副武器射程', async () => {
+  const page = pageBridge()
+  page.enemy[0]!.name = 'MGTK'
+  page.own[1]!.primaryWeapon = { minRange: 0, maxRange: 8, aa: true, ag: false }
+  page.own[1]!.secondaryWeapon = { minRange: 0, maxRange: 4, aa: false, ag: true }
+  let distance = 5
+  Object.assign(page.api, { weaponVs: (_a: number, _b: number, mode: string) => mode === 'current' ? undefined : { distance, inRange: true } })
+  const snap = page.sample(), pairs = [{ unitId: 1, targetId: 99 }, { unitId: 2, targetId: 99 }]
+  const bridge = new WerhdBridge({} as never)
+  bridge.bindGameFrame({ isDetached: () => false, page: () => ({ isClosed: () => false }), evaluate: (fn: Function, args: unknown) => runInNewContext(`(${fn.toString()})(args)`, { window: page.window, args }) } as never)
+  assert.deepEqual(JSON.parse(JSON.stringify(await bridge.coverRanges(pairs, snap.sessionKey))), [
+    { ...pairs[0], canAttack: true, inRange: true }, { ...pairs[1], canAttack: true, inRange: false },
+  ])
+  const attack = () => page.window.__ra2cSubmit(snap.session, { kind: 'attack', unitIds: [1, 2], targetId: 99, holdPosition: true }, snap.seq, snap.sessionKey)
+  assert.equal(attack().submitted, 1)
+  assert.deepEqual(JSON.parse(JSON.stringify(page.submitted)), [[[1], { type: 3, target: { objectId: 99 } }]])
+  distance = 9
+  assert.equal(attack().reason, 'cover-out-of-range')
+  assert.equal(page.submitted.length, 1, '不能因强攻绕过掩护的射程限制')
+  distance = 3
+  assert.equal(attack().submitted, 2)
+  page.enemy[0]!.name = 'MTNK'
+  assert.ok((await bridge.coverRanges(pairs, snap.sessionKey)).every(pair => !pair.canAttack), '普通目标不能借幻影分支跳过实际武器选择')
+  assert.equal((await bridge.coverRanges(pairs, 'old-battle')).length, 0)
 })
 
 test('掩护开火用当前武器复查射程，射程不足正常等待；普通攻击仍由游戏接近', () => {

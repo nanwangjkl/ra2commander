@@ -5,12 +5,28 @@ import type { BindingContext, BoundCapability } from './capabilities/bindings.ts
 import { formationName, fullMap, regionDestination, selectUnitSet } from './capabilities/selectors.ts'
 import { matchesFutureMember, matchesSelector } from './unit-selection.ts'
 import { releaseGlobalOrders } from './mining.ts'
+import type { GameCatalog } from './game-catalog.ts'
 
 type AttackParams = ResolvedCapabilityParameters['combat.attack']
 type AttackOrder = { params: AttackParams; search: AttackObjective['search']['kind']; wholeFormation: boolean }
 const id = () => `command-${randomUUID().slice(0, 8)}`
 const preparing = (formationId: string, context: BindingContext) => [...context.ctx.runtime.goals.values()].filter(goal => ['pending', 'active'].includes(goal.status) && (
   goal.spec.kind === 'production' && goal.spec.formationId === formationId || goal.spec.kind === 'formation' && goal.spec.request.kind !== 'dissolveFormation' && goal.spec.request.formationId === formationId))
+
+/** 攻击与持续守卫共用敌方兵种、类别并集和空地筛选。 */
+export function enemySelection(params: Pick<AttackParams, 'targetSelectors' | 'targetDomain'>, context: BindingContext, catalog: GameCatalog): Pick<AttackObjective['target'], 'unitNames' | 'unitTypes' | 'domain'> {
+  const unitNames = new Set<string>(), unitTypes = new Set<number>()
+  for (const selector of params.targetSelectors ?? []) {
+    const role = context.game.roles().find(role => role.id === context.game.roleForAlias(selector))
+    if (role?.match && !role.members.length && !role.match.flags && !role.match.excludeFlags && !role.match.labelIncludes && !role.match.positivePower) unitTypes.add(role.match.type)
+    else {
+      const matches = catalog.all.filter(item => catalog.matchesUnit(item, selector))
+      if (!matches.length) throw new Error(`未找到敌方兵种或类别：${selector}；保留目标要求，不扩大为全部敌人`)
+      matches.forEach(item => unitNames.add(item.name))
+    }
+  }
+  return { ...(unitNames.size ? { unitNames: [...unitNames] } : {}), ...(unitTypes.size ? { unitTypes: [...unitTypes] } : {}), ...(params.targetDomain && params.targetDomain !== 'all' ? { domain: params.targetDomain } : {}) }
+}
 
 /** 三个公开入口先转为同一种攻击要求，再按成员特性选择兼容执行方式。 */
 async function bindOrder(order: AttackOrder, context: BindingContext): Promise<BoundCapability> {
@@ -28,21 +44,8 @@ async function bindOrder(order: AttackOrder, context: BindingContext): Promise<B
     : goal.spec.kind === 'production' ? ctx.runtime.production.filter(record => record.goalId === goal.spec.id).flatMap(record => record.observedIds) : [])
   const { region, destination } = params.regionName ? await regionDestination(ctx, params.regionName, context.check) : {}
   const targetNames = catalog.all.filter(item => catalog.isRole(item.name, 'constructionYard', item.type) || catalog.isRole(item.name, 'constructionVehicle', item.type)).map(item => item.name)
-  const unitNames = new Set<string>(), unitTypes = new Set<number>()
-  for (const selector of params.targetSelectors ?? []) {
-    const role = context.game.roles().find(role => role.id === context.game.roleForAlias(selector))
-    if (role?.match && !role.members.length && !role.match.flags && !role.match.excludeFlags && !role.match.labelIncludes && !role.match.positivePower) unitTypes.add(role.match.type)
-    else {
-      const matches = catalog.all.filter(item => catalog.matchesUnit(item, selector))
-      if (!matches.length) throw new Error(`未找到敌方兵种或类别：${selector}；保留目标要求，不扩大为全部敌人`)
-      matches.forEach(item => unitNames.add(item.name))
-    }
-  }
-  const objective: AttackObjective = { target: { kind: params.target, names: targetNames, ...(params.targetId !== undefined ? { id: params.targetId } : {}), ...(region ? { region: { id: region.id, name: region.name, polygons: structuredClone(region.polygons) } } : {}) },
+  const objective: AttackObjective = { target: { kind: params.target, names: targetNames, ...enemySelection(params, context, catalog), ...(params.targetId !== undefined ? { id: params.targetId } : {}), ...(region ? { region: { id: region.id, name: region.name, polygons: structuredClone(region.polygons) } } : {}) },
     search: { kind: order.search, ...(destination && order.search === 'region' ? { destination } : {}) }, completion: { ground: 'continuous', aircraft: 'single-shot' }, coordination:params.splitTargets?'independent':formation?'focus':'independent' }
-  if (unitNames.size) objective.target.unitNames = [...unitNames]
-  if (unitTypes.size) objective.target.unitTypes = [...unitTypes]
-  if (params.targetDomain && params.targetDomain !== 'all') objective.target.domain = params.targetDomain
   const targetLabel = params.targetSelectors?.map(selector => context.game.roles().find(role => role.id === context.game.roleForAlias(selector))?.aliases[0] ?? catalog.all.find(item => item.name === selector)?.label ?? selector).join('、')
   const hasAircraft = !!formation && (ctx.runtime.snapshot!.self.some(unit => unit.type === 1 && (ctx.formations.ownerOf(unit.id) === formation || pendingIds.includes(unit.id)))
     || sources.some(goal => { const source = goal.spec; return source.kind === 'production' && (source.targetType ?? catalog.all.find(item => item.name === source.target)?.type) === 1 }))

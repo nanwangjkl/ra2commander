@@ -13,6 +13,7 @@ import { BattleRecords } from '../apps/companion/src/battle-records.ts'
 import { CommandLog } from '../apps/companion/src/command-log.ts'
 import { ProgramController } from '../apps/companion/src/controller.ts'
 import { WorkbenchApi } from '../apps/companion/src/workbench-api.ts'
+import { applyCommandEvent, type CardData } from '../apps/companion/ui/command-card.ts'
 import { runTranscript } from '../apps/companion/src/transcript.ts'
 import { activate, code, harness, outcome, production, snapshot } from './helpers.ts'
 
@@ -176,6 +177,22 @@ test('归档按侧栏相同规则汇总多目标状态，重启后的低序号�
     assert.match(summary, /- two：已完成（17\/17）/)
     assert.doesNotMatch(summary, /- 命令：生成中/)
     assert.equal(records.read(id)!.events.length, 7, '修复只改派生摘要，不覆盖原始事件')
+  } finally { records.close(); rmSync(root, { recursive: true, force: true }) }
+})
+
+test('历史正常合并只显示等待状态，不列为过程错误，原始归档保留', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ra2c-merged-summary-')), records = new BattleRecords(root)
+  const base = { commandId: 'merge', source: 'sidebar' as const, sessionKey: 'battle', at: 1 }
+  try {
+    records.event({ ...base, stage: 'received', text: '补电厂', seq: 1 })
+    records.event({ ...base, stage: 'bound', goalId: 'power', owner: 'global', seq: 2 })
+    records.event({ ...base, stage: 'merged', goalId: 'power', owner: 'global', error: '已合并到后续脚本生成，目标仍保留', seq: 3 })
+    const id = records.list()[0]!.id, record = records.read(id)!
+    assert.match(records.summary(id)!, /power：等待合并/)
+    assert.doesNotMatch(records.summary(id)!, /过程错误|已合并到后续脚本生成/)
+    const card = record.events.reduce<CardData | undefined>((value, event, index) => applyCommandEvent({ ...event, seq: index + 1 }, value), undefined)!
+    assert.equal(card.goals.get('power')!.error, '')
+    assert.equal(record.events.at(-1)!.error, '已合并到后续脚本生成，目标仍保留')
   } finally { records.close(); rmSync(root, { recursive: true, force: true }) }
 })
 

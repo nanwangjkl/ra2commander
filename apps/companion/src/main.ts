@@ -166,6 +166,7 @@ async function main(): Promise<void> {
     checkpoint: () => saveStateFile(STATE_FILE, persistState(runtime)),
     coverRanges: (pairs, snap) => gameBridge.coverRanges(pairs, snap.sessionKey),
     factorySites: snap => readFactorySites(gameBridge, snap),
+    buildingFoundation: name => foundations[name],
     rallyTiles: (points, snap) => gameBridge.rallyTiles(points, snap.sessionKey),
     rallyClear: point => iceMap.obstacles.clear3x3(point.x, point.y) && [-1, 0, 1].every(dx => [-1, 0, 1].every(dy => iceMap.area.contains(point.x + dx, point.y + dy))),
     submit: async (actions, context, guard) => {

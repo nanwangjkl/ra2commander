@@ -65,9 +65,13 @@ test('同局恢复立即修正旧障碍点及待集结成员，不等待新生�
   assert.equal(restored.runtime.production.length, 1)
   assert.equal(restored.runtime.production[0]!.quantity, 5)
   assert.deepEqual(restored.runtime.production[0]!.observedIds, members.map(unit => unit.id))
-  assert.ok(restored.submitted.every(action => action.kind === 'setRallyPoint'), '不重造、不召回已就绪单位')
+  assert.equal(restored.submitted.filter(action => action.kind === 'setRallyPoint').length, 1)
+  const redirects = restored.submitted.filter(action => action.kind === 'move')
+  assert.deepEqual(redirects.flatMap(action => action.unitIds).sort(), [3232, 3238, 3250], '只同步未就绪成员，不召回已就绪单位')
+  assert.ok(restored.submitted.every(action => ['setRallyPoint', 'move'].includes(action.kind)), '不重造、不交接停车')
+  const sent = restored.submitted.length
   await restored.runtime.onSnapshot({ ...restored.runtime.snapshot!, seq: 4, tick: 90, time: 2.5 })
-  assert.equal(restored.submitted.length, 1, '有效新点不周期重设')
+  assert.equal(restored.submitted.length, sent, '有效新点不周期重设，改点移动不重复补发')
 })
 
 test('四格到达容纳分散落位，但在移动、厂内或出口通道中仍等待；耗尽重试显示明确原因', () => {

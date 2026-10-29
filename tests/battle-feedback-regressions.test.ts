@@ -247,7 +247,7 @@ test('回放前置代建：成果计入明确建设目标，放置无空位持�
     await tick(['GAPILE'])
     assert.equal(runtime.production[0]!.goalId, 'barracks')
     await tick(['GAPILE'], 'GAPILE'); await tick(['GAPILE'], 'GAPILE')
-    assert.match(runtime.goalExecution('tank')!.detail!, /保留就绪建筑并继续重试/)
+    assert.match(runtime.goalExecution('barracks')!.detail!, /保留就绪建筑并继续重试/, '宿主放置回执归属实际生产记录的建设目标')
     await tick(['GAPILE'], 'GAPILE')
     assert.equal(requests.filter(action => action.kind === 'place').length, 3)
     assert.equal(requests.filter(action => action.kind === 'produce').length, 1)

@@ -1,7 +1,7 @@
 import { inTargetRegion, validTargetRegion, type ActionRequest, type TargetRegion } from '@ra2c/contracts'
 import type { GoalContext } from './goals/types.ts'
 import { emptyCoverMotion } from './cover.ts'
-import { directAttackOrders } from './attack-orders.ts'
+import { guardAttackOrders } from './attack-orders.ts'
 
 export interface BaseDefenseState { anchorId: number; position: { x: number; y: number }; region: TargetRegion }
 export function defenseState(ctx: GoalContext<'combat'>): BaseDefenseState {
@@ -21,9 +21,6 @@ export function defenseTargets(ctx: GoalContext<'combat'>) { const area=defenseS
 export function defenseOrders(ctx: GoalContext<'combat'>): ActionRequest[] {
   const ids=ctx.formations.membersOf(ctx.spec.formationId).filter(id=>ctx.snap.self.some(unit=>unit.id===id)&&!ctx.locked(id))
   const motion=ctx.goal.facts.coverMotion ??= emptyCoverMotion(), targets=defenseTargets(ctx)
-  const attacks=directAttackOrders(ctx.snap,ids,targets,motion)
-  const stops=ctx.snap.self.filter(unit=>ids.includes(unit.id)&&(!targets.length||motion.orders[unit.id]?.kind==='attack'&&!targets.some(target=>target.id===motion.orders[unit.id]?.targetId))&&!attacks.some(action=>'unitIds' in action&&action.unitIds.includes(unit.id))
-    &&(motion.orders[unit.id]?.kind==='attack'||motion.orders[unit.id]?.kind==='move'||!unit.isIdle&&(motion.orders[unit.id]?.kind!=='stop'||ctx.snap.tick-motion.orders[unit.id]!.tick>=90))).map(unit=>unit.id)
-  return [...attacks,...(stops.length?[{kind:'stop' as const,unitIds:stops}]:[])]
+  return guardAttackOrders(ctx.snap, ids, targets, motion)
 }
 export function validDefenseState(state: BaseDefenseState): boolean {return !!state&&Number.isSafeInteger(state.anchorId)&&!!state.position&&[state.position.x,state.position.y].every(Number.isFinite)&&validTargetRegion(state.region)}

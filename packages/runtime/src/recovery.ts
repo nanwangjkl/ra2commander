@@ -62,11 +62,10 @@ function inspectProgress(goal: GoalView, constraints: GoalConstraints, snap: Sna
     const plan = goal.productionPlan
     const queues = snap.production?.queues ?? []
     const candidates = plan?.availableToProduce.filter(name => queues.find(queue => queue.type === constraints.productionQueueTypes?.[name])?.status !== 2) ?? []
-    const placement = !!plan?.readyToPlace.length
     const management = !!constraints.management?.allowedUnitIds.length
-    // 缺钱、队列占满/暂停、未决提交、科技限制和交接等待均不启动停滞计时。
-    actionable = !waiting && !goal.uncertain.length && (placement || management || (snap.credits > 0 && candidates.length > 0))
-    reason = placement ? '建筑已就绪但未放置' : management ? '产物已出现但尚未编队' : '项目可造且队列有空位，但没有推进生产'
+    // 就绪放置已由宿主保证，不因引擎尚未落地去重编生产脚本；其余脚本步骤继续监控。
+    actionable = !waiting && !goal.uncertain.length && (management || (snap.credits > 0 && candidates.length > 0))
+    reason = management ? '产物已出现但尚未编队' : '项目可造且队列有空位，但没有推进生产'
     const relevant = new Set([...spec.prerequisites, spec.target])
     facts = [goal.submitted, goal.observed, goal.produceRemaining, units,
       queues.filter(queue => queue.items.some(item => relevant.has(item.name))).map(queue => [queue.type, queue.status, queue.items.map(item => [item.name, item.quantity, Math.round(item.progress * 1000), item.creditsSpent])])]

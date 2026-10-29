@@ -16,12 +16,14 @@ function constraintsFor(ctx: GoalContext<'production'>, observed: ReturnType<typ
   // 减少产量属于立即收紧；增量仍需等候新代码激活。
   const quantity = desired?.kind === 'production' ? Math.min(spec.quantity, desired.quantity) : spec.quantity
   const progress = quantity === spec.quantity ? observed : productionProgress({ ...spec, quantity }, production, snap)
-  const allowedPlace = production.filter(r => r.building && !r.placed && pendingProduction(r) > 0 && (r.name === spec.target ? r.goalId === spec.id : spec.prerequisites.includes(r.name))).map(r => r.name)
+  const pendingBuildings = production.filter(r => r.building && !r.placed && pendingProduction(r) > 0 && !ctx.goals.get(r.goalId)?.facts.cancelProduction)
+  const allowedPlace = pendingBuildings.filter(r => r.name === spec.target ? r.goalId === spec.id : spec.prerequisites.includes(r.name)).map(r => r.name)
   const placements: NonNullable<GoalConstraints['placements']> = {}
   const placementRegions: NonNullable<GoalConstraints['placementRegions']> = {}
   if (spec.placementRegion) placementRegions[spec.target] = spec.placementRegion
   for (const name of allowedPlace) {
-    const record = production.find(r => r.building && !r.placed && pendingProduction(r) > 0 && r.name === name && (name === spec.target ? r.goalId === spec.id : spec.prerequisites.includes(name)))
+    const record = pendingBuildings.find(r => r.name === name && (name === spec.target ? r.goalId === spec.id : spec.prerequisites.includes(name)))
+    if (record?.placementRegion) placementRegions[name] = record.placementRegion
     const direction = record?.placement?.directions[record.observedIds.length]
     if (record?.placement && direction) placements[name] = { id: `${record.id}:${record.observedIds.length}`, anchor: record.placement.anchor, direction }
   }
@@ -37,6 +39,9 @@ function constraintsFor(ctx: GoalContext<'production'>, observed: ReturnType<typ
     ...(spec.formationId ? { management: { kind: exists ? 'transferUnits' as const : 'createFormation' as const, formationId: spec.formationId, allowedUnitIds: members, maxUnits: members.length } } : {}) }
 }
 
+const readyBuildings = (constraints: GoalConstraints, snap: GoalContext<'production'>['snap']) =>
+  [...new Set(constraints.allowedPlace ?? [])].filter(name => snap.production?.queues.some(queue => queue.status === 3 && queue.items.some(item => item.name === name)))
+
 export const production: GoalHandler<'production'> = {
   validateSpec(spec, map) {
     if (spec.placementRegion && ((spec.targetType !== undefined && spec.targetType !== 2) || !validTargetRegion(spec.placementRegion))) throw new Error('建筑分区要求非法')
@@ -46,6 +51,10 @@ export const production: GoalHandler<'production'> = {
     if (spec.maintainPower && (!Number.isFinite(spec.maintainPower.reserve) || spec.maintainPower.reserve < 0 || !Number.isFinite(spec.maintainPower.output) || spec.maintainPower.output <= 0)) throw new Error('补电参数非法')
   },
   validateLive({ spec, goals }) { if (spec.afterGoalId && goals.has(spec.afterGoalId) && goals.get(spec.afterGoalId)?.spec.kind !== 'relocate') throw new Error('建造依赖必须指向基地搬迁目标') },
+  requiredActions(ctx) {
+    const constraints = constraintsFor(ctx, productionProgress(ctx.spec, ctx.production, ctx.snap))
+    return readyBuildings(constraints, ctx.snap).map(name => ({ kind: 'place' as const, name }))
+  },
   observe(ctx) {
     const { spec, snap, goal } = ctx
     const progress = productionProgress(spec, ctx.production, snap)
@@ -68,7 +77,7 @@ export const production: GoalHandler<'production'> = {
       pendingRallyIds: (progress.observed[spec.target] ?? []).filter(id => snap.self.some(unit => unit.id === id) && ctx.locked(id)),
       availableToProduce: (constraints.allowedProduce ?? []).filter(name => (constraints.produceRemaining?.[name] ?? 0) > 0 && snap.production?.available.includes(name) && (constraints.queueSpace?.[constraints.productionQueueTypes?.[name] ?? 0] ?? 1) > 0),
       ...(progress.placement ? { placement: { ...progress.placement, ...(constraints.placements?.[spec.target] ? { next: constraints.placements[spec.target] } : {}) } } : {}),
-      readyToPlace: (constraints.allowedPlace ?? []).filter(name => snap.production?.queues.some(queue => queue.status === 3 && queue.items.some(item => item.name === name))),
+      readyToPlace: readyBuildings(constraints, snap),
     }
     if (spec.unlockConditions !== undefined && !snap.production?.available.includes(spec.target) && !missingPrerequisites.length && !view.productionPlan.unmetConditions?.length && (constraints.produceRemaining?.[spec.target] ?? 0) > 0 && !view.productionPlan.availableToProduce.length && !view.productionPlan.readyToPlace.length) view.productionPlan.unmetConditions = [{ name: spec.target, reason: `${spec.target} 前置建筑已齐，但游戏当前未开放生产，等待生产设施或科技条件变化` }]
 

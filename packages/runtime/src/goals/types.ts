@@ -37,6 +37,8 @@ export interface GoalHandler<K extends GoalKind = GoalKind> {
   project(context: GoalContext<K>): GoalProjection
   /** 固定流程只提出动作；校验、预算、提交和回执仍由控制对象协调。 */
   nativeActions?(context: GoalContext<K>): Array<ActionRequest | FormationRequest>
+  /** 脚本目标中由宿主保证的确定性子步骤，先于脚本执行并共用预算和提交校验。 */
+  requiredActions?(context: GoalContext<K>): Array<ActionRequest | FormationRequest>
   execution?(context: GoalContext<K>, projection: GoalProjection): GoalExecution | undefined
   terminalExecution?(context: GoalContext<K>): GoalExecution | undefined
   progress?(context: GoalContext<K>, view: GoalView): Pick<GoalExecution, 'progress' | 'detail'>

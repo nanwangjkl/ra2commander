@@ -11,7 +11,7 @@ const factory = building(100, 'GAWEAP', 20, 20)
 const sites = async (snap: ReturnType<typeof snapshot>): Promise<FactorySite[]> => snap.self.filter(unit => unit.type === 2).map(unit => ({ id: unit.id, name: unit.name, x: unit.rx, y: unit.ry, elevation: 0, factory: unit.name === 'GAWEAP' ? 3 : 0, foundation: unit.name === 'GAWEAP' ? { width: 5, height: 3 } : { width: 2, height: 2 } }))
 const tiles = async (points: Array<{ x: number; y: number }>) => points.map(point => ({ ...point, z: 0, landType: 0 }))
 
-test('新建筑占据集结点后，下一批真正入队前换点；等待中的旧产物改去新点，就绪成员不召回', async () => {
+test('新建筑占据集结点后立即换点，旧产物先收到改点移动，再继续生产；就绪成员不召回', async () => {
   const executor = new StepExecutor()
   try {
     let current: TaskRuntime | undefined
@@ -34,7 +34,9 @@ test('新建筑占据集结点后，下一批真正入队前换点；等待中�
     const next = h.runtime.factoryRallies.state.settings[0]!.point!
     assert.notDeepEqual(next, oldPoint)
     assert.ok(next.x < oldPoint.x - 1 || next.y < oldPoint.y - 1 || next.x >= oldPoint.x + 3 || next.y >= oldPoint.y + 3, '连同新建筑周围一格也要避开')
-    assert.deepEqual(h.submitted.slice(before).map(action => action.kind), ['setRallyPoint', 'produce'])
+    assert.deepEqual(h.submitted.slice(before).map(action => action.kind), ['setRallyPoint', 'move', 'produce'])
+    const redirected = h.submitted.slice(before).find(action => action.kind === 'move')!
+    assert.deepEqual(redirected, { kind: 'move', unitIds: [500], ...next })
     assert.deepEqual(h.runtime.productionExits.state.units.find(unit => unit.unitId === 500)!.point, next)
     assert.deepEqual(h.runtime.productionExits.state.units.find(unit => unit.unitId === 501)!.point, oldPoint)
     assert.equal(h.runtime.production.length, 2)

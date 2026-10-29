@@ -1,5 +1,5 @@
 // 由 prompts/capabilities/*.md 生成；修改定义后运行 pnpm capabilities:generate。
-export const CAPABILITY_CONTRACT_VERSION = 'b5b4f95f36da17f272ace4fc9892d0c82fbf443983df22e237999a45aba639b8'
+export const CAPABILITY_CONTRACT_VERSION = 'b1b1c4d5e233b13896ab491e841aeef7c11b744000fd67ad56f8f02865e7f28f'
 export interface CapabilityParameters {
   "base.deploy": Record<string, never>
   "base.relocate": { regionName?: string; x?: number; y?: number; unitId?: number }
@@ -8,7 +8,7 @@ export interface CapabilityParameters {
   "combat.attack-all": { splitTargets?: boolean; targetSelectors?: string[]; targetDomain?: "all" | "air" | "ground"; selector?: string; unitIds?: number[]; formationId?: string }
   "combat.attack": { splitTargets?: boolean; selector?: string; unitIds?: number[]; formationId?: string; quantity?: number | 'all'; target?: "enemies" | "base" | "units" | "buildings"; targetId?: number; targetSelectors?: string[]; targetDomain?: "all" | "air" | "ground"; regionName?: string }
   "combat.clear-region": { splitTargets?: boolean; formationId: string; targetSelectors?: string[]; targetDomain?: "all" | "air" | "ground"; regionName: string }
-  "combat.hold": { defendBase?: boolean; formationId: string; regionName?: string; bounds?: number[]; mode?: "hold" | "assault" | "move"; retreatLoss?: number; retreatX?: number; retreatY?: number; label?: string }
+  "combat.hold": { defendBase?: boolean; formationId: string; regionName?: string; bounds?: number[]; targetSelectors?: string[]; targetDomain?: "all" | "air" | "ground"; mode?: "hold" | "assault" | "move"; retreatLoss?: number; retreatX?: number; retreatY?: number; label?: string }
   "combat.move": { formationId: string; regionName?: string; x?: number; y?: number; bounds?: number[]; label?: string; patrol?: boolean }
   "control.pause": { scope?: "formation" | "global" | "all" | "units"; formationId?: string; selector?: string; unitIds?: number[] }
   "control.resume": { scope?: "formation" | "global" | "all" | "units"; formationId?: string; selector?: string; unitIds?: number[] }
@@ -42,7 +42,7 @@ export interface ResolvedCapabilityParameters {
   "combat.attack-all": { splitTargets: boolean; targetSelectors?: string[]; targetDomain: "all" | "air" | "ground"; selector?: string; unitIds?: number[]; formationId?: string }
   "combat.attack": { splitTargets: boolean; selector: string; unitIds?: number[]; formationId?: string; quantity: number | 'all'; target: "enemies" | "base" | "units" | "buildings"; targetId?: number; targetSelectors?: string[]; targetDomain: "all" | "air" | "ground"; regionName?: string }
   "combat.clear-region": { splitTargets: boolean; formationId: string; targetSelectors?: string[]; targetDomain: "all" | "air" | "ground"; regionName: string }
-  "combat.hold": { defendBase: boolean; formationId: string; regionName?: string; bounds?: number[]; mode: "hold" | "assault" | "move"; retreatLoss?: number; retreatX?: number; retreatY?: number; label?: string }
+  "combat.hold": { defendBase: boolean; formationId: string; regionName?: string; bounds?: number[]; targetSelectors?: string[]; targetDomain: "all" | "air" | "ground"; mode: "hold" | "assault" | "move"; retreatLoss?: number; retreatX?: number; retreatY?: number; label?: string }
   "combat.move": { formationId: string; regionName?: string; x?: number; y?: number; bounds?: number[]; label?: string; patrol: boolean }
   "control.pause": { scope: "formation" | "global" | "all" | "units"; formationId?: string; selector: string; unitIds?: number[] }
   "control.resume": { scope: "formation" | "global" | "all" | "units"; formationId?: string; selector: string; unitIds?: number[] }

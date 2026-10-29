@@ -44,7 +44,7 @@ export function applyCommandEvent(event: CommandEvent, previous?: CardData): Car
       if (event.executionMode) goal.executionMode = event.executionMode
       if (goal.executionMode === 'native') delete goal.version
       else if (event.version !== undefined) goal.version = event.version
-      if (event.stage !== 'execution') goal.error = event.error ?? ''
+      if (event.stage !== 'execution') goal.error = event.stage === 'merged' ? '' : event.error ?? ''
     }
   } else {
     data.stage = event.stage
