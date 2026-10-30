@@ -35,10 +35,26 @@ export async function refreshCommandPanel(page: Page): Promise<void> {
     const response = await fetch(`/commander/?v=${version}`, { cache: 'no-store' })
     if (!response.ok) throw new Error('侧栏资源读取失败')
     const template = new DOMParser().parseFromString(await response.text(), 'text/html')
+    // 移动布局代码正在引用的节点，保留点击监听和连接状态轮询；不重载游戏文档。
+    const heading = template.querySelector('.sidebar-heading')!.cloneNode(true) as HTMLElement
+    const status = template.querySelector('.status-bar')!.cloneNode(true) as HTMLElement
+    for (const id of ['toggle-sidebar', 'connection-dot', 'connection-text', 'notice']) {
+      const current = document.getElementById(id)
+      const target = heading.querySelector(`#${id}`) ?? status.querySelector(`#${id}`)
+      if (current && target) {
+        if (id === 'toggle-sidebar') for (const name of ['aria-label', 'title']) current.setAttribute(name, target.getAttribute(name)!)
+        target.replaceWith(current)
+      }
+    }
     const sidebar = document.querySelector('#sidebar')!
     const replacement = sidebar.cloneNode(false) as HTMLElement
     replacement.innerHTML = template.querySelector('#sidebar')!.innerHTML
     sidebar.replaceChildren(...Array.from(replacement.childNodes))
+    document.querySelector('.sidebar-heading')?.remove()
+    document.querySelector('.status-bar')?.remove()
+    document.querySelector('.toolbar')?.remove()
+    sidebar.before(heading)
+    sidebar.after(status)
     const css = document.querySelector<HTMLLinkElement>('link[rel="stylesheet"]')!
     css.href = `/commander/workbench.css?v=${version}`
     const url = `/commander/command-panel.js?v=${version}`

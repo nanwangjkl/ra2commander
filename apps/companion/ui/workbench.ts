@@ -5,7 +5,6 @@ const game = document.querySelector<HTMLIFrameElement>('#ra2c-game')!
 const sidebar = document.querySelector<HTMLElement>('#sidebar')!
 const separator = document.querySelector<HTMLElement>('#resize-sidebar')!
 const toggle = document.querySelector<HTMLButtonElement>('#toggle-sidebar')!
-const fullscreen = document.querySelector<HTMLButtonElement>('#fullscreen')!
 const connectionText = document.querySelector<HTMLElement>('#connection-text')!
 const connectionDot = document.querySelector<HTMLElement>('#connection-dot')!
 const notice = document.querySelector<HTMLElement>('#notice')!
@@ -79,8 +78,6 @@ async function toggleFullscreen() {
     focusGame()
   } catch { showNotice('浏览器未允许全屏') }
 }
-fullscreen.addEventListener('click', () => { void toggleFullscreen() })
-document.addEventListener('fullscreenchange', () => { fullscreen.textContent = document.fullscreenElement ? '退出全屏' : '全屏' })
 function fullscreenKey(event: KeyboardEvent) {
   if (event.key !== 'F11') return
   event.preventDefault()
@@ -110,7 +107,7 @@ function connectGameDocument() {
       doc.removeEventListener('keydown', fullscreenKey, true)
       doc.removeEventListener('keyup', fullscreenKey, true)
     }
-  } catch { showNotice('请从顶部按钮进入工作台全屏') }
+  } catch { showNotice('游戏全屏入口暂不可用') }
 }
 game.addEventListener('load', connectGameDocument)
 if (game.contentDocument?.readyState === 'complete') connectGameDocument()

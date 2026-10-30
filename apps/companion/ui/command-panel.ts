@@ -19,6 +19,7 @@ export function mountCommandPanel(): void {
   const form = document.querySelector<HTMLFormElement>('#say-form')!
   const input = document.querySelector<HTMLInputElement>('#say-input')!
   const status = document.querySelector<HTMLElement>('#events-status')!
+  const showStatus = (message: string) => { status.textContent = message; status.parentElement!.hidden = !message }
   const cardData = new Map<string, CardData>()
   const drafts = new Map<string, FeedbackDraft>()
   const lifetime = new AbortController()
@@ -87,10 +88,10 @@ export function mountCommandPanel(): void {
         // 重连只补齐当前局卡片；普通状态更新保留反馈表单和输入焦点。
         for (const event of current.events) receive(event)
         initialized = true
-        status.textContent = value.warning || '文本模拟语音 · 真实录音尚未启用'
+        showStatus(value.warning || '')
         const pending = queued; queued = []
         for (const event of pending) if (matchesCurrent(event)) receive(event)
-      } catch (error) { if (!lifetime.signal.aborted) status.textContent = `命令记录连接失败：${String(error)}` }
+      } catch (error) { if (!lifetime.signal.aborted) showStatus(`命令记录连接失败：${String(error)}`) }
       finally { refreshing = undefined }
     })()
     return refreshing
@@ -105,9 +106,9 @@ export function mountCommandPanel(): void {
 
   const source = new EventSource('/commander/events')
   source.onopen = () => { void refreshCurrent() }
-  source.onerror = () => { status.textContent = '命令反馈连接中，正在重连…' }
+  source.onerror = () => { showStatus('命令反馈连接中，正在重连…') }
   source.onmessage = message => {
-    try { live(JSON.parse(message.data) as CommandEvent) } catch { status.textContent = '命令反馈异常，等待后续更新' }
+    try { live(JSON.parse(message.data) as CommandEvent) } catch { showStatus('命令反馈异常，等待后续更新') }
   }
   void refreshCurrent()
 
