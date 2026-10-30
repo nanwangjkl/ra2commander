@@ -5,7 +5,7 @@ interface Job { unitId: number; targetId: number; x: number; y: number; hp: numb
 export interface RepairState { engineerIds: number[]; pairs: Pair[]; jobs: Job[]; avoid: Record<string, number> }
 export const emptyRepairState = (): RepairState => ({ engineerIds: [], pairs: [], jobs: [], avoid: {} })
 
-/** 只分配工作；发令仍由所属编队脚本完成。实际载员、血量与位置是唯一事实来源。 */
+/** 只分配工作；本机处理器或回退脚本按同一分工发令。实际载员、血量与位置是唯一事实来源。 */
 export function planRepairs(spec: RepairGoal, snap: Snapshot, memberIds: number[], previous: RepairState, waiting: boolean, followIds?: number[]): { state: RepairState; view: NonNullable<GoalView['repair']> } {
   const state = structuredClone(previous)
   const members = snap.self.filter(unit => memberIds.includes(unit.id))

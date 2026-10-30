@@ -2,7 +2,7 @@ import type { ActionRequest, ActionResult, Snapshot } from '@ra2c/contracts'
 import type { GoalFacts, ProgramState } from './state.ts'
 
 export interface UnitOrderState {
-  orders: Record<string, { kind: 'move' | 'stop' | 'attack' | 'crush'; x?: number; y?: number; targetId?: number; tick: number }>
+  orders: Record<string, { kind: 'move' | 'stop' | 'attack' | 'crush' | 'enterTransport' | 'repair'; x?: number; y?: number; targetId?: number; tick: number }>
   focusTargetId?: number
 }
 export const emptyUnitOrders = (): UnitOrderState => ({ orders: {} })
@@ -16,17 +16,17 @@ export function validateUnitOrders(state: UnitOrderState | undefined): void {
   if (!state || typeof state !== 'object' || Array.isArray(state)) throw new Error('单位发令记录非法')
   if (state.focusTargetId !== undefined && !Number.isSafeInteger(state.focusTargetId)) throw new Error('编队主目标非法')
   if (!state.orders || typeof state.orders !== 'object' || Array.isArray(state.orders)
-    || Object.values(state.orders).some(order => !order || !['move', 'stop', 'attack', 'crush'].includes(order.kind) || !Number.isFinite(order.tick)
+    || Object.values(state.orders).some(order => !order || !['move', 'stop', 'attack', 'crush', 'enterTransport', 'repair'].includes(order.kind) || !Number.isFinite(order.tick)
       || order.kind === 'move' && (!Number.isFinite(order.x) || !Number.isFinite(order.y))
-      || (order.kind === 'attack' || order.kind === 'crush') && !Number.isSafeInteger(order.targetId))) throw new Error('单位发令记录非法')
+      || ['attack', 'crush', 'enterTransport', 'repair'].includes(order.kind) && !Number.isSafeInteger(order.targetId))) throw new Error('单位发令记录非法')
 }
 
 /** 只有实际成功的回执才能更新去重记录；计划中的动作不算已发送。 */
 export function recordUnitOrder(state: UnitOrderState, request: ActionRequest, tick: number, results: ActionResult[]): void {
   if (!results.length || results.some(result => !result.ok) || !results.some(result => (result.submitted ?? 1) > 0)
-    || request.kind !== 'move' && request.kind !== 'stop' && request.kind !== 'attack' && request.kind !== 'crush') return
+    || request.kind !== 'move' && request.kind !== 'stop' && request.kind !== 'attack' && request.kind !== 'crush' && request.kind !== 'enterTransport' && request.kind !== 'repair') return
   for (const id of request.unitIds) state.orders[id] = { kind: request.kind, tick,
-    ...(request.kind === 'move' ? { x: request.x, y: request.y } : request.kind === 'attack' || request.kind === 'crush' ? { targetId: request.targetId } : {}) }
+    ...(request.kind === 'move' ? { x: request.x, y: request.y } : request.kind !== 'stop' ? { targetId: request.targetId } : {}) }
 }
 
 /** 普通行军直接发往目的地，空闲且尚未抵达时有限频率重发。 */

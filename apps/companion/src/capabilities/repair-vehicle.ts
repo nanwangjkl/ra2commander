@@ -3,11 +3,12 @@ import type { RepairGoal, GoalSpec } from '@ra2c/contracts'
 import type { ResolvedCapabilityParameters, SkillDocument, RepairSkillDefinition } from '@ra2c/command'
 import type { BindingContext, BoundCapability } from './bindings.ts'
 import { formationName, isRepairVehicle, type GameCatalog } from './selectors.ts'
+import { fixedGoalExecutionMode } from '../execution-modes.ts'
 
 const id = () => `command-${randomUUID().slice(0, 8)}`
 export function repairGoal(context: BindingContext, catalog: GameCatalog, formationId: string, preparationGoalIds: string[], options: { quantity?: number; targetId?: number; followFormationId?: string } = {}): RepairGoal {
   const names = (role: string) => [...new Set([...catalog.all.filter(item => catalog.isRole(item.name, role, item.type)).map(item => item.name), ...context.game.roles().filter(item => item.id === role).flatMap(item => item.members.map(member => member.name))])]
-  return { id: id(), kind: 'repair', rawText: context.text, formationId, preparationGoalIds,
+  return { id: id(), kind: 'repair', executionMode: fixedGoalExecutionMode('repair'), rawText: context.text, formationId, preparationGoalIds,
     vehicleNames: names('infantryFightingVehicle'), engineerNames: names('engineer'), tankNames: names('tank'),
     policy: context.prompts.skills.get('repair-vehicle')!.definition.repair, ...options }
 }
@@ -36,7 +37,7 @@ export async function bindRepairSkill(params: ResolvedCapabilityParameters['skil
   if (selected.length) {
     const exists = ctx.formations.list().some(formation => formation.id === formationId)
     const request = { kind: exists ? 'transferUnits' as const : 'createFormation' as const, formationId, unitIds: selected.map(unit => unit.id) }
-    goals.push({ goal: { id: id(), kind: 'formation', rawText: context.text, skill: reference, request }, choice: `将${selected.length}个现有组件编入${formationId}` })
+    goals.push({ goal: { id: id(), kind: 'formation', executionMode: fixedGoalExecutionMode('repair'), rawText: context.text, skill: reference, request }, choice: `将${selected.length}个现有组件编入${formationId}` })
   }
   const addProduction = (target: string, count: number, label: string) => {
     if (count <= 0) return

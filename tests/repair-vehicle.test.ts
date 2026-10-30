@@ -4,12 +4,12 @@ import { StepExecutor } from '../packages/js-worker/src/index.ts'
 import { loadPrompts } from '../packages/command/src/index.ts'
 import { FormationRegistry, persistState, restoreState } from '../packages/runtime/src/index.ts'
 import { planRepairs, emptyRepairState } from '../packages/runtime/src/repair.ts'
-import type { RepairGoal, SnapshotUnit } from '../packages/contracts/src/index.ts'
+import { goalExecutionMode, type ActionRequest, type RepairGoal, type SnapshotUnit } from '../packages/contracts/src/index.ts'
 import { executeCapabilities } from '../apps/companion/src/capabilities/index.ts'
 import { ProgramController } from '../apps/companion/src/controller.ts'
 import { GameCatalog } from '../apps/companion/src/game-catalog.ts'
 import type { CommandContext } from '../apps/companion/src/commands.ts'
-import { activate, code, harness, snapshot } from './helpers.ts'
+import { activate, code, harness, production, snapshot } from './helpers.ts'
 
 // 固定模型产物验证真实隔离执行、动态事实与桥动作接线；不调用云模型或游戏。
 const source = `function step(s,m){const actions=[];for(const g of s.control.goals){const p=g.spec,c=s.constraints.goals[p.id];
@@ -41,9 +41,11 @@ test('维修车别名和固定配方：默认新造整套，两车同队组件�
     assert.deepEqual(f.prompts.skills.parameters('维修车', {}), { quantity: 1, memberSource: 'new' })
     const execution = await f.run({ quantity: 2, formationId: '1队' })
     assert.deepEqual(execution.skipped, [])
-    assert.equal(f.generations(), 2)
+    assert.equal(f.generations(), 1, '只为两个组件目标生成一次全局生产代码')
     const run = [...f.runtime.skillRuns.values()][0]!
     assert.ok(run.kind === 'repair-vehicle')
+    assert.equal(f.runtime.goals.get(run.repairGoalId)!.spec.executionMode, 'native')
+    assert.equal(f.runtime.programs.get('formation:1队')!.script, undefined)
     await f.tick()
     assert.deepEqual(f.submitted.filter(a => a.kind === 'produce'), [{ kind: 'produce', name: 'FV', quantity: 2 }, { kind: 'produce', name: 'ENGINEER', quantity: 2 }])
     const born = [...f.runtime.snapshot!.self, unit(101, 'FV'), unit(102, 'FV'), unit(103, 'ENGINEER'), unit(104, 'ENGINEER')]
@@ -54,6 +56,8 @@ test('维修车别名和固定配方：默认新造整套，两车同队组件�
     assert.equal(new Set(pairs.map(a => a.targetId)).size, 2)
     assert.equal(f.runtime.goalExecution(run.repairGoalId)!.state, 'running')
     assert.equal(f.submitted.some(a => a.kind === 'repair'), false) // 发出上车不算已组装。
+    await f.tick(born.filter(u => u.id !== 103).map(u => u.id === 101 ? loaded(101, 103) : u))
+    assert.deepEqual(f.submitted.filter(a => a.kind === 'repair').flatMap(a => a.unitIds), [101], '首辆组装完成就维修，不等待另一辆上车')
     await f.tick(born.filter(u => u.type !== 3).map(u => u.id === 101 ? loaded(101, 103) : u.id === 102 ? loaded(102, 104) : u))
     const repairs = f.submitted.filter(a => a.kind === 'repair')
     assert.equal(new Set(repairs.map(a => a.targetId)).size, 2)
@@ -68,6 +72,7 @@ test('维修车别名和固定配方：默认新造整套，两车同队组件�
     restoreState(restored.runtime, saved)
     await restored.runtime.onSnapshot({ ...f.runtime.snapshot!, seq: f.runtime.snapshot!.seq + 2 })
     assert.equal(restored.submitted.some(a => a.kind === 'produce' || a.kind === 'enterTransport'), false)
+    assert.equal(restored.submitted.some(a => a.kind === 'repair'), false, '恢复已确认的忙碌订单，不重新打断维修')
     assert.equal(restored.runtime.skillRuns.get(run.id)!.status, 'repairing')
     await restored.runtime.cancelSkillRun(run.id)
     const before = restored.submitted.length
@@ -94,20 +99,147 @@ test('按全量真实血量分工：排除满血、矿车及敌人，修满或�
   assert.ok(scope.view.follow)
 })
 
+test('auto 只补缺失组件，本机编队和脚本生产共用全局对象仍完成交接与组装', async () => {
+  const f = await fixture()
+  try {
+    await f.tick([...f.runtime.snapshot!.self, unit(1, 'FV')])
+    await f.run({ memberSource: 'auto', formationId: '维修队' })
+    assert.equal(f.generations(), 1)
+    await f.tick(); await f.tick()
+    assert.deepEqual(f.submitted.filter(action => action.kind === 'produce'), [{ kind: 'produce', name: 'ENGINEER', quantity: 1 }])
+    await f.tick([...f.runtime.snapshot!.self, unit(103, 'ENGINEER')]); await f.tick(); await f.tick()
+    assert.deepEqual(new Set(f.formations.membersOf('维修队')), new Set([1, 103]))
+    assert.ok(f.submitted.some(action => action.kind === 'enterTransport' && action.unitIds[0] === 103 && action.targetId === 1))
+    assert.equal(f.runtime.programs.get('global')!.stats.errors, 0)
+  } finally { await f.executor.dispose() }
+})
+
 test('已有组件可组装而不生产；给维修队新命令后旧 Skill 不再接管', async () => {
   const f = await fixture()
   try {
     await f.tick([...f.runtime.snapshot!.self, unit(1, 'FV'), unit(3, 'ENGINEER')])
     const execution = await f.run({ memberSource: 'existing', formationId: '维修队' })
     assert.deepEqual(execution.skipped, [])
+    assert.equal(f.generations(), 0)
     await f.tick(); await f.tick()
     assert.equal(f.submitted.some(a => a.kind === 'produce'), false)
     assert.ok(f.submitted.some(a => a.kind === 'enterTransport'))
-    const run = [...f.runtime.skillRuns.values()][0]!
+    const first = [...f.runtime.skillRuns.values()][0]!
+    activate(f.runtime, production({ id: 'unrelated-production' }), code)
+    await executeCapabilities([{ capability: 'skill.cancel', params: { skillId: 'repair-vehicle' } }], f.ctx, { text: '取消维修车', prompts: f.prompts, catalog: f.catalog })
+    assert.equal(first.status, 'cancelled')
+    assert.equal(f.generations(), 0, '取消本机组件准备不重编无关生产')
+    await f.run({ memberSource: 'existing', formationId: '维修队' }); await f.tick(); await f.tick()
+    const run = [...f.runtime.skillRuns.values()].at(-1)!
     activate(f.runtime, { id: 'new-order', kind: 'combat', rawText: '原地待命', formationId: run.formationId, mode: 'hold', region: { name: '全图', x1: 0, y1: 0, x2: 99, y2: 99 }, allowedActions: ['stop'] }, code)
     const before = f.submitted.length
     await f.tick()
     assert.equal(run.status, 'superseded')
     assert.equal(f.submitted.length, before)
   } finally { await f.executor.dispose() }
+})
+
+test('本机组装与维修按成功回执去重，单车拒绝不阻塞同伴；暂停恢复、伤愈与战损沿用原生命周期', async () => {
+  const submitted: ActionRequest[] = []
+  let attempts = 0
+  const neverRun = { run: async () => { throw new Error('本机维修不应运行 QuickJS') } }
+  const h = await harness(neverRun, { submit: async (actions, snap, guard) => {
+    if (!guard()) return []
+    submitted.push(...actions)
+    if (actions[0]?.kind === 'enterTransport') {
+      attempts++
+      if (attempts === 1) return []
+      if (attempts === 2) return [{ ok: false, submitted: 0, reason: 'order-rejected', session: snap.session }]
+    }
+    return actions.map(() => ({ ok: true, submitted: 1, session: snap.session }))
+  } })
+  h.formations.transfer([2, 3], 'A')
+  const spec = goal({ formationId: 'A', executionMode: 'native' })
+  h.runtime.activateNativeGoals(h.runtime.upsertGoal(spec))
+  const parts = [unit(1, 'FV'), loaded(2, 4), unit(3, 'ENGINEER'), unit(10, 'MTNK', { hitPoints: 40 }), unit(11, 'HTNK', { hitPoints: 20 })]
+  await h.runtime.onSnapshot(snapshot({ seq: 2, tick: 30, self: parts }))
+  assert.deepEqual(h.runtime.goals.get(spec.id)!.facts.unitOrders!.orders, {}, '空回执不算已上车')
+  await h.runtime.onSnapshot(snapshot({ seq: 3, tick: 45, self: parts }))
+  assert.equal(h.runtime.goals.get(spec.id)!.facts.unitOrders!.orders[3], undefined, '失败回执不阻止重试')
+  assert.ok(submitted.some(action => action.kind === 'repair' && action.unitIds[0] === 2), '上车被拒绝时另一辆仍维修')
+  await h.runtime.onSnapshot(snapshot({ seq: 4, tick: 60, self: parts }))
+  assert.equal(h.runtime.goals.get(spec.id)!.facts.unitOrders!.orders[3]!.kind, 'enterTransport')
+  assert.ok(submitted.every(action => action.kind !== 'repair' || !action.unitIds.includes(1)), '上车回执不能代替实际载员')
+  const ready = [loaded(1, 3), ...parts.filter(unit => ![1, 3].includes(unit.id))]
+  await h.runtime.onSnapshot(snapshot({ seq: 5, tick: 75, self: ready }))
+  assert.equal(new Set(submitted.filter(action => action.kind === 'repair').map(action => action.targetId)).size, 2)
+  const count = submitted.length
+  await h.runtime.onSnapshot(snapshot({ seq: 6, tick: 90, self: ready }))
+  assert.equal(submitted.length, count, '忙碌的同一目标不反复发令')
+  await h.runtime.onSnapshot(snapshot({ seq: 7, tick: 165, self: ready.map(unit => unit.id === 2 ? { ...unit, isIdle: true } : unit) }))
+  assert.deepEqual(submitted.slice(count).flatMap(action => 'unitIds' in action ? action.unitIds : []), [2], '只有空闲且到重试间隔的成员重发')
+  h.runtime.pause('formation:A')
+  const beforePause = submitted.length
+  await h.runtime.onSnapshot(snapshot({ seq: 8, tick: 5000, self: ready }))
+  assert.equal(submitted.length, beforePause)
+  const saved = persistState(h.runtime), restored = await harness(neverRun, { formations: new FormationRegistry() })
+  await restored.runtime.onSnapshot(h.runtime.snapshot!); restoreState(restored.runtime, saved)
+  const jobs = restored.runtime.goals.get(spec.id)!.facts.repair!.jobs.map(job => [job.unitId, job.targetId])
+  restored.runtime.resume('formation:A')
+  await restored.runtime.onSnapshot(snapshot({ seq: 9, tick: 5015, self: ready }))
+  assert.deepEqual(restored.runtime.goals.get(spec.id)!.facts.repair!.jobs.map(job => [job.unitId, job.targetId]), jobs, '暂停不累计受阻时长或重分工')
+  const healed = ready.map(unit => [10, 11].includes(unit.id) ? { ...unit, hitPoints: unit.maxHitPoints! } : unit)
+  await restored.runtime.onSnapshot(snapshot({ seq: 10, tick: 5030, self: healed }))
+  assert.deepEqual(new Set(restored.submitted.filter(action => action.kind === 'stop').flatMap(action => action.unitIds)), new Set([1, 2]))
+  assert.equal(restored.runtime.goalExecution(spec.id)!.state, 'continuous', '全部修满仍持续待命')
+  await restored.runtime.onSnapshot(snapshot({ seq: 11, tick: 5045, self: ready.filter(unit => unit.id !== 1) }))
+  assert.equal(restored.runtime.goals.get(spec.id)!.status, 'active', '单车损失后剩余成员继续')
+  await restored.runtime.onSnapshot(snapshot({ seq: 12, tick: 5060, self: healed.filter(unit => ![1, 2].includes(unit.id)) }))
+  assert.equal(restored.runtime.goals.get(spec.id)!.status, 'failed')
+  assert.ok(restored.submitted.every(action => action.kind !== 'produce'))
+})
+
+test('现有维修队直接本机跟随指定队，发现伤员改为对象维修，目标离队后停止旧指令', async () => {
+  const f = await fixture()
+  try {
+    await f.tick([...f.runtime.snapshot!.self.map(unit => unit.id === 60 ? { ...unit, hitPoints: 100 } : unit), loaded(1, 3), loaded(2, 4)])
+    f.formations.create('维修队', [1, 2]); f.formations.create('坦克队', [60])
+    const execution = await executeCapabilities([{ capability: 'vehicle.repair', params: { formationId: '维修队', followFormationId: '坦克队' } }], f.ctx,
+      { text: '维修队跟随坦克队维修', prompts: f.prompts, catalog: f.catalog })
+    assert.deepEqual(execution.skipped, [])
+    assert.equal(f.generations(), 0)
+    await f.tick()
+    assert.deepEqual(new Set(f.submitted.filter(action => action.kind === 'move').flatMap(action => action.unitIds)), new Set([1, 2]))
+    assert.equal(f.submitted.some(action => action.kind === 'repair'), false, '不修理队外伤员')
+    await f.tick(f.runtime.snapshot!.self.map(unit => unit.id === 60 ? { ...unit, hitPoints: 40 } : unit))
+    assert.deepEqual(f.submitted.filter(action => action.kind === 'repair').map(action => action.targetId), [60, 60])
+    f.formations.create('其他队', []); f.formations.transfer([60], '其他队')
+    await f.tick()
+    assert.deepEqual(new Set(f.submitted.filter(action => action.kind === 'stop').flatMap(action => action.unitIds)), new Set([1, 2]))
+    assert.ok(f.submitted.every(action => !('unitIds' in action) || !action.unitIds.some(id => [60, 61].includes(id))), '不移动被支援队或其他坦克')
+    assert.equal(f.generations(), 0)
+  } finally { await f.executor.dispose() }
+})
+
+test('维修车显式脚本回退及无标记旧存档保留原执行方式和上车配对', async () => {
+  const previous = process.env.RA2C_REPAIR_EXECUTOR
+  process.env.RA2C_REPAIR_EXECUTOR = 'script'
+  const f = await fixture()
+  try {
+    await f.tick([...f.runtime.snapshot!.self, unit(1, 'FV'), unit(3, 'ENGINEER')])
+    await f.run({ memberSource: 'existing', formationId: '维修队' }); await f.tick(); await f.tick()
+    assert.equal(f.generations(), 2)
+    const run = [...f.runtime.skillRuns.values()][0]!
+    assert.ok(run.kind === 'repair-vehicle')
+    const saved = persistState(f.runtime)
+    for (const [, state] of saved.goals) { delete state.spec.executionMode; if (state.activeSpec) delete state.activeSpec.executionMode }
+    if (previous === undefined) delete process.env.RA2C_REPAIR_EXECUTOR
+    else process.env.RA2C_REPAIR_EXECUTOR = previous
+    const restored = await harness(f.executor, { formations: new FormationRegistry() })
+    await restored.runtime.onSnapshot(f.runtime.snapshot!); restoreState(restored.runtime, saved)
+    assert.equal(goalExecutionMode(restored.runtime.goals.get(run.repairGoalId)!.spec), 'script')
+    assert.ok(restored.runtime.programs.get('formation:维修队')!.script)
+    await restored.runtime.onSnapshot({ ...f.runtime.snapshot!, seq: f.runtime.snapshot!.seq + 1, tick: f.runtime.snapshot!.tick + 15 })
+    assert.ok(restored.submitted.some(action => action.kind === 'enterTransport'))
+    assert.deepEqual(restored.runtime.goals.get(run.repairGoalId)!.facts.repair!.pairs, f.runtime.goals.get(run.repairGoalId)!.facts.repair!.pairs)
+  } finally {
+    if (previous === undefined) delete process.env.RA2C_REPAIR_EXECUTOR
+    else process.env.RA2C_REPAIR_EXECUTOR = previous
+    await f.executor.dispose()
+  }
 })

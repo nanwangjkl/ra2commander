@@ -1,6 +1,8 @@
 import { emptyRepairState, planRepairs } from '../repair.ts'
 import { alive, baseConstraints, blocked, formationExists, paused, projection, stringsValid, terminal, world } from './common.ts'
 import type { GoalContext, GoalHandler } from './types.ts'
+import type { ActionRequest } from '@ra2c/contracts'
+import { emptyUnitOrders, moveOrders } from '../unit-orders.ts'
 
 function plan(ctx: GoalContext<'repair'>) {
   const { spec, goal, snap, goals, formations, handoffs } = ctx
@@ -37,6 +39,26 @@ export const repair: GoalHandler<'repair'> = {
     if (view.blocked) return
     const r = view.repair!
     return { state: r.readyIds.length ? 'continuous' : 'running', ...(spec.quantity ? { progress: { completed: r.readyIds.length, total: spec.quantity, label: '已组装维修车' } } : {}), detail: `${r.waiting ? '等待组件生产及交接；' : ''}已组装${r.readyIds.length}辆；${r.assembling.length}组正在上车；${r.targets.length}辆分头维修，受损坦克${r.damaged.length}辆${!r.targets.length && r.readyIds.length ? '，待命中' : ''}` }
+  },
+  nativeActions(ctx) {
+    if (ctx.goal.status !== 'active') return []
+    const { view } = plan(ctx), orders = ctx.goal.facts.unitOrders ??= emptyUnitOrders()
+    const actions: ActionRequest[] = []
+    const targetOrder = (kind: 'enterTransport' | 'repair', unitId: number, targetId: number) => {
+      const unit = ctx.snap.self.find(unit => unit.id === unitId), old = orders.orders[unitId]
+      if (unit && (!old || old.kind !== kind || old.targetId !== targetId || unit.isIdle && ctx.snap.tick - old.tick >= ctx.spec.policy.retryTicks)) actions.push({ kind, unitIds: [unitId], targetId })
+    }
+    for (const pair of view.assembling) targetOrder('enterTransport', pair.engineerId, pair.vehicleId)
+    for (const job of view.targets) targetOrder('repair', job.unitId, job.targetId)
+    for (const id of view.readyIds.filter(id => !view.targets.some(job => job.unitId === id))) {
+      if (view.follow) actions.push(...moveOrders(ctx.snap, [id], view.follow, orders, ctx.spec.policy.retryTicks))
+      else if (orders.orders[id] && orders.orders[id]!.kind !== 'stop') actions.push({ kind: 'stop', unitIds: [id] })
+    }
+    return actions
+  },
+  afterSubmit({ spec }, request, results) {
+    // 单车的临时拒绝不阻塞同队其他组装或维修；下一快照重新读取载员及血量。
+    if (spec.executionMode === 'native' && ['enterTransport', 'repair'].includes(request.kind) && results.length && results.every(result => !result.ok && result.submitted === 0 && ['transport-full', 'target-not-damaged', 'order-rejected'].includes(result.reason ?? ''))) return true
   },
   stopMembers: members,
 }

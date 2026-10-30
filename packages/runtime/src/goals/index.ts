@@ -44,7 +44,7 @@ export function validateGoalFacts(goal: GoalState, map: MapSize): void {
   if (facts.rallyBlocked !== undefined && typeof facts.rallyBlocked !== 'boolean') throw new Error('生产集结点等待标记非法')
   if (facts.nativeError !== undefined && (goal.spec.executionMode !== 'native' || typeof facts.nativeError !== 'string')) throw new Error('本机执行错误记录非法')
   if (facts.endedByBattle !== undefined && (!['victory', 'defeat'].includes(facts.endedByBattle) || !['completed', 'partial', 'failed'].includes(goal.status))) throw new Error('对局结束目标状态非法')
-  if (facts.unitOrders !== undefined && !['combat', 'attack', 'explore'].includes(goal.spec.kind)) throw new Error('单位发令进度与目标不符')
+  if (facts.unitOrders !== undefined && !['combat', 'attack', 'explore', 'repair'].includes(goal.spec.kind)) throw new Error('单位发令进度与目标不符')
   if ((facts.coverMotion !== undefined || facts.coverEnded !== undefined) && goal.spec.kind !== 'combat' && goal.spec.kind !== 'attack' || facts.coverEnded !== undefined && typeof facts.coverEnded !== 'string') throw new Error('掩护进度与目标不符')
   handlerFor(goal.spec).validateFacts?.(goal, map)
 }

@@ -1105,7 +1105,7 @@ export class TaskRuntime {
         const results = await this.deps.submit([request], snap, guard)
         if (request.kind === 'crush' && !guard()) return false
         recordCrushing(goal.facts.crushing, request, results, snap)
-        const orders = ['combat', 'attack', 'explore'].includes(activeSpec.kind) ? goal.facts.unitOrders ??= emptyUnitOrders() : undefined
+        const orders = ['combat', 'attack', 'explore', 'repair'].includes(activeSpec.kind) ? goal.facts.unitOrders ??= emptyUnitOrders() : undefined
         this.unitOrders.record(item.goalId, program, request, snap, results, orders)
         phase = 'receipt'
         if (handler.afterSubmit?.(this.goalContext(goal.activeSpec, snap), request, results)) continue

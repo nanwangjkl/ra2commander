@@ -169,7 +169,7 @@ export const bindings: Binders = {
     const runs = [...context.ctx.runtime.skillRuns.values()].filter(run => ['preparing', 'exploring', 'repairing', 'covering'].includes(run.status) && (!params.runId || run.id === params.runId) && (!params.skillId || run.skillId === (context.prompts.skills.get(params.skillId)?.definition.id ?? params.skillId)))
     const selected = params.all || params.runId ? runs : runs.slice(-1)
     await Promise.all(selected.map(run => context.ctx.runtime.cancelSkillRun(run.id)))
-    const refreshGlobal = selected.some(run => run.kind === 'repair-vehicle' || run.kind !== 'cover' && context.ctx.runtime.goals.get(run.preparationGoalId)?.spec.executionMode !== 'native')
+    const refreshGlobal = selected.some(run => run.kind !== 'cover' && (run.kind === 'repair-vehicle' ? run.preparationGoalIds : [run.preparationGoalId]).some(id => context.ctx.runtime.goals.get(id)?.spec.executionMode !== 'native'))
     return { choices: [selected.length ? `已取消${selected.length}次 Skill 及其后续步骤，其余目标继续` : '没有正在执行的匹配 Skill'], refreshOwners: refreshGlobal ? ['global'] : [], suppressOwners: selected.filter(run => run.kind !== 'cover').map(run => `formation:${run.formationId}`) }
   },
   'map.explore': async (params, context) => {

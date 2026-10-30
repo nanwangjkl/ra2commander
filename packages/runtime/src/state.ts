@@ -36,7 +36,7 @@ export interface GoalProgress {
 export interface GoalFactKeys {
   combat: 'unitOrders' | 'routeIndex' | 'coverMotion' | 'coverEnded' | 'baseDefense' | 'crushing'
   production: 'completedQuantity' | 'placementBlocked' | 'rallyBlocked' | 'cancelProduction'
-  repair: 'repair'
+  repair: 'repair' | 'unitOrders'
   relocate: 'relocation'
   mining: 'mining'
   attack: 'unitOrders' | 'attack' | 'coverMotion' | 'coverEnded' | 'coverReleasedIds' | 'crushing'
