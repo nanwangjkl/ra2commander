@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import type { SnapshotUnit } from '@ra2c/contracts'
+import type { CrushingRules, SnapshotUnit } from '@ra2c/contracts'
 import { readGameData, type GameData, type GameDataEntry } from './game-data.ts'
 
 interface Member { name: string; type: number; factions?: string[]; aliases?: string[]; attackAliases?: string[] }
@@ -16,6 +16,7 @@ interface Definition {
   catalogFile?: string
   factions: Array<{ id: string; label: string; anchors: string[] }>
   roles: Role[]
+  crushing?: { attackers: string[]; excludedTargets: string[] }
 }
 export interface RuleFacts {
   label?: string | undefined; power?: number | undefined; category?: string | undefined
@@ -85,6 +86,13 @@ export class GameProfile {
   roles() { return structuredClone(this.definition.roles) }
   /** 音近词只用于攻击目标，不加入生产或己方成员的普通别名。 */
   attackAliases() { return this.definition.roles.flatMap(role => role.members.flatMap(member => (member.attackAliases ?? []).map(alias => ({ alias, name: member.name })))) }
+  /** 当前宿主实例固定的微操规则；旧目录没有标记时不猜测能力。 */
+  crushing(): CrushingRules | undefined {
+    const policy = this.definition.crushing
+    if (!policy || !this.data) return
+    return { attackers: policy.attackers.filter(name => this.entriesByName.get(name)?.type === 7 && this.entriesByName.get(name)?.crusher === true),
+      targets: this.data.entries.filter(item => item.defined && item.type === 3 && item.crushable === true && !policy.excludedTargets.includes(item.name)).map(item => item.name) }
+  }
   members(): Member[] { return [...new Map(this.definition.roles.flatMap(role => role.members).map(member => [member.name, structuredClone(member)])).values()] }
   member(name: string): Member | undefined {
     const member = this.definition.roles.flatMap(role => role.members).find(member => member.name.toLowerCase() === name.toLowerCase())
@@ -160,6 +168,8 @@ export function readGameProfile(file = new URL('../../../prompts/games/current-m
     if (value.catalogFile !== undefined && (typeof value.catalogFile !== 'string' || !/^catalogs\/[a-z0-9-]+\.json$/.test(value.catalogFile))) throw new Error('完整目录文件路径非法')
     const catalog = value.catalogFile ? readGameData(new URL(value.catalogFile, file)) : undefined
     if (catalog && catalog.data.gameId !== value.id) throw new Error('完整目录与游戏 ID 不符')
+    const policy = value.crushing
+    if (policy && (!strings(policy.attackers) || !strings(policy.excludedTargets) || policy.attackers.some(name => { const item = catalog?.data.entries.find(item => item.name === name); return item && item.type !== 7 }) || policy.excludedTargets.some(name => { const item = catalog?.data.entries.find(item => item.name === name); return item && item.type !== 3 }))) throw new Error('碾压名单非法')
     return { profile: new GameProfile(value, instructions, catalog?.data), source, catalogSource: catalog?.source ?? '' }
   } catch (error) { throw new Error(`游戏目录错误 ${location}：${error instanceof Error ? error.message : String(error)}`) }
 }

@@ -4,7 +4,8 @@
 {
   "id": "ra2web-gonghui",
   "name": "ra2web 共和国之辉",
-  "version": "1.0.5",
+  "version": "1.0.7",
+  "crushing": { "attackers": ["MTNK", "HTNK", "HTK"], "excludedTargets": ["ADOG", "DOG"] },
   "catalogFile": "catalogs/ra2web-gonghui.json",
   "factions": [
     {
@@ -318,6 +319,9 @@
       "id": "technology",
       "aliases": [
         "作战实验室",
+        "实验室",
+        "laboratory",
+        "lab",
         "高科",
         "科技中心",
         "battlelab"

@@ -11,7 +11,7 @@ import { placementDirection, inTargetRegion, type TargetRegion, type PlacementDi
 const buildingFoundations = Object.fromEntries(loadPrompts().game.entries().flatMap(item =>
   item.type === 2 && item.foundation ? [[item.name, item.foundation]] : []))
 const bridgeSource = readFileSync(new URL('../packages/game-werhd/src/bridge.js', import.meta.url), 'utf8')
-function pageBridge(source = `window.__ra2cBuildingFoundations = ${JSON.stringify(buildingFoundations)};\n${bridgeSource}`) {
+function pageBridge(source = `window.__ra2cBuildingFoundations = ${JSON.stringify(buildingFoundations)};\nwindow.__ra2cCrushingRules = ${JSON.stringify(loadPrompts().game.crushing())};\n${bridgeSource}`) {
   let poll!: () => void
   let onTick!: (context: { tick: number }) => void
   let tick = 15
@@ -45,6 +45,34 @@ function pageBridge(source = `window.__ra2cBuildingFoundations = ${JSON.stringif
   const next = () => { tick += 15; return sample() }
   return { window, api, submitted, sample, next, poll: () => poll(), install, own, enemy, setTick: (value: number) => { tick = value } }
 }
+
+test('碾压走 ForceMove 地格订单，复查实时敌人、桥面和目标分区，不把拒绝当成成功', () => {
+  const page = pageBridge()
+  page.enemy[0] = { ...page.enemy[0]!, name: 'E1', type: 3, onBridge: true, zone: 0 }
+  page.own[0]!.onBridge = true
+  const snap = page.sample()
+  assert.equal(snap.self[0]!.onBridge, true)
+  assert.equal(snap.enemies[0]!.onBridge, true)
+  const action = { kind: 'crush', unitIds: [1], targetId: 99, targetRegion: { id: 'zone', name: '防区', polygons: [{ outer: [[0, 0], [20, 0], [20, 20], [0, 20], [0, 0]], holes: [] }] } }
+  const submit = () => page.window.__ra2cSubmit(snap.session, action, snap.seq, snap.sessionKey)
+  page.enemy[0]!.tile.rx = 12
+  assert.equal(submit().ok, true)
+  assert.deepEqual(JSON.parse(JSON.stringify(page.submitted)), [[[1], { type: 1, target: { x: 12, y: 5, onBridge: true } }]])
+  assert.equal(submit().targetPosition.x, 12, '使用最终提交时的真实落点')
+  for (const name of ['ADOG', 'DOG', 'SHK']) { page.enemy[0]!.name = name; assert.equal(submit().reason, 'crush-not-applicable') }
+  page.enemy[0]!.name = 'E1'
+  for (const name of ['APOC', 'FV']) { page.own[0]!.name = name; assert.equal(submit().reason, 'crush-not-applicable') }
+  page.own[0]!.name = 'MTNK'; page.enemy[0]!.zone = 1
+  assert.equal(submit().reason, 'crush-not-applicable')
+  page.enemy[0]!.zone = 0; page.enemy[0]!.onBridge = false
+  assert.equal(submit().reason, 'crush-not-applicable')
+  page.enemy[0]!.onBridge = true; page.enemy[0]!.tile.rx = 25
+  assert.equal(submit().reason, 'crush-target-outside')
+  page.enemy[0]!.tile.rx = 12; page.api.order = () => false
+  assert.equal(submit().reason, 'crush-order-rejected')
+  page.enemy.length = 0
+  assert.equal(submit().reason, 'invisible-target')
+})
 
 test('部署原语按实际姿态幂等提交，不将无姿态的 Mod 变形当成常规部署', () => {
   const page = pageBridge()

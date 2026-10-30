@@ -135,6 +135,7 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
     if (restored.activeSpec) restored.activeSpec = { ...normalizeAttackGoal(restored.activeSpec), executionMode: goalExecutionMode(restored.activeSpec) }
     // 旧 v3/v4 的 done 从未参与判断；只保留 status 与实际进度。
     delete (restored.facts as typeof restored.facts & { done?: boolean }).done
+    if (restored.facts.crushing) restored.facts.crushing.pausedAt = runtime.snapshot!.time
     runtime.goals.set(id, restored)
   }
   runtime.production.push(...structuredClone(state.production).map(r => ({ ...r, state: r.state === 'reserved' ? 'unknown' as const : r.state, ...(r.cancellation?.state === 'prepared' ? { cancellation: { ...r.cancellation, state: 'unknown' as const } } : {}) })))

@@ -35,6 +35,7 @@ export interface SnapshotUnit {
   /** 引擎公开的移动向量，世界坐标 x/z 为地面方向；预测速度仍使用规则 speed。 */
   velocity?: { x: number; y: number; z: number };
   zone?: number;
+  onBridge?: boolean;
   canDeploy?: boolean;
   isDeployed?: boolean;
   ammo?: number;
@@ -102,6 +103,8 @@ export type ActionRequest =
   | { kind: 'attackMove'; unitIds: number[]; x: number; y: number }
   | { kind: 'gather'; unitIds: number[]; x: number; y: number }
   | { kind: 'attack'; unitIds: number[]; targetId: number; holdPosition?: boolean }
+  /** 宿主从合法攻击派生，页面桥按目标当前地格发送 ForceMove。 */
+  | { kind: 'crush'; unitIds: number[]; targetId: number; targetRegion?: import('./spatial.ts').TargetRegion }
   | { kind: 'enterTransport'; unitIds: number[]; targetId: number }
   /** 对友方车辆使用当前维修武器；页面桥提交普通 Attack，不能强制攻击。 */
   | { kind: 'repair'; unitIds: number[]; targetId: number }
@@ -126,12 +129,14 @@ export interface ActionResult {
   submitted: number;
   session: number;
   placement?: { x: number; y: number; elevation?: number };
+  targetPosition?: { x: number; y: number; onBridge: boolean };
 }
 
 /** 任务脚本执行侧约束：执行器第一道把关（宿主提交前还有会话/存活复查）。 */
 export interface StepConstraints {
   allowedUnitIds: number[];
   factoryRallyIds?: number[];
+  crushing?: import('./crushing.ts').CrushingRules;
   enemyIds: number[];
   /** 掩护成员可就近对空自卫；不能扩大受护成员的原攻击目标。 */
   coverFire?: { unitIds: number[]; enemyIds: number[] };
@@ -175,6 +180,7 @@ export interface ActionContext {
 }
 
 export { validateActions, validateScriptActions, liveScriptActions, inRegion } from './validate-actions.ts';
+export { crushCompatible, type CrushingRules } from './crushing.ts';
 export { inTargetRegion, validTargetRegion, type TargetRegion } from './spatial.ts';
 export * from './control.ts';
 export * from './attack-objective.ts';

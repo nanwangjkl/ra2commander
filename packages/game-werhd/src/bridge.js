@@ -9,7 +9,7 @@
 // 且带性能护栏（超预算自动降频）。
 (() => {
   'use strict';
-  var BRIDGE_VERSION = 23;
+  var BRIDGE_VERSION = 24;
   if (window.__ra2cInstalled && window.__ra2cVersion === BRIDGE_VERSION) return;
   var upgrading = false;
   if (window.__ra2cInstalled && window.__ra2cSessionKey && typeof window.__ra2cSubmit === 'function') {
@@ -187,6 +187,7 @@
       speed: moveSpeeds[speedKey],
       velocity: u.velocity ? { x: u.velocity.x, y: u.velocity.y, z: u.velocity.z } : undefined,
       zone: u.zone,
+      onBridge: u.onBridge === true,
       canDeploy: u.canDeploy,
       isDeployed: u.isDeployed,
       ammo: u.ammo,
@@ -438,6 +439,19 @@
           // IFV 的负伤害武器走普通 Attack；Repair 是工程师修建筑的消耗动作。
           if (!w.order(ids, { type: action.kind === 'enterTransport' ? 17 : 2, target: { objectId: action.targetId } })) return { ok: false, reason: 'order-rejected', submitted: 0, session: session };
           break;
+        }
+        case 'crush': {
+          var crushTarget = (w.units('hostile') || []).find(function (unit) { return unit.id === action.targetId; });
+          if (!crushTarget) return { ok: false, reason: 'invisible-target', submitted: 0, session: session };
+          var crushRules = window.__ra2cCrushingRules || { attackers: [], targets: [] };
+          if (crushTarget.type !== 3 || crushTarget.zone !== undefined && crushTarget.zone !== 0 || crushTarget.hitPoints !== undefined && crushTarget.hitPoints <= 0 || !crushRules.targets.includes(crushTarget.name) || !ids.every(function (id) {
+            var unit = own.find(function (item) { return item.id === id; });
+            return unit && unit.type === 7 && (unit.zone === undefined || unit.zone === 0) && crushRules.attackers.includes(unit.name) && !!unit.onBridge === !!crushTarget.onBridge;
+          })) return { ok: false, reason: 'crush-not-applicable', submitted: 0, session: session };
+          if (action.targetRegion && !inPlacementRegion(crushTarget.tile.rx, crushTarget.tile.ry, action.targetRegion)) return { ok: false, reason: 'crush-target-outside', submitted: 0, session: session };
+          var crushPoint = { x: crushTarget.tile.rx, y: crushTarget.tile.ry, onBridge: !!crushTarget.onBridge };
+          if (!w.order(ids, { type: 1, target: crushPoint })) return { ok: false, reason: 'crush-order-rejected', submitted: 0, session: session };
+          return { ok: true, submitted: ids.length, session: session, targetPosition: crushPoint };
         }
         case 'attack': {
           var visible = w.units('hostile') || [];

@@ -30,14 +30,15 @@ export interface GoalProgress {
   building?: import('./building.ts').BuildingState
   unitDeployment?: import('./unit-deployment.ts').UnitDeploymentState
   baseDefense?: import('./base-defense.ts').BaseDefenseState
+  crushing?: import('./crushing.ts').CrushingState
 }
 export interface GoalFactKeys {
-  combat: 'routeIndex' | 'coverMotion' | 'coverEnded' | 'baseDefense'
+  combat: 'routeIndex' | 'coverMotion' | 'coverEnded' | 'baseDefense' | 'crushing'
   production: 'completedQuantity' | 'placementBlocked' | 'rallyBlocked' | 'cancelProduction'
   repair: 'repair'
   relocate: 'relocation'
   mining: 'mining'
-  attack: 'attack' | 'coverMotion' | 'coverEnded' | 'coverReleasedIds'
+  attack: 'attack' | 'coverMotion' | 'coverEnded' | 'coverReleasedIds' | 'crushing'
   building: 'building'
   unitDeploy: 'unitDeployment'
   explore: never

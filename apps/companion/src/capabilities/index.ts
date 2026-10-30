@@ -211,7 +211,7 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
         if (!Number.isInteger(correction.index) || !failures[correction.index] || handled.has(correction.index)) continue
         handled.add(correction.index)
         let scoped: CapabilityCall[]
-        try { scoped = retainBindingRepairs(failures[correction.index]!.operation, correction.operations, prompts, options.text) }
+        try { scoped = retainBindingRepairs(failures[correction.index]!.operation, correction.operations, prompts, options.text, options.catalog) }
         catch (error) {
           skip(failures[correction.index]!.error)
           skip(`未采用绑定修正：${String(error)}`)

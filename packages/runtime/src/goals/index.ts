@@ -15,6 +15,7 @@ import { repair } from './repair.ts'
 import { transport } from './transport.ts'
 import { unitDeploy } from './unit-deploy.ts'
 import type { GoalHandler, GoalKind, MapSize } from './types.ts'
+import { validateCrushing } from '../crushing.ts'
 
 /** 新目标必须在这里登记；不引入动态插件、隐藏顺序或运行时注册。 */
 export const goalHandlers = { attack, building, combat, deploy, explore, formation, mining, production, rally, reinforce, relocate, repair, transport, unitDeploy } satisfies { [K in GoalKind]: GoalHandler<K> }
@@ -31,6 +32,8 @@ export function validateGoalSpec(spec: GoalSpec, map: MapSize): void {
 }
 export function validateGoalFacts(goal: GoalState, map: MapSize): void {
   const facts = goal.facts
+  validateCrushing(facts?.crushing)
+  if (facts?.crushing && goal.spec.kind !== 'combat' && goal.spec.kind !== 'attack') throw new Error('碾压进度与目标不符')
   if (!facts || typeof facts.initialized !== 'boolean' || !Array.isArray(facts.members) || facts.members.some(member => !Number.isSafeInteger(member.id) || typeof member.name !== 'string' || !Number.isFinite(member.rx) || !Number.isFinite(member.ry)) || !Number.isFinite(facts.lossRatio) || facts.lossRatio < 0 || facts.lossRatio > 1 || typeof facts.retreatTriggered !== 'boolean') throw new Error('目标事实非法')
   const kinds = { repair: 'repair', relocation: 'relocate', mining: 'mining', attack: 'attack', building: 'building', unitDeployment: 'unitDeploy', baseDefense:'combat', routeIndex: 'combat', coverReleasedIds: 'attack', completedQuantity: 'production', placementBlocked: 'production', rallyBlocked: 'production', cancelProduction: 'production' } as const
   for (const [field, kind] of Object.entries(kinds)) if (facts[field as keyof typeof kinds] !== undefined && goal.spec.kind !== kind) throw new Error(`${field} 进度与目标不符`)

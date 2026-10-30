@@ -144,9 +144,10 @@ async function main(): Promise<void> {
   console.log('[companion] 浏览器常驻模式（CDP）：companion 重启不再关闭对局')
   // 游戏 CDN 对本地 origin 无 CORS 头，经 Node 侧转发并补头；资源随后缓存进 profile。
   await setupCdnProxy(context)
-  const foundations = Object.fromEntries(loadPrompts().game.entries().flatMap(item =>
+  const gameProfile = loadPrompts().game, crushing = gameProfile.crushing()
+  const foundations = Object.fromEntries(gameProfile.entries().flatMap(item =>
     item.type === 2 && item.foundation ? [[item.name, item.foundation]] : []))
-  const gameBridge = new WerhdBridge(context, server.url, foundations)
+  const gameBridge = new WerhdBridge(context, server.url, foundations, crushing)
   bridge = gameBridge
   await gameBridge.install()
 
@@ -162,6 +163,7 @@ async function main(): Promise<void> {
   }
   const runtime: TaskRuntime = new TaskRuntime({
     executor: executors.runtime, formations,
+    ...(crushing ? { crushing } : {}),
     regionsAt: (x,y) => iceMap.regions.regionsAt(x,y).map(region=>({id:region.id,name:region.name,polygons:region.polygons})),
     checkpoint: () => saveStateFile(STATE_FILE, persistState(runtime)),
     coverRanges: (pairs, snap) => gameBridge.coverRanges(pairs, snap.sessionKey),

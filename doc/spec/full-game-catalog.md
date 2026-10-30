@@ -10,6 +10,8 @@
 
 常规部署同时导入 `Deployer` 和 `UndeployDelay`，区分持续姿态与自动解除的短时技能；本局公开规则优先，公开 `isDeployed` 用于确认实际效果。`DeploysInto` 的建筑变形不自动纳入常规部署，灰熊变建筑的 Mod 能力按用户要求排除。详见[单位部署](unit-deployment.md)。
 
+自动碾压导入 `Crusher` 和 `Crushable`，保留步兵默认可碾压、其他类型默认不可及执行能力默认关闭的规则。实际启用的三类车辆与狗的排除名单在 Markdown 中配置；公开 `rules()` 不提供这两个字段，静态能力不作为实际命中证明。详见[自动碾压](crushing.md)。
+
 `current-mod.md` 的 `catalogFile` 选择这份数据。它与 Markdown 模板、角色、战术和 Skill 共同计算提示版本，加载错误保留上一套完整定义。Markdown 维护常用别名、角色与策略；完整建造依赖不按单位逐条维护。
 
 ## 本局规则优先

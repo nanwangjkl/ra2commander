@@ -81,6 +81,55 @@ test('防空车编入后立即攻击飞行兵：只理解一次，交接后直�
   } finally { await f.dispose() }
 })
 
+test('复现“实验室和兵营”：短名和 laboratory 都绑定完整角色，只理解一次并保留两类建筑', async () => {
+  const f = await fixture([member(101, 'HTNK')])
+  try {
+    f.formations.create('1队', [101])
+    await f.voice('1队攻击实验室和兵营', [{ capability: 'combat.attack', params: { formationId: '1队', target: 'buildings', targetSelectors: ['laboratory', 'barracks'] } }])
+    assert.deepEqual(f.calls(), { interpretations: 1, generations: 0 })
+    const goal = [...f.runtime.goals.values()].find(goal => goal.spec.kind === 'attack')!
+    assert.ok(goal)
+    const targets = goal.spec.kind === 'attack' ? goal.spec.objective!.target.unitNames! : []
+    assert.ok(['GATECH', 'NATECH', 'CATECH', 'GAPILE', 'NAHAND', 'CAHAND'].every(name => targets.includes(name)))
+    const enemies = [member(201, 'GATECH'), member(202, 'GAPILE'), member(203, 'GAWEAP')].map(unit => ({ ...unit, type: 2 }))
+    await f.tick(enemies)
+    assert.ok(f.submitted.some(action => action.kind === 'attack' && [201, 202].includes(action.targetId)))
+    assert.ok(f.submitted.every(action => action.kind !== 'attack' || [201, 202].includes(action.targetId)))
+  } finally { await f.dispose() }
+})
+
+test('未知敌方名称修正能生效，已识别的目标、成员、分区和空地要求仍保留', async () => {
+  const f = await fixture([member(101, 'HTNK')])
+  try {
+    f.formations.create('1队', [101])
+    const catalog = await loadGameCatalog(f.ctx, () => {}, prompts.game)
+    const original = { capability: 'combat.attack', params: { formationId: '1队', selector: 'tanks', quantity: 1, regionName: '三楼左下', target: 'buildings', targetSelectors: ['lab_facility', 'barracks'], targetDomain: 'ground' } }
+    const correction = { capability: 'combat.attack', params: { formationId: '2队', selector: 'all', quantity: 'all', regionName: '三楼右上', target: 'enemies', targetSelectors: ['NATECH', 'NAHAND'], targetDomain: 'all' } }
+    let repairs = 0
+    const result = await executeCapabilities([original], f.ctx, { text: '1队攻击三楼左下的实验室和兵营', prompts, catalog,
+      repairBindings: async failures => { repairs++; assert.match(failures[0]!.error, /lab_facility/); return [{ index: 0, operations: [correction] }] },
+    })
+    assert.equal(repairs, 1); assert.deepEqual(result.skipped, [])
+    const goal = [...f.runtime.goals.values()].find(goal => goal.spec.kind === 'attack')!
+    assert.ok(goal?.spec.kind === 'attack')
+    assert.equal(goal.spec.formationId, '1队'); assert.deepEqual(goal.spec.unitIds, [101])
+    assert.equal(goal.spec.objective!.target.kind, 'buildings')
+    assert.equal(goal.spec.objective!.target.region!.name, '三楼左下')
+    assert.equal(goal.spec.objective!.target.domain, 'ground')
+    const target = goal.spec.objective!.target
+    assert.ok(['NATECH', 'NAHAND', 'GAPILE'].every(name => target.unitNames!.includes(name)))
+    for (const selectors of [undefined, ['barracks'], ['buildings']]) {
+      const retained = retainBindingScope(original, { ...correction, params: { ...correction.params, targetSelectors: selectors } }, prompts)
+      assert.deepEqual(retained.capability === 'combat.attack' && retained.params.targetSelectors, original.params.targetSelectors, '删除未知目标或放宽成全部建筑不作为名称修正')
+    }
+    const known = { ...original, params: { ...original.params, targetSelectors: ['technology', 'barracks'] } }
+    const retained = retainBindingScope(known, correction, prompts)
+    assert.deepEqual(retained.capability === 'combat.attack' && retained.params.targetSelectors, known.params.targetSelectors, '可识别的完整科技角色不被缩成苏军单一建筑')
+    const hold = retainBindingScope({ capability: 'combat.hold', params: { formationId: '1队', targetSelectors: ['lab_facility', 'barracks'], targetDomain: 'ground' } }, { capability: 'combat.hold', params: { formationId: '2队', targetSelectors: ['NATECH'] } }, prompts)
+    assert.deepEqual(hold.capability === 'combat.hold' && hold.params.targetSelectors, ['barracks', 'NATECH'], '持续守卫使用同一名称修正')
+  } finally { await f.dispose() }
+})
+
 test('区域进攻直接攻击并保留敌方并集；同句移动合并，不等到区域中心', async () => {
   const f = await fixture([member(101,'HTNK'),member(102,'HTK',true)])
   try {

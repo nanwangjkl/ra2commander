@@ -7,7 +7,7 @@ export interface CoverMotion {
   focusTargetId?: number
   heldIds: number[]
   gathering?: boolean
-  orders: Record<string, { kind: 'move' | 'stop' | 'attack'; x?: number; y?: number; targetId?: number; tick: number }>
+  orders: Record<string, { kind: 'move' | 'stop' | 'attack' | 'crush'; x?: number; y?: number; targetId?: number; tick: number }>
   detail?: string
   positions?: Record<string, { x: number; y: number; tick: number; stalls: number }>
   prediction?: { guideId: number; x: number; y: number; dx: number; dy: number }
@@ -21,7 +21,7 @@ export function validateCoverMotion(state: CoverMotion | undefined): void {
     if([c.coreIds,c.catchingUpIds,c.regroupIds??[]].some(ids=>!Array.isArray(ids)||new Set(ids).size!==ids.length||ids.some(id=>!Number.isSafeInteger(id)))||c.coreIds.some(id=>c.catchingUpIds.includes(id))||c.regroupSince!==undefined&&!Number.isFinite(c.regroupSince))throw new Error('掩护追赶进度非法')
   }
   if (state && (!Array.isArray(state.heldIds) || state.heldIds.some(id => !Number.isSafeInteger(id)) || !state.orders || typeof state.orders !== 'object' || Array.isArray(state.orders)
-    || Object.values(state.orders).some(order => !order || !['move', 'stop', 'attack'].includes(order.kind) || !Number.isFinite(order.tick) || order.kind === 'move' && (!Number.isFinite(order.x) || !Number.isFinite(order.y)) || order.kind === 'attack' && !Number.isSafeInteger(order.targetId)))) throw new Error('掩护行军事实非法')
+    || Object.values(state.orders).some(order => !order || !['move', 'stop', 'attack', 'crush'].includes(order.kind) || !Number.isFinite(order.tick) || order.kind === 'move' && (!Number.isFinite(order.x) || !Number.isFinite(order.y)) || (order.kind === 'attack' || order.kind === 'crush') && !Number.isSafeInteger(order.targetId)))) throw new Error('掩护行军事实非法')
   if (state?.positions && (typeof state.positions !== 'object' || Array.isArray(state.positions) || Object.values(state.positions).some(position => !position || ![position.x, position.y, position.tick, position.stalls].every(Number.isFinite) || !Number.isSafeInteger(position.stalls) || position.stalls < 0))) throw new Error('掩护位置事实非法')
   if (state?.prediction && (!Number.isSafeInteger(state.prediction.guideId) || ![state.prediction.x, state.prediction.y, state.prediction.dx, state.prediction.dy].every(Number.isFinite))) throw new Error('掩护预测事实非法')
 }
@@ -131,6 +131,6 @@ export function coverMoves(policy: CoverPolicy, snap: Snapshot, ids: number[], d
   return { actions, state, view }
 }
 export function recordCoverOrder(state: CoverMotion, request: ActionRequest, tick: number, results: ActionResult[]): void {
-  if (!results.length || results.some(result => !result.ok) || !results.some(result => (result.submitted ?? 1) > 0) || request.kind !== 'move' && request.kind !== 'stop' && request.kind !== 'attack') return
-  for (const id of request.unitIds) state.orders[id] = { kind: request.kind, tick, ...(request.kind === 'move' ? { x: request.x, y: request.y } : request.kind === 'attack' ? { targetId: request.targetId } : {}) }
+  if (!results.length || results.some(result => !result.ok) || !results.some(result => (result.submitted ?? 1) > 0) || request.kind !== 'move' && request.kind !== 'stop' && request.kind !== 'attack' && request.kind !== 'crush') return
+  for (const id of request.unitIds) state.orders[id] = { kind: request.kind, tick, ...(request.kind === 'move' ? { x: request.x, y: request.y } : request.kind === 'attack' || request.kind === 'crush' ? { targetId: request.targetId } : {}) }
 }

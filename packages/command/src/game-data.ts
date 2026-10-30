@@ -9,6 +9,7 @@ export interface GameDataEntry {
   deployer?: boolean; undeployDelay?: number
   harvester: boolean; naval: boolean; refinery: boolean; constructionYard: boolean; engineer: boolean
   foundation?: { width: number; height: number }
+  crusher?: boolean; crushable?: boolean
 }
 export interface GameData {
   schemaVersion: 1; gameId: string; version: string
@@ -73,6 +74,7 @@ export function importGameData(rules: Buffer, strings: Buffer, gameId: string, a
         techLevel: numeric('TECHLEVEL', -1), power: numeric('POWER', 0), factory: rule.FACTORY ?? '', buildCat: rule.BUILDCAT ?? '',
         ...(rule.DEPLOYSINTO ? { deploysInto: rule.DEPLOYSINTO } : {}), ...(rule.UNDEPLOYSINTO ? { undeploysInto: rule.UNDEPLOYSINTO } : {}),
         ...(flag('DEPLOYER') ? { deployer: true, undeployDelay: numeric('UNDEPLOYDELAY', 0) } : {}),
+        crusher: flag('CRUSHER'), crushable: rule.CRUSHABLE === undefined ? type === 3 : flag('CRUSHABLE'),
         harvester: flag('HARVESTER'), naval: flag('NAVAL'), refinery: flag('REFINERY'), constructionYard: flag('CONSTRUCTIONYARD'), engineer: flag('ENGINEER'), ...(foundation ? { foundation } : {}) })
     }
   }
@@ -89,6 +91,7 @@ export function validateGameData(data: GameData): void {
   for (const item of data.entries) {
     if (!item || !/^[A-Za-z0-9_]+$/.test(item.name) || names.has(item.name) || ![1, 2, 3, 7].includes(item.type) || !item.label || !Number.isFinite(item.techLevel) || !Number.isFinite(item.power) || [item.prerequisite, item.prerequisiteOverride, item.owner, item.requiredHouses, item.forbiddenHouses].some(list => !Array.isArray(list) || list.some(value => typeof value !== 'string'))) throw new Error(`游戏目录条目非法：${item?.name}`)
     names.add(item.name)
+    if (item.crusher !== undefined && typeof item.crusher !== 'boolean' || item.crushable !== undefined && typeof item.crushable !== 'boolean') throw new Error(`碾压规则非法：${item.name}`)
     if (item.deployer !== undefined && typeof item.deployer !== 'boolean' || item.undeployDelay !== undefined && (!Number.isFinite(item.undeployDelay) || item.undeployDelay < 0)) throw new Error(`单位部署规则非法：${item.name}`)
     if (item.foundation && (item.type !== 2 || ![item.foundation.width, item.foundation.height].every(value => Number.isSafeInteger(value) && value > 0 && value <= 32))) throw new Error(`建筑占地非法：${item.name}`)
   }

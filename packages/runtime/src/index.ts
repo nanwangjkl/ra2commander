@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import {
-  validateScriptActions, liveScriptActions, inRegion, inTargetRegion, goalExecutionMode, goalOwner, normalizeAttackGoal, attackObjective, ownerId, directionLabels,
+  validateScriptActions, liveScriptActions, inRegion, inTargetRegion, goalExecutionMode, goalOwner, normalizeAttackGoal, attackObjective, ownerId, directionLabels, crushCompatible,
   type ActionRequest, type ActionResult, type ActionContext, type Snapshot, type StepConstraints,
-  type GoalConstraints, type GoalSpec, type GoalView, type ScriptAction, type ScriptOwner, type FormationRequest, type GoalExecution, type CoverPolicy,
+  type GoalConstraints, type GoalSpec, type GoalView, type ScriptAction, type ScriptOwner, type FormationRequest, type GoalExecution, type CoverPolicy, type CrushingRules,
 } from '@ra2c/contracts'
 import { codeHash, type StepExecutor } from '@ra2c/js-worker'
 import { FormationRegistry } from './formation.ts'
@@ -18,6 +18,7 @@ import { coverCombat, coverRangePairs, airborne, type CoverIntent, type CoverRan
 import type { GoalContext, GoalProjection } from './goals/types.ts'
 import { FactoryRallies, type FactorySite, type FactoryRallyDeps } from './factory-rally.ts'
 import { ProductionExits, insideFactory, exitPoint, type ExitYield } from './production-exit.ts'
+import { emptyCrushing, planCrushing, recordCrushing, type CrushPair } from './crushing.ts'
 export type { ProductionExitState } from './production-exit.ts'
 export { rallyCandidates } from './factory-rally.ts'
 export type { FactorySite, RallySetting, FactoryRallyState } from './factory-rally.ts'
@@ -54,6 +55,7 @@ export interface RuntimeDeps {
   onProgramStalled?: (ownerId: string, reason: string) => void
   recovery?: { stallTicks?: number; cooldownTicks?: number }
   coverRanges?: (pairs: Array<{ unitId: number; targetId: number }>, snap: Snapshot) => Promise<CoverRange[]>
+  crushing?: CrushingRules
   factorySites?: (snap: Snapshot) => Promise<FactorySite[]>
   buildingFoundation?: (name: string) => { width: number; height: number } | undefined
   rallyTiles?: FactoryRallyDeps['tiles']
@@ -62,7 +64,7 @@ export interface RuntimeDeps {
   log?: (message: string) => void
 }
 
-interface StepBudget { remaining: number; placementAttempts: Set<string> }
+interface StepBudget { remaining: number; placementAttempts: Set<string>; crushingPrepared: Set<string> }
 
 export class TaskRuntime {
   battleResult: Snapshot['battle'] | undefined
@@ -153,7 +155,7 @@ export class TaskRuntime {
     const exitNotices = this.productionExits.state.blockages.filter(block => factories.has(block.factoryId) && block.state !== 'recovered').map(block => block.detail)
     const redirects = this.productionExits.state.units.filter(unit => exitIds.has(unit.unitId) && unit.redirectFrom)
     if (redirects.length) exitNotices.push(`${redirects.length} 个新产物等待确认集结改点${redirects.some(unit => unit.attempts >= 3) ? '，部分移动有限重试已用尽' : ''}`)
-    const notice = [goal.facts.coverEnded, ...exitNotices].filter(Boolean).join('；')
+    const notice = [goal.facts.coverEnded, goal.facts.crushing?.detail, ...exitNotices].filter(Boolean).join('；')
     if (execution) return { ...execution, ...(notice ? { detail: [notice, execution.detail].filter(Boolean).join('；') } : {}) }
     const currentProgress = activeHandler.progress?.(ctx, view) ?? {}
     const unmet = view.productionPlan?.unmetConditions ?? []
@@ -650,15 +652,16 @@ export class TaskRuntime {
     const program = this.controlProgram(id)
     if (program) {
       if(this.latest)for(const spec of this.activeSpecs(program)) {
-        const motion=this.goals.get(spec.id)!.facts.coverMotion
+        const facts=this.goals.get(spec.id)!.facts, motion=facts.coverMotion
         if(motion?.cohesion?.regroupSince!==undefined)motion.pausedAt??=this.latest.tick
+        if(facts.crushing)facts.crushing.pausedAt=this.latest.time
       }
       if (this.latest) for (const spec of this.activeSpecs(program)) handlerFor(spec).pause?.(this.goalContext(spec, this.latest))
       program.status = 'paused'; program.generation++
-      if (program.owner.kind === 'formation' && this.formations.coverOf(program.owner.formationId) && this.latest) {
-        const snap = this.latest, generation = program.generation, formationId = program.owner.formationId
-        const ids = this.formations.membersOf(formationId).filter(id => snap.self.some(unit => unit.id === id))
-        void this.deps.submit([{ kind: 'stop', unitIds: ids }], snap, () => program.status === 'paused' && program.generation === generation && this.sessionKey === snap.sessionKey && ids.every(id => this.formations.ownerOf(id) === formationId)).catch(error => this.deps.log?.(String(error)))
+      if (this.latest && (program.owner.kind === 'formation' && this.formations.coverOf(program.owner.formationId) || this.activeSpecs(program).some(spec => Object.values(this.goals.get(spec.id)!.facts.crushing?.pairs ?? {}).some(pair => pair.phase === 'crushing')))) {
+        const snap = this.latest, generation = program.generation
+        const ids = [...new Set(this.activeSpecs(program).flatMap(spec => this.goalConstraints(spec, snap).allowedUnitIds))]
+        if (ids.length) void this.deps.submit([{ kind: 'stop', unitIds: ids }], snap, () => program.status === 'paused' && program.generation === generation && this.sessionKey === snap.sessionKey && ids.every(id => this.activeSpecs(program).some(spec => this.goalConstraints(spec, this.latest!).allowedUnitIds.includes(id)))).catch(error => this.deps.log?.(String(error)))
       }
     }
   }
@@ -669,7 +672,8 @@ export class TaskRuntime {
     if (program && (program.script || this.activeSpecs(program).length) && program.status === 'paused') { program.status = 'active'; program.stats.errors = 0; program.generation++ }
     if (program) for (const spec of this.activeSpecs(program)) delete this.goals.get(spec.id)!.facts.nativeError
     if (program) for (const spec of this.activeSpecs(program)) {
-      const motion=this.goals.get(spec.id)!.facts.coverMotion
+      const facts=this.goals.get(spec.id)!.facts, motion=facts.coverMotion
+      if(facts.crushing&&this.latest)facts.crushing.pausedAt=this.latest.time
       if(!motion)continue
       if(motion.pausedAt!==undefined&&this.latest&&motion.cohesion?.regroupSince!==undefined)motion.cohesion.regroupSince+=Math.max(0,this.latest.tick-motion.pausedAt)
       delete motion.pausedAt
@@ -838,7 +842,7 @@ export class TaskRuntime {
         // 在 await 前交棒；当前计算若被新快照抢占，下一轮也不会从它重新开始。
         this.nextProgram = (index + 1) % programs.length
         if (program.status === 'active') {
-          const budget: StepBudget = { remaining: 20, placementAttempts: new Set() }
+          const budget: StepBudget = { remaining: 20, placementAttempts: new Set(), crushingPrepared: new Set() }
           if (this.activeSpecs(program).some(spec => goalExecutionMode(spec) === 'native')) await this.nativeStep(program, snap, budget)
           if (this.latest !== snap) continue
           if (program.status === 'active' && program.script) await this.step(program, snap, budget)
@@ -1131,7 +1135,7 @@ export class TaskRuntime {
         const requests = await this.coverActions(spec, snap) ?? handlerFor(spec).nativeActions!(this.goalContext(spec, snap))
         const actions = requests.slice(0, available).map(request => ({ goalId: spec.id, request }))
         const before = budget.remaining
-        await this.submitActions(program, snap, actions, 'native', valid, budget)
+        await this.submitActions(program, snap, actions, 'native', valid, budget, available, [spec.id])
         available -= before - budget.remaining
       } catch (error) { this.nativeFault(goal, error) }
     }
@@ -1154,7 +1158,7 @@ export class TaskRuntime {
     if (program.owner.kind === 'formation' && this.formations.coverOf(program.owner.formationId) && specs.every(spec => spec.kind === 'combat' || spec.kind === 'attack' && !spec.aircraftIds.length)) {
       for (const spec of specs) {
         const actions = (await this.coverActions(spec, snap) ?? []).map(request => ({ goalId: spec.id, request }))
-        if (!await this.submitActions(program, snap, actions, 'script', valid, budget)) return
+        if (!await this.submitActions(program, snap, actions, 'script', valid, budget, budget.remaining, [spec.id])) return
       }
       return
     }
@@ -1176,30 +1180,105 @@ export class TaskRuntime {
     outcome.actions = liveScriptActions(outcome.actions, frame.constraints, frame.snapshot).filter(item => item?.request?.kind !== 'place' || !budget.placementAttempts.has(item.request.name))
     const outputError = validateScriptActions(outcome.actions, frame.constraints, frame.snapshot)
     if (outputError) { await this.fault(program, outputError, snap); return }
-    if (!await this.submitActions(program, snap, outcome.actions, 'script', valid, budget)) return
+    if (!await this.submitActions(program, snap, outcome.actions, 'script', valid, budget, budget.remaining, specs.map(spec => spec.id))) return
     if (authorized()) { program.memory = outcome.memory; program.stats.errors = 0 }
   }
+  /** 模型仍表达攻击意图；只把本帧合法攻击转换为宿主碾压，不扩大成员和目标范围。 */
+  private prepareCrushing(program: ProgramState, snap: Snapshot, actions: ScriptAction[], mode: 'script' | 'native', budget: StepBudget, goalIds: string[]) {
+    const derived = new Set<ActionRequest>(), replacements = new Map<string, ScriptAction[]>()
+    if (!this.deps.crushing) return { actions, derived }
+    for (const spec of this.activeSpecs(program)) {
+      if ((spec.kind !== 'combat' && spec.kind !== 'attack') || !goalIds.includes(spec.id) || goalExecutionMode(spec) !== mode || budget.crushingPrepared.has(spec.id)) continue
+      const goal = this.goals.get(spec.id)!, incoming = actions.filter(item => item.goalId === spec.id)
+      if (goal.facts.nativeError || !incoming.length && !Object.keys(goal.facts.crushing?.pairs ?? {}).length) continue
+      const frame = this.frame(program, [spec], snap, true), constraints = frame.constraints.goals![spec.id]!
+      if (!constraints.allowedActions?.includes('attack') || goal.facts.retreatTriggered) continue
+      budget.crushingPrepared.add(spec.id)
+      // 非法原始请求留给既有错误处理，不能借转换绕过脚本校验。
+      const valid = incoming.filter((item): item is ScriptAction & { request: ActionRequest } => !['createFormation', 'transferUnits', 'dissolveFormation'].includes(item.request.kind) && !validateScriptActions([item], frame.constraints, frame.snapshot))
+      const state = goal.facts.crushing ??= emptyCrushing(), motion = goal.facts.coverMotion ??= emptyCoverMotion()
+      const ids = constraints.allowedUnitIds, policy = spec.formationId ? this.formations.coverOf(spec.formationId) : undefined
+      const targets = snap.enemies.filter(target => constraints.enemyIds.includes(target.id) || constraints.coverFire?.enemyIds.includes(target.id))
+      const members = snap.self.filter(unit => ids.includes(unit.id)), body = members.filter(unit => !policy?.escortIds.includes(unit.id))
+      const guide = members.find(unit => unit.id === motion.prediction?.guideId) ?? members.slice().sort((a, b) => (a.speed ?? 0) - (b.speed ?? 0) || a.id - b.id)[0]
+      const distance = (a: { rx: number; ry: number }, b: { rx: number; ry: number }) => Math.hypot(a.rx - b.rx, a.ry - b.ry)
+      let following: ActionRequest[] | undefined
+      const claims: CrushPair[] = []
+      for (const other of this.goals.values()) {
+        const owner = this.programs.get(other.ownerId), active = other.activeSpec
+        if (other === goal || !Object.keys(other.facts.crushing?.pairs ?? {}).length || other.status !== 'active' || !active || !owner || owner.status !== 'active' || !owner.activeGoalIds.includes(active.id) || other.facts.nativeError || other.facts.retreatTriggered) continue
+        const scope = this.goalConstraints(active, snap)
+        for (const pair of Object.values(other.facts.crushing?.pairs ?? {})) {
+          const enemy = snap.enemies.find(unit => unit.id === pair.targetId), attacker = snap.self.find(unit => unit.id === pair.unitId)
+          if (pair.phase === 'crushing' && scope.allowedUnitIds.includes(pair.unitId) && attacker && enemy && crushCompatible(attacker, enemy, this.deps.crushing) && (scope.enemyIds.includes(enemy.id) || scope.coverFire?.enemyIds.includes(enemy.id))) claims.push({ ...pair, point: { x: enemy.rx, y: enemy.ry, onBridge: !!enemy.onBridge } })
+        }
+      }
+      const requests = planCrushing({ snap, rules: this.deps.crushing, state, unitIds: ids, targets, requests: valid.map(item => item.request), orders: motion.orders, claims, focus: attackObjective(spec)?.coordination === 'focus',
+        escort: id => !!policy?.escortIds.includes(id),
+        canPursue: (unit, target) => {
+          const escort = !!policy?.escortIds.includes(unit.id)
+          if (!escort && !constraints.enemyIds.includes(target.id)) return false
+          if (!policy) return true
+          if (motion.heldIds.includes(unit.id) || motion.cohesion?.catchingUpIds.includes(unit.id)) return false
+          if (!escort) return unit.id === guide?.id || !!guide && distance(target, guide) <= policy.gap && distance(unit, guide) <= policy.gap * 2
+          const near = body.slice().sort((a, b) => distance(unit, a) - distance(unit, b))[0]
+          const followed = body.some(member => state.pairs[member.id]?.targetId === target.id || valid.some(item => item.request.kind === 'attack' && item.request.unitIds.includes(member.id) && item.request.targetId === target.id) || ['attack', 'crush'].includes(motion.orders[member.id]?.kind ?? '') && motion.orders[member.id]?.targetId === target.id)
+          return !!near && followed && distance(unit, near) <= policy.gap && body.some(member => distance(target, member) <= policy.gap)
+        },
+        follow: unit => {
+          if (!policy) return
+          const destination = targets.slice().sort((a, b) => guide ? distance(guide, a) - distance(guide, b) : a.id - b.id)[0]
+          if (!destination) return
+          following ??= coverMoves(policy, snap, ids, { x: destination.rx, y: destination.ry }, motion, { ...(constraints.region ? { region: constraints.region } : {}), threat: destination }).actions
+          const request = following.find(request => 'unitIds' in request && request.unitIds.includes(unit.id))
+          return request && 'unitIds' in request ? { ...request, unitIds: [unit.id] } : undefined
+        },
+      })
+      for (const request of requests) if (request.kind === 'crush') derived.add(request)
+      const accepted = new Set<ScriptAction>(valid)
+      replacements.set(spec.id, [...requests.map(request => ({ goalId: spec.id, request })), ...incoming.filter(item => !accepted.has(item))])
+    }
+    const emitted = new Set<string>(), result: ScriptAction[] = []
+    for (const item of actions) {
+      const replacement = replacements.get(item.goalId)
+      if (!replacement) result.push(item)
+      else if (!emitted.has(item.goalId)) { result.push(...replacement); emitted.add(item.goalId) }
+    }
+    for (const [id, replacement] of replacements) if (!emitted.has(id)) result.push(...replacement)
+    return { actions: result, derived }
+  }
+
   /** 脚本、固定流程及宿主子步骤共用预算、即时校验、台账和回执。 */
-  private async submitActions(program: ProgramState, snap: Snapshot, actions: ScriptAction[], mode: 'script' | 'native', valid: () => boolean, budget: StepBudget): Promise<boolean> {
+  private async submitActions(program: ProgramState, snap: Snapshot, actions: ScriptAction[], mode: 'script' | 'native', valid: () => boolean, budget: StepBudget, limit = budget.remaining, crushingGoals = actions.map(item => item.goalId)): Promise<boolean> {
+    if (!valid()) return false
+    const prepared = this.prepareCrushing(program, snap, actions, mode, budget, crushingGoals)
+    actions = prepared.actions
+    let remaining = limit
     let deferred = false
     const failure = async (goal: GoalState, error: string) => {
       if (mode === 'native') this.nativeFault(goal, error)
       else await this.fault(program, error, snap)
     }
     for (const item of actions) {
-      if (!valid() || !budget.remaining) return false
+      if (!valid() || !budget.remaining || remaining <= 0) return false
       const goal = this.goals.get(item?.goalId)
       if (item?.request?.kind === 'place' && budget.placementAttempts.has(item.request.name)) continue
       // 单目标取消/完成不使其他目标失效，也不把陈旧引用当作脚本异常。
       if (!goal || goal.ownerId !== program.id || goal.status !== 'active' || !goal.activeSpec || !program.activeGoalIds.includes(item.goalId) || goalExecutionMode(goal.activeSpec) !== mode || goal.facts.nativeError) continue
       const activeSpec = goal.activeSpec
       const fresh = this.frame(program, [activeSpec], snap, true)
+      if (item.request.kind === 'crush' && prepared.derived.has(item.request)) {
+        const constraints = fresh.constraints.goals![item.goalId]!
+        constraints.allowedActions = [...constraints.allowedActions ?? [], 'crush']
+        if (this.deps.crushing) constraints.crushing = this.deps.crushing
+        if (constraints.targetRegion) item.request.targetRegion = constraints.targetRegion
+      }
       const live = liveScriptActions([item], fresh.constraints, fresh.snapshot)[0]
       if (!live) continue
       item.request = live.request
       const error = validateScriptActions([item], fresh.constraints, fresh.snapshot)
       if (error) { await failure(goal, error); return false }
-      budget.remaining--
+      budget.remaining--; remaining--
       const request = item.request
       if (request.kind === 'place') budget.placementAttempts.add(request.name)
       if (request.kind === 'createFormation' || request.kind === 'transferUnits' || request.kind === 'dissolveFormation') {
@@ -1255,13 +1334,19 @@ export class TaskRuntime {
         handler.beforeSubmit?.(this.goalContext(goal.activeSpec, snap), request)
         phase = 'submit'
         const results = await this.deps.submit([request], snap, guard)
+        if (request.kind === 'crush' && !guard()) return false
+        recordCrushing(goal.facts.crushing, request, results, snap)
+        // 让路完成后由碾压协同器按当前敌人和队形重新决策，不旁路重放旧强移。
+        if (request.kind === 'crush' && results.length && results.every(result => result.ok)) for (const unitId of request.unitIds) this.lastUnitOrders.delete(unitId)
         if ('unitIds' in request && ['move', 'attackMove', 'attack', 'guard'].includes(request.kind) && results.length && results.every(result => result.ok)) {
           for (const unitId of request.unitIds) this.lastUnitOrders.set(unitId, { goalId: item.goalId, request: { ...request, unitIds: [unitId] }, owner: program.id, revision: program.revision, generation: program.generation })
         }
+        if (activeSpec.kind === 'combat' || activeSpec.kind === 'attack') goal.facts.coverMotion ??= emptyCoverMotion()
         if (goal.facts.coverMotion) recordCoverOrder(goal.facts.coverMotion, request, snap.tick, results)
         phase = 'receipt'
         if (handler.afterSubmit?.(this.goalContext(goal.activeSpec, snap), request, results)) continue
         if (mode === 'script') this.recovery.trace(program.id, this.recoveryKey(program), snap.tick, { goalId: item.goalId, request, results })
+        if (request.kind === 'crush' && (!results.length || results.some(result => !result.ok))) continue
         if (request.kind === 'place' && results.length && results.every(result => !result.ok && result.submitted === 0 && result.reason === 'building-rally-conflict')) {
           goal.facts.placementBlocked = true
           const location = results[0]!.placement, foundation = this.deps.buildingFoundation?.(request.name)
@@ -1304,6 +1389,7 @@ export class TaskRuntime {
       } catch (err) {
         if (mode === 'script') this.recovery.trace(program.id, this.recoveryKey(program), snap.tick, { goalId: item.goalId, request, error: String(err) })
         if (record) record.state = 'unknown'
+        if (request.kind === 'crush' && guard()) { recordCrushing(goal.facts.crushing, request, [], snap, String(err)); continue }
         if (mode === 'native' && phase !== 'submit') { this.nativeFault(goal, err); return false }
         goal.facts.blocked = `提交结果不确定: ${String(err).slice(0, 120)}`
         return false

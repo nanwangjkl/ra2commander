@@ -1,9 +1,33 @@
 import type { CapabilityCall, PromptLibrary } from '@ra2c/command'
 import { isBaseRegion } from '../base-defense.ts'
+import type { GameCatalog } from '../game-catalog.ts'
 
 const ATTACKS = new Set(['combat.attack', 'combat.attack-all', 'combat.clear-region'])
+
+/** 已识别的目标保留；只有未知名称允许用目录中具体的名称／角色替换。 */
+function repairEnemySelectors(before: string[] | undefined, after: string[] | undefined, prompts: PromptLibrary, catalog?: GameCatalog): string[] | undefined {
+  if (!before?.length) return before
+  const game = prompts.game, entries = catalog?.all ?? game.entries(), normalize = (value: string) => value.normalize('NFKC').replace(/\s+/g, '').toLowerCase()
+  const names = (selector: string) => entries.filter(item => {
+    if (catalog) return catalog.matchesUnit(item, selector)
+    const role = game.roleForAlias(selector)
+    return role ? game.rolesFor(item.name, item.type, item).includes(role) : [item.name, item.label ?? '', ...game.memberAliases(item.name), ...('englishName' in item ? [String(item.englishName)] : [])].some(alias => normalize(alias) === normalize(selector))
+  }).map(item => item.name)
+  const known = (selector: string) => !!game.roleForAlias(selector) || names(selector).length > 0
+  const retained = before.filter(known)
+  if (retained.length === before.length) return before
+  const covered = new Set(retained.flatMap(names))
+  const additions = (after ?? []).filter(selector => {
+    const role = game.roles().find(role => role.id === game.roleForAlias(selector))
+    // 名称修正不能退回“全部建筑／车辆／步兵”等无差别类别。
+    if (role?.match && !role.members.length && !role.match.flags && !role.match.excludeFlags && !role.match.labelIncludes && !role.match.positivePower) return false
+    return known(selector) && names(selector).some(name => !covered.has(name))
+  })
+  return additions.length ? [...new Set([...retained, ...additions])] : before
+}
+
 /** 绑定修正保留攻击范围和掩护职责，不能把失败的战术要求降为普通生产或编队。 */
-export function retainBindingScope(original: unknown, replacement: unknown, prompts: PromptLibrary, text = ''): CapabilityCall {
+export function retainBindingScope(original: unknown, replacement: unknown, prompts: PromptLibrary, text = '', catalog?: GameCatalog): CapabilityCall {
   let previous: CapabilityCall
   try { previous = prompts.capabilities.parse(original) } catch { return prompts.capabilities.parse(replacement) }
   if (previous.capability === 'production.produce') {
@@ -19,12 +43,14 @@ export function retainBindingScope(original: unknown, replacement: unknown, prom
     const corrected=prompts.capabilities.parse(replacement)
     if(corrected.capability!=='combat.hold')throw new Error('基地防守修正必须保留基地分区与原地待命，不能降为普通移动或进攻')
     const {regionName:_region,bounds:_bounds,...params}=previous.params
-    return prompts.capabilities.parse({capability:'combat.hold',params:{...params,defendBase:true,mode:'hold'}})
+    const targetSelectors = repairEnemySelectors(previous.params.targetSelectors, corrected.params.targetSelectors, prompts, catalog)
+    return prompts.capabilities.parse({capability:'combat.hold',params:{...params,...(targetSelectors ? {targetSelectors} : {}),defendBase:true,mode:'hold'}})
   }
   if (previous.capability === 'combat.hold') {
     const corrected = prompts.capabilities.parse(replacement)
     if (corrected.capability !== 'combat.hold') throw new Error('持续守卫修正必须保留监视、敌方兵种和范围，不能改成普通移动或进攻')
-    return prompts.capabilities.parse({ ...corrected, params: { ...corrected.params, ...previous.params } })
+    const targetSelectors = repairEnemySelectors(previous.params.targetSelectors, corrected.params.targetSelectors, prompts, catalog)
+    return prompts.capabilities.parse({ ...corrected, params: { ...corrected.params, ...previous.params, ...(targetSelectors ? { targetSelectors } : {}) } })
   }
   const isCover = (call: CapabilityCall) => call.capability === 'formation.cover' || call.capability === 'skill.run' && prompts.skills.get(call.params.skillId)?.definition.id === 'cover'
   if (isCover(previous)) {
@@ -52,20 +78,22 @@ export function retainBindingScope(original: unknown, replacement: unknown, prom
   if (!ATTACKS.has(corrected.capability)) throw new Error('攻击绑定修正不能改成建队或其他全局操作')
   const before = previous.params as Record<string, unknown>, after = corrected.params as Record<string, unknown>
   const acceptedFields = prompts.capabilities.definitions().find(definition => definition.id === corrected.capability)!.parameters
-  for (const field of ['formationId', 'selector', 'unitIds', 'regionName', 'target', 'targetId', 'targetSelectors', 'targetDomain', 'splitTargets', 'quantity']) {
+  for (const field of ['formationId', 'selector', 'unitIds', 'regionName', 'target', 'targetId', 'targetDomain', 'splitTargets', 'quantity']) {
     if (before[field] === undefined) continue
     if (!(field in acceptedFields)) throw new Error(`修正不能丢弃原攻击的 ${field} 范围`)
     after[field] = before[field]
   }
+  const targetSelectors = repairEnemySelectors(before.targetSelectors as string[] | undefined, after.targetSelectors as string[] | undefined, prompts, catalog)
+  if (targetSelectors) after.targetSelectors = targetSelectors
   return prompts.capabilities.parse(corrected)
 }
 
 /** 掩护修正按整组审核，生产由掩护绑定器按固定份额统一建立，避免先造一份又补造。 */
-export function retainBindingRepairs(original: unknown, replacements: unknown[], prompts: PromptLibrary, text: string): CapabilityCall[] {
+export function retainBindingRepairs(original: unknown, replacements: unknown[], prompts: PromptLibrary, text: string, catalog?: GameCatalog): CapabilityCall[] {
   const previous = prompts.capabilities.parse(original)
   const isCover = (call: CapabilityCall) => call.capability === 'formation.cover' || call.capability === 'skill.run' && call.params.skillId === 'cover'
-  if (!isCover(previous)) return replacements.map(value => retainBindingScope(original, value, prompts, text))
+  if (!isCover(previous)) return replacements.map(value => retainBindingScope(original, value, prompts, text, catalog))
   const parsed = replacements.map(value => prompts.capabilities.parse(value)), covers = parsed.filter(isCover)
   if (covers.length !== 1 || parsed.some(call => !isCover(call) && call.capability !== 'production.produce')) throw new Error('掩护绑定修正必须保留同队掩护，不能改成只生产、普通编队或其他 Skill')
-  return [retainBindingScope(previous, covers[0], prompts, text)]
+  return [retainBindingScope(previous, covers[0], prompts, text, catalog)]
 }

@@ -13,7 +13,7 @@ index 是 failures 中的下标。最多返回8个调用，仅修正失败部分
 
 “飞机”等类别名可通过 catalog.roles 选择具体项目，优先当前可造且适用本国的候选；存在匹配候选时不要返回空 repairs 或将生产改为现有单位攻击。
 
-攻击修正必须保留原 formationId、selector、unitIds、target/targetId、targetSelectors、targetDomain 和 regionName。编队还在创建时等待交接，不能通过删除 formationId 改成全部作战编队。按兵种攻击可用 combat.attack，禁止额外建数字编队或把其他小队带入行动。
+攻击和守卫修正必须保留原 formationId、selector、unitIds、target/targetId、targetDomain 和 regionName，以及 targetSelectors 中已识别的兵种／类别。无法识别的名称可改成目录里的对应原生 ID 或角色，不能为消除报错删掉全部目标选择或扩大成所有建筑／车辆／敌人；其余目标要求继续保留。编队还在创建时等待交接，不能通过删除 formationId 改成全部作战编队。按兵种攻击可用 combat.attack，禁止额外建数字编队或把其他小队带入行动。
 
 掩护修正必须保留同队掩护职责、原来的编队、双方成员、数量和来源，不能改成只生产、普通编队或其他 Skill。明确新造可使用formation.cover或cover Skill的memberSource=new；auto补足差额，existing不擅自生产。本句已接受的生产会被掩护关联，不能重放或仅补造后丢掉掩护角色。没有明确生产要求又没有现有成员时保留未执行。
 

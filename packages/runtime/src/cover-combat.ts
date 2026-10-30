@@ -20,7 +20,7 @@ export function coverRangePairs(policy: CoverPolicy, snap: Snapshot, ids: number
   return [...members.slice(start), ...members.slice(0, start)].flatMap(unit => {
     const byDistance = (a: SnapshotUnit, b: SnapshotUnit) => distance(unit, a) - distance(unit, b) || a.id - b.id
     const escort = policy.escortIds.includes(unit.id)
-    const followed = Object.values(previous.orders).flatMap(order => order.kind === 'attack' ? intent.targets.filter(target => target.id === order.targetId) : [])
+    const followed = Object.values(previous.orders).flatMap(order => order.kind === 'attack' || order.kind === 'crush' ? intent.targets.filter(target => target.id === order.targetId) : [])
     const candidates = escort ? [...intent.threats.filter(airborne).sort(byDistance).slice(0, 2), ...followed.sort(byDistance).slice(0, 1)] : intent.targets.slice().sort(byDistance).slice(0, 3)
     return [...new Set(candidates.map(target => target.id))].map(targetId => ({ unitId: unit.id, targetId }))
   }).slice(0, 64)
@@ -58,7 +58,7 @@ export function coverCombat(policy: CoverPolicy, snap: Snapshot, ids: number[], 
     return !unit.isIdle && snap.tick - old.tick >= 15
   }
   const offer = (unit: SnapshotUnit, request: ActionRequest) => { if (changed(unit, request)) desired.set(unit.id, request) }
-  const stop = (unit: SnapshotUnit) => { if (!unit.isIdle || previous.orders[unit.id]?.kind === 'attack' || previous.orders[unit.id]?.kind === 'move') offer(unit, { kind: 'stop', unitIds: [unit.id] }) }
+  const stop = (unit: SnapshotUnit) => { if (!unit.isIdle || previous.orders[unit.id]?.kind === 'attack' || previous.orders[unit.id]?.kind === 'crush' || previous.orders[unit.id]?.kind === 'move') offer(unit, { kind: 'stop', unitIds: [unit.id] }) }
   const clip = (x: number, y: number) => ({ x: Math.max(intent.region.x1, Math.min(intent.region.x2, Math.round(x))), y: Math.max(intent.region.y1, Math.min(intent.region.y2, Math.round(y))) })
   for(const unit of intent.waiting?[]:cohort.catchingUp) {
     const action=plan.actions.find(action=>'unitIds' in action&&action.unitIds.includes(unit.id))
@@ -89,7 +89,7 @@ export function coverCombat(policy: CoverPolicy, snap: Snapshot, ids: number[], 
       const separation = distance(unit, near)
       const followedIds = new Set(protectedUnits.flatMap(body => {
         const order = previous.orders[body.id]
-        return order?.kind === 'attack' ? [order.targetId!] : []
+        return order?.kind === 'attack' || order?.kind === 'crush' ? [order.targetId!] : []
       }))
       const air = intent.threats.filter(enemy => airborne(enemy) && inRange(unit, enemy)).sort((a, b) => distance(unit, a) - distance(unit, b) || a.id - b.id)[0]
       const support = intent.targets.filter(enemy => followedIds.has(enemy.id) && inRange(unit, enemy)).sort((a, b) => distance(unit, a) - distance(unit, b) || a.id - b.id)[0]

@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import type { BrowserContext, Frame } from 'playwright'
-import { BINDING, type ActionRequest, type ActionResult, type Snapshot, type ActionContext } from '@ra2c/contracts'
+import { BINDING, type ActionRequest, type ActionResult, type Snapshot, type ActionContext, type CrushingRules } from '@ra2c/contracts'
 
 /** 页面内桥状态（window.__ra2cState() 的返回）。 */
 export interface BridgeState {
@@ -21,7 +21,7 @@ export interface BridgeState {
  * install() 必须在打开任何页面之前调用（exposeBinding/addInitScript 是 context 级）。
  */
 /** 桥版本（与 bridge.js 的 BRIDGE_VERSION 保持一致；升级后对已开页面重装）。 */
-const BRIDGE_VERSION = 23
+const BRIDGE_VERSION = 24
 
 export function isGameDocument(url: string, gameUrl: string): boolean {
   try {
@@ -41,10 +41,11 @@ export class WerhdBridge {
     private readonly context: BrowserContext,
     private readonly gameUrl?: string,
     private readonly buildingFoundations: Record<string, { width: number; height: number }> = {},
+    private readonly crushingRules?: CrushingRules,
   ) {}
 
   private async source(): Promise<string> {
-    return this.bridgeSource ??= `window.__ra2cBuildingFoundations = ${JSON.stringify(this.buildingFoundations)};\n${await readFile(new URL('./bridge.js', import.meta.url), 'utf8')}`
+    return this.bridgeSource ??= `window.__ra2cBuildingFoundations = ${JSON.stringify(this.buildingFoundations)};\nwindow.__ra2cCrushingRules = ${JSON.stringify(this.crushingRules ?? { attackers: [], targets: [] })};\n${await readFile(new URL('./bridge.js', import.meta.url), 'utf8')}`
   }
 
   async install(): Promise<void> {
