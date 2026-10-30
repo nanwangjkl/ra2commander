@@ -1,5 +1,6 @@
 import { alive, baseConstraints, blocked, formationExists, projection, world, terminal } from './common.ts'
 import type { GoalContext, GoalHandler } from './types.ts'
+import { emptyUnitOrders, moveOrders } from '../unit-orders.ts'
 
 function progress(ctx: GoalContext<'explore'>, projected: import('@ra2c/contracts').GoalView) {
   const view = projected.exploration
@@ -37,6 +38,12 @@ export const explore: GoalHandler<'explore'> = {
     return projection(ctx, { ...baseConstraints(ctx), allowedUnitIds: unitIds, allowedActions: ['move', 'gather', 'stop'], region: world(ctx, '侦察路径') }, { ...(ctx.exploration.progress.has(ctx.spec.explorationId) ? { exploration: ctx.exploration.view(ctx.spec), ...(!unitIds.length ? { blocked: '等待侦察成员实际交接就绪' } : {}) } : {}), ...blocked(ctx) })
   },
   progress,
+  nativeActions(ctx) {
+    if (ctx.goal.status !== 'active') return []
+    const ready = new Set(members(ctx)), orders = ctx.goal.facts.unitOrders ??= emptyUnitOrders()
+    return ctx.exploration.view(ctx.spec).targets.filter(target => ready.has(target.unitId))
+      .flatMap(target => moveOrders(ctx.snap, [target.unitId], target, orders))
+  },
   stopMembers: members,
   pause(ctx) { ctx.exploration.suspend(ctx.spec.explorationId, ctx.snap.tick) },
 }

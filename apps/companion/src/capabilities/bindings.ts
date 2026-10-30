@@ -16,6 +16,7 @@ import { bindCover } from './cover.ts'
 import { bindFactoryRally } from '../factory-rally.ts'
 import { bindUnitDeployment } from '../unit-deployment.ts'
 import { bindBaseDefense, isBaseRegion } from '../base-defense.ts'
+import { fixedGoalExecutionMode } from '../execution-modes.ts'
 
 export interface BindingContext {
   ctx: CommandContext
@@ -142,12 +143,13 @@ export const bindings: Binders = {
     const existing = selectUnitSet(ctx, { selector: role, quantity: values.quantity }, catalog, context.game, { unassigned: automaticSource }).selected
     const useExisting = values.memberSource === 'existing' || (automaticSource && existing.length > 0)
     const reference = { runId, id: skill.definition.id, version: skill.definition.version, hash: skill.hash, instructions: skill.instructions }
+    const executionMode = fixedGoalExecutionMode('explore')
     let preparation: GoalSpec, choice: string
     const skipped: string[] = []
     if (useExisting) {
       const dogs = existing
       if (!dogs.length) throw new Error('没有现有侦察犬，未追加生产')
-      preparation = { id: id(), kind: 'formation', rawText: context.text, skill: reference, request: { kind: 'createFormation', formationId, unitIds: dogs.map(dog => dog.id), force: dogs.some(dog => !!ctx.formations.ownerOf(dog.id)) } }
+      preparation = { id: id(), kind: 'formation', executionMode, rawText: context.text, skill: reference, request: { kind: 'createFormation', formationId, unitIds: dogs.map(dog => dog.id), force: dogs.some(dog => !!ctx.formations.ownerOf(dog.id)) } }
       choice = `使用现有${dogs.length}条侦察犬建立${formationId}（不新增生产）`
       if (dogs.length < values.quantity) skipped.push(`现有侦察犬仅${dogs.length}条，按可用成员探路，未追加生产`)
     } else {
@@ -159,7 +161,7 @@ export const bindings: Binders = {
     const exploreId = id()
     await prepareExploration(ctx, exploreId, params.regionName, context.check)
     const map = ctx.runtime.exploration.maps.get(ctx.runtime.exploration.progress.get(exploreId)!.mapId)!
-    const explore: GoalSpec = { id: exploreId, kind: 'explore', rawText: context.text, skill: reference, formationId, explorationId: exploreId, preparationGoalId: preparation.id, policy: structuredClone(skill.definition.exploration) }
+    const explore: GoalSpec = { id: exploreId, kind: 'explore', executionMode, rawText: context.text, skill: reference, formationId, explorationId: exploreId, preparationGoalId: preparation.id, policy: structuredClone(skill.definition.exploration) }
     return { goals: [{ goal: preparation, choice }, { goal: explore, choice: `${formationId} 探索${params.regionName ?? '全部分区'}；首名成员交接后开始，每个目标分区实际覆盖达到${Math.round(explore.policy.coverageRatio! * 100)}%完成` }], skipped,
       skillRun: { id: runId, skillId: skill.definition.id, version: skill.definition.version, hash: skill.hash, source: skill.source, promptVersion: prompts.version, gameId: prompts.game.id, commandId: context.commandId, rawText: context.text, sessionKey: ctx.runtime.battleKey, createdAt: Date.now(), ...values, useExisting, formationId, preparationGoalId: preparation.id, exploreGoalId: explore.id, map: { id: map.mapId, schemeId: map.schemeId, schemeVersion: map.schemeVersion, geometryHash: map.id }, status: 'preparing' } }
   },
@@ -167,14 +169,15 @@ export const bindings: Binders = {
     const runs = [...context.ctx.runtime.skillRuns.values()].filter(run => ['preparing', 'exploring', 'repairing', 'covering'].includes(run.status) && (!params.runId || run.id === params.runId) && (!params.skillId || run.skillId === (context.prompts.skills.get(params.skillId)?.definition.id ?? params.skillId)))
     const selected = params.all || params.runId ? runs : runs.slice(-1)
     await Promise.all(selected.map(run => context.ctx.runtime.cancelSkillRun(run.id)))
-    return { choices: [selected.length ? `已取消${selected.length}次 Skill 及其后续步骤，其余目标继续` : '没有正在执行的匹配 Skill'], refreshOwners: selected.some(run => run.kind !== 'cover') ? ['global'] : [], suppressOwners: selected.filter(run => run.kind !== 'cover').map(run => `formation:${run.formationId}`) }
+    const refreshGlobal = selected.some(run => run.kind === 'repair-vehicle' || run.kind !== 'cover' && context.ctx.runtime.goals.get(run.preparationGoalId)?.spec.executionMode !== 'native')
+    return { choices: [selected.length ? `已取消${selected.length}次 Skill 及其后续步骤，其余目标继续` : '没有正在执行的匹配 Skill'], refreshOwners: refreshGlobal ? ['global'] : [], suppressOwners: selected.filter(run => run.kind !== 'cover').map(run => `formation:${run.formationId}`) }
   },
   'map.explore': async (params, context) => {
     const formationId = formationName(context.ctx, params.formationId, false, true), goalId = id()
     await prepareExploration(context.ctx, goalId, params.regionName, context.check)
     const policy = context.prompts.skills.get('scout')!.definition.exploration
     const preparation = [...context.ctx.runtime.goals.values()].reverse().find(goal => !['completed', 'partial', 'failed', 'cancelled'].includes(goal.status) && (goal.spec.kind === 'production' && goal.spec.formationId === formationId || goal.spec.kind === 'formation' && goal.spec.request.kind === 'createFormation' && goal.spec.request.formationId === formationId))
-    return bound({ id: goalId, kind: 'explore', rawText: context.text, formationId, explorationId: goalId, policy, ...(preparation ? { preparationGoalId: preparation.spec.id } : {}) }, `${formationId} 探索${params.regionName ?? '全部分区'}，每个目标分区实际覆盖达到${Math.round(policy.coverageRatio * 100)}%完成（不新增生产）`)
+    return bound({ id: goalId, kind: 'explore', executionMode: fixedGoalExecutionMode('explore'), rawText: context.text, formationId, explorationId: goalId, policy, ...(preparation ? { preparationGoalId: preparation.spec.id } : {}) }, `${formationId} 探索${params.regionName ?? '全部分区'}，每个目标分区实际覆盖达到${Math.round(policy.coverageRatio * 100)}%完成（不新增生产）`)
   },
   'transport.enter': async (params, context) => {
     const snap = context.ctx.runtime.snapshot!

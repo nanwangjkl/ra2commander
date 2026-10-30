@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { compileCommand, loadPrompts, PromptLoader, readPrompts } from '../packages/command/src/index.ts'
-import type { ExploreGoal, SnapshotUnit } from '../packages/contracts/src/index.ts'
+import { goalExecutionMode, type ExploreGoal, type SnapshotUnit } from '../packages/contracts/src/index.ts'
 import { ExplorationStore, persistState, restoreState, type ExplorationMap, FormationRegistry } from '../packages/runtime/src/index.ts'
 import { StepExecutor } from '../packages/js-worker/src/index.ts'
 import { WerhdBridge } from '../packages/game-werhd/src/page-bridge.ts'
@@ -152,7 +152,7 @@ function rectangleCells(x1: number, y1: number, x2: number, y2: number): number[
   return cells
 }
 
-test('三名侦察成员同一步各自下令；优先区域内部，一名停住不耽误另两名绕路', async () => {
+for (const mode of ['script', 'native'] as const) test(`${mode}：三名侦察成员并行分区，一名停住不耽误另两名绕路`, async () => {
   const executor = new StepExecutor()
   try {
     const { runtime, formations, submitted } = await harness(executor)
@@ -162,9 +162,10 @@ test('三名侦察成员同一步各自下令；优先区域内部，一名停�
       { id: 'b', name: '乙区', cells: rectangleCells(45, 20, 60, 35) },
       { id: 'c', name: '丙区', cells: rectangleCells(20, 45, 35, 60) },
     ] }
-    const goal = { ...explore(), policy: { ...policy, pointSpacing: 4, coverageRatio: 0.8, interiorMargin: 2, retryPasses: 1 } }
+    const goal = { ...explore(), executionMode: mode, policy: { ...policy, pointSpacing: 4, coverageRatio: 0.8, interiorMargin: 2, retryPasses: 1 } }
     runtime.exploration.add(scope, goal.id, ['a', 'b', 'c'])
-    activate(runtime, goal, source)
+    if (mode === 'native') runtime.activateNativeGoals(runtime.upsertGoal(goal))
+    else activate(runtime, goal, source)
     await runtime.onSnapshot(snapshot({ seq: 2, tick: 30 }))
     const moves = submitted.filter(action => action.kind === 'move')
     assert.deepEqual(new Set(moves.flatMap(action => action.unitIds)), new Set([1, 2, 3]))
@@ -290,7 +291,7 @@ async function fixture(existing = false) {
   const ctx = { runtime, formations, controller, mapRegions: new MapRegionIndex(scheme), mapSessionKey: runtime.battleKey, bridge: {} } as unknown as CommandContext
   const run = (params: Record<string, unknown> = {}) => executeCapabilities([{ capability: 'skill.run', params: { skillId: 'scout', ...params } }], ctx, { text: '探路', prompts, catalog, commandId: 'test-command' })
   const tick = (self = runtime.snapshot!.self) => runtime.onSnapshot({ ...runtime.snapshot!, self, tick: runtime.snapshot!.tick + 15, seq: runtime.snapshot!.seq + 1 })
-  return { executor, runtime, formations, submitted, ctx, run, tick, dog, generations: () => generations }
+  return { executor, runtime, formations, submitted, ctx, run, tick, dog, prompts, catalog, generations: () => generations }
 }
 
 test('探路展开固定生产与独立编队；首条狗交接后即可出发，同局恢复不重复下单', async () => {
@@ -302,7 +303,9 @@ test('探路展开固定生产与独立编队；首条狗交接后即可出发�
     assert.ok(run.kind !== 'repair-vehicle' && run.kind !== 'cover')
     assert.equal(run.quantity, 3)
     assert.equal(run.commandId, 'test-command')
-    assert.equal(f.generations(), 2) // 全局与该队各一次，不逐分区请求模型。
+    assert.equal(f.generations(), 1, '只生成全局生产代码，侦察队不再请求模型')
+    assert.equal(f.runtime.goals.get(run.exploreGoalId)!.spec.executionMode, 'native')
+    assert.equal(f.runtime.programs.get(`formation:${run.formationId}`)!.script, undefined)
     await f.tick()
     assert.deepEqual(f.submitted.filter(action => action.kind === 'produce'), [{ kind: 'produce', name: 'ADOG', quantity: 3 }])
     await f.tick([...f.runtime.snapshot!.self, f.dog(100)])
@@ -356,17 +359,91 @@ test('普通探路优先现有未编队狗，明确新造才新增；中心策�
     const run = [...f.runtime.skillRuns.values()][0]!
     assert.ok(run.kind !== 'repair-vehicle' && run.kind !== 'cover')
     assert.equal(run.useExisting, true)
+    assert.equal(f.generations(), 0, '使用现有犬时，编队和探索均不生成代码')
     const goal = f.runtime.goals.get(run.exploreGoalId)!.spec as ExploreGoal
     assert.equal(goal.policy.coverageRatio, 0.6)
     assert.equal(goal.policy.centerFirst, true)
     await f.tick(); await f.tick()
     assert.deepEqual(f.formations.membersOf(run.formationId), [11, 12])
     assert.ok(f.submitted.every(action => action.kind !== 'produce'))
+    const continued = await executeCapabilities([{ capability: 'map.explore', params: { formationId: run.formationId, regionName: '测试区' } }], f.ctx,
+      { text: '让侦察队探索测试区', prompts: f.prompts, catalog: f.catalog })
+    assert.deepEqual(continued.skipped, [])
+    assert.equal(continued.goals[0]!.executionMode, 'native')
+    assert.equal(f.generations(), 0, '现有编队 map.explore 同样直接本机执行')
     await f.run({ useExisting: false })
     const fresh = [...f.runtime.skillRuns.values()].at(-1)!
     assert.ok(fresh.kind !== 'repair-vehicle' && fresh.kind !== 'cover')
     assert.equal(f.runtime.goals.get(fresh.preparationGoalId)!.spec.kind, 'production')
   } finally { await f.executor.dispose() }
+})
+
+test('本机探索只确认成功的移动回执，暂停及同局恢复保留落点，真实揭开后才完成', async () => {
+  const actions: import('../packages/contracts/src/index.ts').ActionRequest[] = []
+  let rejectFirst = true
+  const neverRun = { run: async () => { throw new Error('本机探索不应运行 QuickJS') } }
+  const h = await harness(neverRun, { submit: async (requests, snap, guard) => {
+    if (!guard()) return []
+    actions.push(...requests)
+    if (rejectFirst) { rejectFirst = false; return [] }
+    return requests.map(() => ({ ok: true, submitted: 1, session: snap.session }))
+  } })
+  h.formations.transfer([2, 3], 'A')
+  const goal: ExploreGoal = { ...explore(), executionMode: 'native', policy: { ...policy, stallTicks: 600 } }
+  h.runtime.exploration.add(map(), goal.id, ['left', 'right'])
+  h.runtime.activateNativeGoals(h.runtime.upsertGoal(goal))
+  await h.runtime.onSnapshot(snapshot({ seq: 2, tick: 30 }))
+  assert.deepEqual(h.runtime.goals.get(goal.id)!.facts.unitOrders!.orders, {}, '空回执不算移动已下达')
+  await h.runtime.onSnapshot(snapshot({ seq: 3, tick: 45 }))
+  const facts = h.runtime.goals.get(goal.id)!.facts
+  assert.deepEqual(Object.keys(facts.unitOrders!.orders), ['1', '2', '3'])
+  const count = actions.length
+  await h.runtime.onSnapshot(snapshot({ seq: 4, tick: 60 }))
+  assert.equal(actions.length, count, '相同落点不逐步重复下令')
+  h.runtime.pause('formation:A')
+  await h.runtime.onSnapshot(snapshot({ seq: 5, tick: 3000 }))
+  const saved = persistState(h.runtime), restored = await harness(neverRun, { formations: new FormationRegistry() })
+  await restored.runtime.onSnapshot(h.runtime.snapshot!)
+  restoreState(restored.runtime, saved)
+  assert.deepEqual(restored.runtime.exploration.progress.get(goal.id)!.targets, h.runtime.exploration.progress.get(goal.id)!.targets)
+  restored.runtime.resume('formation:A')
+  await restored.runtime.onSnapshot(snapshot({ seq: 6, tick: 3015 }))
+  assert.deepEqual(restored.runtime.exploration.progress.get(goal.id)!.stalls, {}, '暂停时间不计入受阻时长')
+  const current = restored.runtime.exploration.view(goal).targets
+  await restored.runtime.onSnapshot(snapshot({ seq: 7, tick: 3030, self: current.map(t => ({ ...snapshot().self[0]!, id: t.unitId, rx: t.x, ry: t.y })) }))
+  assert.equal(restored.runtime.goals.get(goal.id)!.status, 'active', '实际抵达落点仍不等于揭开地图')
+  restored.runtime.exploration.observe(map().id, { seen: map().regions.flatMap(r => r.cells), impassable: [] })
+  await restored.runtime.onSnapshot({ ...restored.runtime.snapshot!, seq: 8, tick: 3045 })
+  assert.equal(restored.runtime.goals.get(goal.id)!.status, 'completed')
+  assert.ok(restored.submitted.some(action => action.kind === 'stop'), '完成后结束成员的旧移动')
+})
+
+test('显式脚本回退保留原入口，无执行方式标记的旧探索恢复后继续原脚本', async () => {
+  const previous = process.env.RA2C_SCOUT_EXECUTOR
+  process.env.RA2C_SCOUT_EXECUTOR = 'script'
+  const f = await fixture(true)
+  try {
+    await f.run({ memberSource: 'existing' }); await f.tick(); await f.tick()
+    assert.equal(f.generations(), 2)
+    const run = [...f.runtime.skillRuns.values()][0]!
+    assert.ok(run.kind !== 'repair-vehicle' && run.kind !== 'cover')
+    const saved = persistState(f.runtime)
+    for (const [, goal] of saved.goals) { delete goal.spec.executionMode; if (goal.activeSpec) delete goal.activeSpec.executionMode }
+    if (previous === undefined) delete process.env.RA2C_SCOUT_EXECUTOR
+    else process.env.RA2C_SCOUT_EXECUTOR = previous
+    const restored = await harness(f.executor, { formations: new FormationRegistry() })
+    await restored.runtime.onSnapshot(f.runtime.snapshot!); restoreState(restored.runtime, saved)
+    const goal = restored.runtime.goals.get(run.exploreGoalId)!
+    assert.equal(goalExecutionMode(goal.spec), 'script')
+    assert.ok(restored.runtime.programs.get(goal.ownerId)!.script)
+    await restored.runtime.onSnapshot({ ...f.runtime.snapshot!, seq: f.runtime.snapshot!.seq + 1, tick: f.runtime.snapshot!.tick + 15 })
+    assert.ok(restored.submitted.some(action => action.kind === 'move'))
+    assert.deepEqual(restored.runtime.exploration.progress.get(run.exploreGoalId)!.targets, f.runtime.exploration.progress.get(run.exploreGoalId)!.targets)
+  } finally {
+    if (previous === undefined) delete process.env.RA2C_SCOUT_EXECUTOR
+    else process.env.RA2C_SCOUT_EXECUTOR = previous
+    await f.executor.dispose()
+  }
 })
 
 test('使用现有狗不生产，数量可覆盖；取消只结束自身目标，改令后旧 Skill 不再接管', async () => {
@@ -382,7 +459,8 @@ test('使用现有狗不生产，数量可覆盖；取消只结束自身目标�
     assert.ok(f.submitted.every(action => action.kind !== 'produce'))
     const other = production({ id: 'unrelated' })
     activate(f.runtime, other, code)
-    await f.runtime.cancelSkillRun(first.id)
+    await executeCapabilities([{ capability: 'skill.cancel', params: { skillId: 'scout' } }], f.ctx, { text: '取消探路', prompts: f.prompts, catalog: f.catalog })
+    assert.equal(f.generations(), 0, '取消本机准备的探路不重编无关的全局生产脚本')
     assert.equal(f.runtime.goals.get(first.exploreGoalId)!.status, 'cancelled')
     assert.equal(f.runtime.goals.get(other.id)!.status, 'active')
     await f.run({ quantity: 5 })

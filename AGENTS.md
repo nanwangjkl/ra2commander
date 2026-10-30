@@ -91,6 +91,7 @@ RTS 优先快速反应。能理解行动目标时，Agent 应结合当前战况�
 - 游戏资源默认 `~/Downloads/full-pack.7z`，导入一次后保存在 `.runtime/profile`。
 - 环境覆盖：`RA2C_GAME_DIR`、`RA2C_PACK`、`RA2C_PORT`、`RA2C_PROFILE`。
 - 建筑操作、采矿、搬迁默认本机执行；分别设置 `RA2C_BUILDING_EXECUTOR=script`、`RA2C_MINING_EXECUTOR=script`、`RA2C_RELOCATION_EXECUTOR=script` 后运行 `pnpm companion` 可回退对应能力，保留目标 ID 和实际进度并生成脚本接管。默认模式不迁移无标记的旧脚本目标。
+- 探路 `scout@1.4.0` 默认由本机按既有探索落点并行发令；现有犬编队也本机执行，新造犬生产保留原脚本。`RA2C_SCOUT_EXECUTOR=script pnpm companion` 可回退探索发令，旧无标记探索不自动迁移。用户已于 2026-10-30 验收探路本机化并要求提交推送；下一项为维修车本机化，生产协调留待后续评估，二者尚未迁移。
 
 ```sh
 pnpm install

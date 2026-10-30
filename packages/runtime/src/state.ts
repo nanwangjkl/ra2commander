@@ -42,7 +42,7 @@ export interface GoalFactKeys {
   attack: 'unitOrders' | 'attack' | 'coverMotion' | 'coverEnded' | 'coverReleasedIds' | 'crushing'
   building: 'building'
   unitDeploy: 'unitDeployment'
-  explore: never
+  explore: 'unitOrders'
   deploy: never
   formation: never
   reinforce: never
