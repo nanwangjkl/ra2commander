@@ -1,4 +1,5 @@
 import { mountCommandPanel } from './command-panel.js'
+import { mountSidebarTabs } from './sidebar-tabs.js'
 
 const html = document.documentElement
 const game = document.querySelector<HTMLIFrameElement>('#ra2c-game')!
@@ -128,4 +129,5 @@ async function updateConnection() {
 }
 void updateConnection()
 
+mountSidebarTabs()
 mountCommandPanel()

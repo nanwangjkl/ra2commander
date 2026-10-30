@@ -16,19 +16,32 @@
         </div>
         <div id="resize-sidebar" role="separator" aria-label="调整侧栏宽度" aria-orientation="vertical" aria-controls="sidebar" tabindex="0"></div>
         <header class="sidebar-heading">
-          <div class="eyebrow">RA2 COMMANDER</div><h1>指挥记录</h1>
+          <h1>RA2 Commander</h1>
           <p id="notice" role="status" hidden></p>
         </header>
-        <aside id="sidebar" aria-label="指挥记录">
-          <div id="command-cards" class="command-cards" aria-live="polite" hidden></div>
-          <div class="empty-state" id="empty-state"><span class="empty-symbol" aria-hidden="true">≡</span><h2>暂无命令记录</h2><p>在这里查看指令、理解与执行反馈。</p></div>
-          <footer class="composer">
-            <form id="say-form">
-              <input id="say-input" type="text" autocomplete="off" placeholder="输入指挥命令，回车提交" aria-label="指挥命令" />
-              <button id="say-submit" type="submit">下令</button>
-            </form>
-            <p class="composer-hint" hidden><span class="dot muted"></span><span id="events-status" role="status"></span></p>
-          </footer>
+        <aside id="sidebar" aria-label="指挥面板">
+          <nav class="sidebar-tabs" role="tablist" aria-label="功能页" aria-orientation="horizontal">
+            <button id="tab-commands" type="button" role="tab" aria-selected="true" aria-controls="page-commands" data-page="commands">指挥记录</button>
+            <button id="tab-history" type="button" role="tab" aria-selected="false" aria-controls="page-history" data-page="history" tabindex="-1">历史对战</button>
+            <button id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="page-settings" data-page="settings" tabindex="-1">设置</button>
+          </nav>
+          <section id="page-commands" class="sidebar-page" role="tabpanel" aria-labelledby="tab-commands">
+            <div id="command-cards" class="command-cards" aria-live="polite" hidden></div>
+            <div class="empty-state" id="empty-state"><span class="empty-symbol" aria-hidden="true">≡</span><h2>暂无命令记录</h2><p>在这里查看指令、理解与执行反馈。</p></div>
+            <footer class="composer">
+              <form id="say-form">
+                <input id="say-input" type="text" autocomplete="off" placeholder="输入指挥命令，回车提交" aria-label="指挥命令" />
+                <button id="say-submit" type="submit">下令</button>
+              </form>
+              <p class="composer-hint" hidden><span class="dot muted"></span><span id="events-status" role="status"></span></p>
+            </footer>
+          </section>
+          <section id="page-history" class="sidebar-page" role="tabpanel" aria-labelledby="tab-history" tabindex="0" hidden>
+            <div class="page-placeholder"><p>历史对战页面待完善</p></div>
+          </section>
+          <section id="page-settings" class="sidebar-page" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden>
+            <div class="page-placeholder"><p>设置页面待完善</p></div>
+          </section>
         </aside>
         <footer class="status-bar" aria-label="工作台状态">
           <div class="connection" role="status"><span id="connection-dot" class="dot"></span><span id="connection-text">正在连接</span></div>
