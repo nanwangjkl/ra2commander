@@ -3,20 +3,20 @@ import type { CapabilityCall, ResolvedCapabilityParameters } from '@ra2c/command
 import type { CombatGoal } from '@ra2c/contracts'
 import type { BindingContext, BoundCapability } from './capabilities/bindings.ts'
 import { formationAlias, formationName, fullMap, normalizeName } from './capabilities/selectors.ts'
+import type { CommandIntent } from './command-intent.ts'
 import { bindDefaultMap } from './map-binding.ts'
 
 export const isBaseRegion = (value = '') => /^(?:我方|己方)?(?:基地|基地车|建造厂)(?:附近|周围|所在区域|所在分区)?$/.test(value.replace(/\s+/g, ''))
 
-export function normalizeBaseDefense(text:string,calls:CapabilityCall[]):CapabilityCall[] {
-  const clauses=normalizeName(text).split(/[，,。；;\n]/).filter(clause=>/(?:防守|守卫|保卫|守住|防御).{0,6}(?:基地|建造厂)/.test(clause))
+export function normalizeBaseDefense(intent:CommandIntent,calls:CapabilityCall[]):CapabilityCall[] {
+  const clauses=intent.clauses.filter(clause=>/(?:防守|守卫|保卫|守住|防御).{0,6}(?:基地|建造厂)/.test(clause.text))
   for(const clause of clauses) {
-    const named=clause.match(/([\d一二三四五六七八九十两]+)队/)
-    const formations=named?[formationAlias(`${named[1]}队`)]:[...new Set(calls.flatMap(call=>'formationId' in call.params&&call.params.formationId&&call.capability.startsWith('combat.')?[formationAlias(call.params.formationId)]:[]))]
+    const formations=clause.formationId?[clause.formationId]:[...new Set(calls.flatMap(call=>'formationId' in call.params&&call.params.formationId&&call.capability.startsWith('combat.')?[formationAlias(call.params.formationId)]:[]))]
     for(const formationId of formations) {
       let inserted=false
       calls=calls.flatMap(call=>{
         if(!('formationId' in call.params)||!call.params.formationId||formationAlias(call.params.formationId)!==formationId)return [call]
-        if(call.capability==='formation.assign'&&!/编入|编到|组成|建队|归入|加入/.test(text))return []
+        if(call.capability==='formation.assign'&&!/编入|编到|组成|建队|归入|加入/.test(intent.raw))return []
         if(!['combat.hold','combat.move','combat.attack','combat.attack-all','combat.clear-region'].includes(call.capability))return [call]
         if(inserted)return []
         inserted=true

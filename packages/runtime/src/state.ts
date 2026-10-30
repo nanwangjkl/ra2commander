@@ -14,6 +14,7 @@ export interface CommonGoalFacts {
 /** 保持 v4 字段兼容，按目标类型列明进度归属。 */
 export interface GoalProgress {
   routeIndex?: number
+  unitOrders?: import('./unit-orders.ts').UnitOrderState
   coverMotion?: import('./cover.ts').CoverMotion
   coverEnded?: string
   /** 解除掩护后继续原攻击的原掩护成员；不扩大到其他编队或后来无关产物。 */
@@ -33,12 +34,12 @@ export interface GoalProgress {
   crushing?: import('./crushing.ts').CrushingState
 }
 export interface GoalFactKeys {
-  combat: 'routeIndex' | 'coverMotion' | 'coverEnded' | 'baseDefense' | 'crushing'
+  combat: 'unitOrders' | 'routeIndex' | 'coverMotion' | 'coverEnded' | 'baseDefense' | 'crushing'
   production: 'completedQuantity' | 'placementBlocked' | 'rallyBlocked' | 'cancelProduction'
   repair: 'repair'
   relocate: 'relocation'
   mining: 'mining'
-  attack: 'attack' | 'coverMotion' | 'coverEnded' | 'coverReleasedIds' | 'crushing'
+  attack: 'unitOrders' | 'attack' | 'coverMotion' | 'coverEnded' | 'coverReleasedIds' | 'crushing'
   building: 'building'
   unitDeploy: 'unitDeployment'
   explore: never
@@ -105,3 +106,6 @@ export interface Handoff {
   owners: Array<[number, string | null]>
 }
 export const emptyFacts = (): GoalFacts => ({ initialized: false, members: [], lossRatio: 0, retreatTriggered: false })
+
+/** 同轮本机与脚本共用的临时预算，不写入检查点。 */
+export interface StepBudget { remaining: number; placementAttempts: Set<string>; crushingPrepared: Set<string> }

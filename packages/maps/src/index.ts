@@ -58,6 +58,7 @@ function check(ok: unknown, message: string): asserts ok { if (!ok) throw new Er
 function nonempty(value: unknown): value is string { return typeof value === 'string' && value.trim().length > 0 }
 function finite(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value) }
 function normalize(value: string) { return value.normalize('NFKC').trim() }
+function directionName(value: string) { return normalize(value).replace(/([上下左右])(?:方|侧|边|面)$/, '$1') }
 function tuple(value: unknown, count: number, path: string): asserts value is number[] {
   check(Array.isArray(value) && value.length === count && value.every(finite), `${path} 必须包含 ${count} 个有限数值`)
 }
@@ -171,12 +172,17 @@ function contains(point: MapPoint, polygon: MapPolygon) {
 export class MapRegionIndex {
   readonly scheme: RegionScheme
   private readonly names = new Map<string, MapRegion>()
+  private readonly directions = new Map<string, MapRegion | null>()
   private readonly polygons: Array<{ region: MapRegion; polygon: MapPolygon; minX: number; minY: number; maxX: number; maxY: number }> = []
 
   constructor(value: unknown) {
     this.scheme = parseRegionScheme(value)
     for (const region of this.scheme.regions) {
-      for (const name of [region.id, region.name, ...region.aliases]) this.names.set(normalize(name), region)
+      for (const name of [region.id, region.name, ...region.aliases]) {
+        this.names.set(normalize(name), region)
+        const key = directionName(name), previous = this.directions.get(key)
+        this.directions.set(key, previous === undefined || previous?.id === region.id ? region : null)
+      }
       for (const polygon of region.polygons) {
         const xs = polygon.outer.map(p => p[0]), ys = polygon.outer.map(p => p[1])
         this.polygons.push({ region, polygon, minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) })
@@ -185,7 +191,18 @@ export class MapRegionIndex {
     for (const region of this.scheme.regions) check(this.regionsAt(...region.labelPosition).some(r => r.id === region.id), `${region.name} 标签不在本区域内`)
   }
 
-  resolve(name: string): MapRegion | undefined { return this.names.get(normalize(name)) }
+  resolve(name: string): MapRegion | undefined { return this.names.get(normalize(name)) ?? this.directions.get(directionName(name)) ?? undefined }
+
+  /** 原话解析复用查询别名；精确命名优先，有歧义的方位别名不自动选区。 */
+  resolveMention(text: string): MapRegion | undefined {
+    const input = normalize(text).replace(/\s+/g, '')
+    const names = this.scheme.regions.flatMap(region => [region.name, ...region.aliases].flatMap(name => {
+      const base = directionName(name)
+      const variants = /[上下左右]$/.test(base) ? [name, base, ...['方', '侧', '边', '面'].map(suffix => base + suffix)] : [name]
+      return variants.filter(value => this.resolve(value)?.id === region.id).map(value => ({ name: value.replace(/\s+/g, ''), region }))
+    })).sort((a, b) => b.name.length - a.name.length)
+    return names.find(item => input.includes(item.name))?.region
+  }
 
   regionsAt(rx: number, ry: number): MapRegion[] {
     if (!Number.isFinite(rx) || !Number.isFinite(ry)) return []

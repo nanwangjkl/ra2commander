@@ -1,6 +1,7 @@
 import { loadPrompts, type GameProfile, type RuleFacts } from '@ra2c/command'
 import type { Snapshot, SnapshotUnit } from '@ra2c/contracts'
 import type { CommandContext } from './commands.ts'
+import { attackVerb, catalogName, commandClauses } from './command-text.ts'
 import { createRuleLookup } from './game-rules.ts'
 
 export interface CatalogItem extends RuleFacts {
@@ -14,7 +15,7 @@ export interface CatalogItem extends RuleFacts {
   factions: string[]; roles: string[]; aliases: string[]
   limitation?: string | undefined; techLevel?: number | undefined
 }
-const normalized = (value: string) => value.normalize('NFKC').replace(/\s+/g, '').toLowerCase()
+const normalized = catalogName
 
 interface CatalogQuery { name: string; role: string | undefined; roleType: number | undefined; matches: CatalogItem[]; names: Set<string> }
 
@@ -76,8 +77,8 @@ export class GameCatalog {
   }
   forTranscript(text: string) {
     const input = normalized(text)
-    const targets = input.split(/[，,。；;\n]/).flatMap(clause => {
-      const verb = clause.match(/攻击|进攻|摧毁|消灭|清理|清除|扫清|轰炸|监视|警戒|盯住/)
+    const targets = commandClauses(input).flatMap(clause => {
+      const verb = attackVerb(clause)
       return verb ? [clause.slice(verb.index! + verb[0].length)] : []
     })
     const corrections = this.profile.attackAliases().filter(item => targets.some(target => target.includes(normalized(item.alias))))

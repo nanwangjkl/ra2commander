@@ -1,5 +1,5 @@
 import { canAttackTarget, crushCompatible, type ActionRequest, type ActionResult, type CrushingRules, type Snapshot, type SnapshotUnit } from '@ra2c/contracts'
-import type { CoverMotion } from './cover.ts'
+import type { UnitOrderState } from './unit-orders.ts'
 import { directAttackOrders } from './attack-orders.ts'
 
 type Point = { x: number; y: number; onBridge: boolean }
@@ -18,7 +18,7 @@ export const crushCell = (p: Point) => `${p.x},${p.y},${Number(p.onBridge)}`
 interface Input {
   snap: Snapshot; rules: CrushingRules | undefined; state: CrushingState
   unitIds: readonly number[]; targets: readonly SnapshotUnit[]; requests: ActionRequest[]
-  orders: CoverMotion['orders']; claims: readonly CrushPair[]
+  orders: UnitOrderState['orders']; claims: readonly CrushPair[]
   focus?: boolean
   escort(id: number): boolean
   canPursue(unit: SnapshotUnit, target: SnapshotUnit): boolean
@@ -117,7 +117,7 @@ export function planCrushing(input: Input): ActionRequest[] {
   }
   // 未分到接触点的车辆继续打其他合法敌人，不能因一个步兵占用了主目标就整队停车。
   const canFire = (unit: SnapshotUnit, target: SnapshotUnit) => !claimedIds.has(target.id) && !crushCompatible(unit, target, rules) && input.canPursue(unit, target)
-  const fireMotion: CoverMotion = { heldIds: [], orders, ...(state.fireTargetId !== undefined ? { focusTargetId: state.fireTargetId } : {}) }
+  const fireMotion: UnitOrderState = { orders, ...(state.fireTargetId !== undefined ? { focusTargetId: state.fireTargetId } : {}) }
   const fire = directAttackOrders(snap, spare.map(unit => unit.id), targets, fireMotion, input.focus, canFire)
   if (fireMotion.focusTargetId !== undefined) state.fireTargetId = fireMotion.focusTargetId
   else delete state.fireTargetId

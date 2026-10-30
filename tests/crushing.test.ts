@@ -4,7 +4,7 @@ import { loadPrompts } from '../packages/command/src/index.ts'
 import { crushCompatible, type ActionRequest, type CombatGoal, type Snapshot, type SnapshotUnit, type TargetRegion } from '../packages/contracts/src/index.ts'
 import { FormationRegistry, persistState, restoreState, type RuntimeDeps } from '../packages/runtime/src/index.ts'
 import { emptyCrushing, planCrushing, recordCrushing } from '../packages/runtime/src/crushing.ts'
-import { emptyCoverMotion, recordCoverOrder } from '../packages/runtime/src/cover.ts'
+import { emptyUnitOrders, recordUnitOrder } from '../packages/runtime/src/unit-orders.ts'
 import { activate, deferred, harness, outcome, snapshot, spec } from './helpers.ts'
 
 const rules = loadPrompts().game.crushing()!
@@ -133,11 +133,11 @@ test('碾压受阻有限重试，回退火力跨同局恢复保留；目标确�
 })
 
 test('正常移动不误判受阻；停滞才有限重试，脚本空动作仍持续追踪已确认目标', () => {
-  const state = emptyCrushing(), orders = emptyCoverMotion()
+  const state = emptyCrushing(), orders = emptyUnitOrders()
   let snap = snapshot({ self: [unit(1)], enemies: [enemy()] })
   const next = (requests: ActionRequest[] = []) => {
     const actions = planCrushing({ snap, rules, state, unitIds: [1], targets: snap.enemies, requests, orders: orders.orders, claims: [], escort: () => false, canPursue: () => true, follow: () => undefined })
-    for (const request of actions) { const result = [{ ok: true, submitted: 1, session: snap.session }]; recordCrushing(state, request, result, snap); recordCoverOrder(orders, request, snap.tick, result) }
+    for (const request of actions) { const result = [{ ok: true, submitted: 1, session: snap.session }]; recordCrushing(state, request, result, snap); recordUnitOrder(orders, request, snap.tick, result) }
     return actions
   }
   next([{ kind: 'attack', unitIds: [1], targetId: 101 }])

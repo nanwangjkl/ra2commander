@@ -61,7 +61,7 @@ export function movementArrival(ctx: GoalContext) {
   let arrival = assessArrival(snap.self.filter(unit => ids.has(unit.id)), destination, id => ctx.locked(id))
   const cover = spec.kind === 'combat' ? formations.coverOf(spec.formationId) : undefined
   if (cover) {
-    const cohort=coverCohort(coverMembers(cover,snap,[...ids]).members,cover,snap.tick,facts.coverMotion?.cohesion)
+    const cohort=coverCohort(coverMembers(cover,snap,[...ids]).members,cover,snap.tick,facts.coverMotion?.cohesion,facts.coverMotion?.prediction)
     const { members, slowest, protectedUnits, escorts } = coverMembers(cover, snap, cohort.core.map(unit=>unit.id))
     arrival=assessArrival(members,destination,id=>ctx.locked(id))
     const remaining = members.map(unit => Math.hypot(unit.rx - destination.x, unit.ry - destination.y))

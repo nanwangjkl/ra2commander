@@ -10,10 +10,46 @@ import { CommandLog } from '../apps/companion/src/command-log.ts'
 import type { CommandContext } from '../apps/companion/src/commands.ts'
 import { inTargetRegion, validateActions, liveScriptActions, type TargetRegion } from '../packages/contracts/src/index.ts'
 import { activate, harness, snapshot, spec } from './helpers.ts'
+import { normalizeOperations } from '../apps/companion/src/transcript-plan.ts'
+import { loadPrompts, type CapabilityCall } from '../packages/command/src/index.ts'
+import { loadIceMap } from '../apps/companion/src/map-binding.ts'
+import { retainBindingScope } from '../apps/companion/src/capabilities/binding-recovery.ts'
 
 const reply = (text: string) => ({ text, model: 'fixture', durationMs: 0 })
 const formationCode = `function step(s,m){const actions=[];for(const g of s.control.goals)if(g.spec.kind==='formation')actions.push({goalId:g.spec.id,request:{...g.spec.request,unitIds:g.unitIds}});return {actions,memory:m}}`
 const rules = async (name: string, type: number) => name === 'MTNK' && type === 7 ? { label: 'Grizzly Battle Tank', prerequisite: [] } : undefined
+
+test('复合命令统一校正地域、空地和移动攻击合并，重复校正不串队或改变独立生产', async () => {
+  const { regions } = await loadIceMap()
+  const calls: CapabilityCall[] = [
+    { capability: 'combat.move', params: { formationId: '1队', regionName: '三楼右下' } },
+    { capability: 'combat.attack', params: { formationId: '1队', selector: 'tanks', quantity: 5, target: 'units', targetSelectors: ['E1'] } },
+    { capability: 'combat.hold', params: { formationId: '2队', regionName: '三楼右下', targetSelectors: ['JUMPJET'] } },
+    { capability: 'production.produce', params: { target: 'GAPOWR', quantity: 1 } },
+  ]
+  const text = '1队去三楼右下攻击地面敌方步兵，2队监视一楼的空中敌人，造一座电厂'
+  const normalized = normalizeOperations(text, structuredClone(calls), regions)
+  assert.deepEqual(normalized.map(call => call.capability), ['combat.attack', 'combat.hold', 'production.produce'])
+  assert.deepEqual(normalized[0], { ...calls[1], params: { ...calls[1]!.params, regionName: '三楼右下', targetDomain: 'ground' } })
+  assert.deepEqual(normalized[1], { ...calls[2], params: { ...calls[2]!.params, regionName: '一楼', targetDomain: 'air', mode: 'hold' } })
+  assert.deepEqual(normalized[2], calls[3])
+  assert.deepEqual(normalizeOperations(text, structuredClone(normalized), regions), normalized)
+  const attack = normalizeOperations('1队攻击3楼右侧所有敌人', [{ capability: 'combat.attack', params: { formationId: '1队', target: 'enemies' } }], regions)
+  assert.equal(attack[0]!.capability === 'combat.attack' && attack[0]!.params.regionName, '三楼右方', '原话的别名分区不能因模型漏填而丢失')
+})
+
+test('同句泛称防空车与明确 IFV 分属两队，首次校正和绑定修正使用相同分句事实', () => {
+  const prompts = loadPrompts(), text = '造一个防空车掩护1队，造一个IFV掩护2队'
+  const calls: CapabilityCall[] = [1, 2].map(id => ({ capability: 'formation.cover', params: { formationId: `${id}队`, selector: 'infantryFightingVehicle', quantity: 1, memberSource: 'new' } }))
+  const normalized = normalizeOperations(text, structuredClone(calls))
+  assert.equal('selector' in normalized[0]!.params && normalized[0]!.params.selector, 'antiAirVehicle')
+  assert.equal('selector' in normalized[1]!.params && normalized[1]!.params.selector, 'infantryFightingVehicle')
+  for (const [index, expected] of ['antiAirVehicle', 'infantryFightingVehicle'].entries()) {
+    const corrected = retainBindingScope(calls[index], { ...calls[index], params: { ...calls[index]!.params, selector: 'HTK' } }, prompts, text)
+    assert.equal('selector' in corrected.params && corrected.params.selector, expected)
+    assert.equal('formationId' in corrected.params && corrected.params.formationId, `${index + 1}队`)
+  }
+})
 
 test('重放两条错误解析：编入现有坦克、合并既有队伍，不生成生产目标或重复转入', async () => {
   for (const [all, availableCount] of [[false, 5], [true, 6], [false, 3]] as const) {

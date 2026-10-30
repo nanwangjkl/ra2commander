@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto'
 import { relocationKey } from '../base-relocation.ts'
 import { retainBindingRepairs } from './binding-recovery.ts'
 import { InterruptedOperation, interruptTranscripts, priorityCall } from '../transcript-queue.ts'
+import { linkCoverProduction } from './cover.ts'
 
 export function validateBindings(prompts: PromptLibrary): void { prompts.capabilities.assertBindings(Object.keys(bindings)) }
 export function loadCommandPrompts(): PromptLibrary { return loadPrompts({ validate: validateBindings }) }
@@ -70,7 +71,14 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
   }
   const skip = (message: string) => { state.skipped.push(message); emit({ stage: 'skipped', error: message }) }
   emit({ stage: 'binding' })
-  const bindCalls = async (values: readonly unknown[], failed: BindingFailure[]) => {
+  const bindCalls = async (values: readonly unknown[], failed: BindingFailure[]): Promise<void> => {
+    const urgent = values.filter(value => priorityCall(value as CapabilityCall))
+    if (urgent.length && urgent.length < values.length) {
+      // 停止／取消先执行，不能等待掩护准备关联中的目录查询。
+      await bindCalls(urgent, failed)
+      values = values.filter(value => !priorityCall(value as CapabilityCall))
+    }
+    values = await linkCoverProduction(values, context)
     for (const value of values) {
       try { const call = prompts.capabilities.parse(value); if (call.capability === 'base.relocate' && !context.relocationIds.has(relocationKey(call.params))) context.relocationIds.set(relocationKey(call.params), `command-${randomUUID().slice(0, 8)}`) } catch { /* 正式绑定时反馈 */ }
     }

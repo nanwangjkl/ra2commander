@@ -1,8 +1,8 @@
 import { canAttackTarget, type ActionRequest, type Snapshot, type SnapshotUnit } from '@ra2c/contracts'
-import type { CoverMotion } from './cover.ts'
+import type { UnitOrderState } from './unit-orders.ts'
 
 /** 编队可共用稳定主目标；不以射程或整队到达作为前置，空地不兼容者另选相容目标。 */
-export function directAttackOrders(snap: Snapshot, ids: number[], targets: readonly SnapshotUnit[], motion: CoverMotion, focus=false,
+export function directAttackOrders(snap: Snapshot, ids: number[], targets: readonly SnapshotUnit[], motion: UnitOrderState, focus=false,
   eligible: (unit: SnapshotUnit, target: SnapshotUnit) => boolean = () => true): ActionRequest[] {
   const groups = new Map<number, number[]>()
   const units=snap.self.filter(unit=>ids.includes(unit.id))
@@ -24,7 +24,7 @@ export function directAttackOrders(snap: Snapshot, ids: number[], targets: reado
 }
 
 /** 持续守卫只追击当前匹配目标；离区、消失或无目标时结束旧追击，不去中心集结。 */
-export function guardAttackOrders(snap: Snapshot, ids: number[], targets: readonly SnapshotUnit[], motion: CoverMotion, focus = false): ActionRequest[] {
+export function guardAttackOrders(snap: Snapshot, ids: number[], targets: readonly SnapshotUnit[], motion: UnitOrderState, focus = false): ActionRequest[] {
   const attacks = directAttackOrders(snap, ids, targets, motion, focus)
   const stops = snap.self.filter(unit => ids.includes(unit.id)
     && (!targets.length || ['attack', 'crush'].includes(motion.orders[unit.id]?.kind ?? '') && !targets.some(target => target.id === motion.orders[unit.id]?.targetId))

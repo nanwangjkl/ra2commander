@@ -2,6 +2,7 @@ import { attackObjective, matchingAttackTargets, validTargetRegion } from '@ra2c
 import { alive, baseConstraints, blocked, formationExists, formationPreparing, movementArrival, point, presentUnitIds, projection, stringsValid, unobservableMembers } from './common.ts'
 import type { GoalContext, GoalHandler } from './types.ts'
 import { coverMoves, emptyCoverMotion, validateCoverMotion } from '../cover.ts'
+import { emptyUnitOrders, moveOrders } from '../unit-orders.ts'
 import { directAttackOrders, guardAttackOrders } from '../attack-orders.ts'
 import { defenseOrders, defenseState, defenseTargets, observeBaseDefense, validDefenseState } from '../base-defense.ts'
 
@@ -35,24 +36,21 @@ export const combat: GoalHandler<'combat'> = {
     const retreat = ctx.goal.facts.retreatTriggered ? ctx.spec.retreat : undefined
     if (!retreat && ctx.spec.baseDefense) return defenseOrders(ctx)
     if (!retreat && ctx.spec.objective && (ctx.spec.mode === 'hold' || ctx.spec.mode === 'assault')) {
-      return guardAttackOrders(ctx.snap, members(ctx), matchingAttackTargets(ctx.spec, ctx.snap.enemies), ctx.goal.facts.coverMotion ??= emptyCoverMotion(), ctx.spec.objective.coordination === 'focus')
+      return guardAttackOrders(ctx.snap, members(ctx), matchingAttackTargets(ctx.spec, ctx.snap.enemies), ctx.goal.facts.unitOrders ??= emptyUnitOrders(), ctx.spec.objective.coordination === 'focus')
     }
     const destination = retreat ?? ctx.spec.route?.[ctx.goal.facts.routeIndex ?? 0] ?? ctx.spec.destination
     if (!retreat && !ctx.formations.coverOf(ctx.spec.formationId) && ctx.spec.allowedActions.includes('attack')) {
       const targets = matchingAttackTargets(ctx.spec, ctx.snap.enemies).filter(target => ctx.spec.mode !== 'hold' && ctx.spec.mode !== 'assault' || target.rx >= ctx.spec.region.x1 && target.rx <= ctx.spec.region.x2 && target.ry >= ctx.spec.region.y1 && target.ry <= ctx.spec.region.y2)
       const selected = targets.filter(target => !ctx.spec.patrol || ctx.snap.self.some(unit => members(ctx).includes(unit.id) && Math.hypot(unit.rx - target.rx, unit.ry - target.ry) <= Math.max(unit.primaryWeapon?.maxRange ?? 0, unit.secondaryWeapon?.maxRange ?? 0)))
       if (selected.length) {
-        const motion = ctx.goal.facts.coverMotion ??= emptyCoverMotion()
+        const motion = ctx.goal.facts.unitOrders ??= emptyUnitOrders()
         return directAttackOrders(ctx.snap, members(ctx), selected, motion,attackObjective(ctx.spec)?.coordination==='focus')
       }
     }
     if (!destination) return []
     const ids = members(ctx)
     if (ctx.formations.membersOf(ctx.spec.formationId).some(id => ctx.locked(id))) return []
-    const policy = ctx.formations.coverOf(ctx.spec.formationId)
-    const result = coverMoves(policy ?? { runId: 'ordinary', version: '1', escortIds: [], gap: Number.MAX_SAFE_INTEGER, resumeGap: 1, retryTicks: 90 }, ctx.snap, ids, destination, ctx.goal.facts.coverMotion ?? emptyCoverMotion())
-    ctx.goal.facts.coverMotion = result.state
-    return result.actions
+    return moveOrders(ctx.snap, ids, destination, ctx.goal.facts.unitOrders ??= emptyUnitOrders())
   },
   track(ctx) {
     initialize(ctx)
@@ -60,7 +58,7 @@ export const combat: GoalHandler<'combat'> = {
     const { spec, goal: { facts }, snap } = ctx, converted: number[] = [], occupied = new Set(facts.members.map(member => member.id))
     let dead = 0
     const unobservable = new Set(unobservableMembers(ctx))
-    for (const id of unobservable) if (facts.coverMotion) delete facts.coverMotion.orders[id]
+    for (const id of unobservable) if (facts.unitOrders) delete facts.unitOrders.orders[id]
     for (const member of facts.members) {
       let unit = snap.self.find(unit => unit.id === member.id)
       if (!unit) {
@@ -99,7 +97,7 @@ export const combat: GoalHandler<'combat'> = {
 
     const arrival = movementArrival(ctx)
     const policy = ctx.formations.coverOf(spec.formationId), destination = spec.route?.[facts.routeIndex ?? 0] ?? spec.destination
-    const cover = policy && destination && !spec.patrol && !spec.allowedActions.includes('attack') ? coverMoves(policy, snap, members(ctx), destination, facts.coverMotion ?? emptyCoverMotion()).view : undefined
+    const cover = policy && destination && !spec.patrol && !spec.allowedActions.includes('attack') ? coverMoves(policy, snap, members(ctx), destination, facts.coverMotion ?? emptyCoverMotion(), facts.unitOrders ?? emptyUnitOrders()).view : undefined
     return projection(ctx, constraints, { spec: spec.route ? { ...spec, destination: spec.route[Math.min(facts.routeIndex ?? 0, spec.route.length - 1)]! } : spec, ...(arrival ? { arrival } : {}), ...(cover ? { cover } : {}), ...blocked(ctx), ...(!formationExists(ctx, spec.formationId) ? { blocked: `等待 ${spec.formationId} 编队完成` } : {}) })
   },
   progress({ spec, goal }, view) {

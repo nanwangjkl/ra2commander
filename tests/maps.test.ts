@@ -45,6 +45,22 @@ test('当前分区文件可读取、按名称查询，图片与地图坐标可�
   assert.deepEqual(index.regionsAt(-1, -1), [])
 })
 
+test('方位同义词在查询和原话中指向同一区域，作者显式命名优先，歧义不自动选区', () => {
+  for (const [alias, name] of [['三楼右侧', '三楼右方'], ['三楼左边', '三楼左方'], ['二楼上面', '二楼上方'], ['三楼右上方', '三楼右上']]) {
+    assert.equal(index.resolve(alias!)?.id, index.resolve(name!)?.id)
+    assert.equal(index.resolveMention(`1队攻击${alias}的敌人`)?.id, index.resolve(name!)?.id)
+  }
+  const data = fixture()
+  data.regions[0]!.name = '三楼右方'; data.regions[0]!.aliases = []
+  data.regions.push({ id: 'separate', name: '三楼右侧', aliases: [], level: 1, labelPosition: [31, 31],
+    polygons: [{ outer: [[30, 30], [40, 30], [40, 40], [30, 40], [30, 30]], holes: [] }] })
+  const custom = new MapRegionIndex(data)
+  assert.equal(custom.resolve('三楼右侧')?.id, 'separate')
+  assert.equal(custom.resolveMention('攻击三楼右侧敌人')?.id, 'separate')
+  assert.equal(custom.resolve('三楼右边'), undefined)
+  assert.equal(custom.resolveMention('攻击三楼右边敌人'), undefined)
+})
+
 function area(ring: MapPoint[]) {
   let sum = 0
   for (let i = 1; i < ring.length; i++) {

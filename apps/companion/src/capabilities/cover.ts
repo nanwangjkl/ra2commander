@@ -4,6 +4,40 @@ import type { CoverPolicy, FormationGoal, ProductionGoal, SnapshotUnit } from '@
 import type { BindingContext, BoundCapability } from './bindings.ts'
 import { formationName, selectUnitSet } from './selectors.ts'
 import { matchesFutureMember } from '../unit-selection.ts'
+import { formationAlias } from '../command-text.ts'
+
+/** 在生产绑定前补齐同句掩护的归属；只关联唯一匹配、数量适配的整批产物。 */
+export async function linkCoverProduction(values: readonly unknown[], context: BindingContext): Promise<readonly unknown[]> {
+  const calls = values.map(value => { try { return context.prompts.capabilities.parse(value) } catch { return undefined } })
+  const covers = calls.flatMap(call => call?.capability === 'formation.cover' || call?.capability === 'skill.run' && context.prompts.skills.get(call.params.skillId)?.definition.id === 'cover' ? [call.params] : [])
+  if (!covers.length || !calls.some(call => call?.capability === 'production.produce' && !call.params.formationId)) return values
+  const catalog = await context.catalog().catch(() => undefined); context.check()
+  if (!catalog) return values // 由各绑定器反馈目录故障，其他独立操作仍可执行。
+  const slots = covers.flatMap(params => {
+    if (!params.formationId) return []
+    return [
+      ...(!params.unitIds && params.selector ? [{ selector: params.selector, quantity: params.quantity ?? 'all' }] : []),
+      ...(!params.protectedUnitIds && params.protectedSelector ? [{ selector: params.protectedSelector, quantity: params.protectedQuantity ?? 'all' }] : []),
+    ].map(side => ({ formationId: params.formationId!, selector: side.selector, remaining: typeof side.quantity === 'number' ? side.quantity : Infinity }))
+  })
+  const matches = (target: string, selector: string) => {
+    const item = catalog.resolve(target, { mobile: true })
+    return !!item && [3, 7].includes(item.type) && matchesFutureMember(item, selector, catalog)
+  }
+  for (const call of calls) if (call?.capability === 'production.produce' && call.params.formationId) {
+    for (const slot of slots) if (formationAlias(slot.formationId) === formationAlias(call.params.formationId) && matches(call.params.target, slot.selector)) slot.remaining -= call.params.quantity
+  }
+  return values.map((value, index) => {
+    const call = calls[index]
+    if (call?.capability !== 'production.produce' || call.params.formationId) return value
+    const candidates = slots.filter(slot => slot.remaining >= call.params.quantity && matches(call.params.target, slot.selector))
+    const formations = new Set(candidates.map(slot => formationAlias(slot.formationId)))
+    if (formations.size !== 1) return value
+    const formationId = candidates[0]!.formationId
+    for (const slot of candidates) slot.remaining -= call.params.quantity
+    return { ...call, params: { ...call.params, formationId } }
+  })
+}
 
 export async function bindCover(params: ResolvedCapabilityParameters['formation.cover'], context: BindingContext): Promise<BoundCapability> {
   const { ctx } = context, catalog = await context.catalog(); context.check()
@@ -18,11 +52,15 @@ export async function bindCover(params: ResolvedCapabilityParameters['formation.
   const matches = (name: string, selector: string) => catalog.all.some(item => item.name === name && [3, 7].includes(item.type) && matchesFutureMember(item, selector, catalog))
   const current = context.productionGoals?.get(formationId) ?? []
   const pending = [...new Map([...current, ...[...ctx.runtime.goals.values()].flatMap(goal => goal.spec.kind === 'production' && goal.spec.formationId === formationId && ['pending', 'active'].includes(goal.status) ? [goal.spec] : [])].map(goal => [goal.id, goal])).values()]
-  const protectedSelection = params.protectedSelector || params.protectedUnitIds ? selectUnitSet(ctx, {
-    selector: params.protectedSelector ?? 'all', quantity: params.protectedQuantity ?? 'all', ...(params.protectedUnitIds ? { unitIds: params.protectedUnitIds } : {}),
+  const existingQuantity = (quantity: number | 'all', selector: string, explicit?: number[]) => quantity === 'all' || explicit ? quantity
+    : Math.max(0, quantity - current.filter(source => matches(source.target, selector)).reduce((sum, source) => sum + source.quantity, 0))
+  const protectedQuantity = existingQuantity(params.protectedQuantity ?? 'all', params.protectedSelector ?? 'all', params.protectedUnitIds)
+  const protectedSelection = protectedQuantity !== 0 && (params.protectedSelector || params.protectedUnitIds) ? selectUnitSet(ctx, {
+    selector: params.protectedSelector ?? 'all', quantity: protectedQuantity, ...(params.protectedUnitIds ? { unitIds: params.protectedUnitIds } : {}),
   }, catalog, context.game, { eligible: ground }).selected : []
   const protectedSet = new Set(protectedSelection.map(unit => unit.id))
-  const selected = params.memberSource === 'new' && !params.unitIds ? [] : selectUnitSet(ctx, { selector: params.selector, quantity: params.quantity, ...(params.unitIds ? { unitIds: params.unitIds } : {}) }, catalog, context.game,
+  const escortQuantity = existingQuantity(params.quantity, params.selector, params.unitIds)
+  const selected = escortQuantity === 0 || params.memberSource === 'new' && !params.unitIds ? [] : selectUnitSet(ctx, { selector: params.selector, quantity: escortQuantity, ...(params.unitIds ? { unitIds: params.unitIds } : {}) }, catalog, context.game,
     { eligible: unit => ground(unit) && !protectedSet.has(unit.id) }).selected
   const escorts = selected.filter(unit => !previous?.escortIds.includes(unit.id))
   const skill = context.prompts.skills.get('cover')!, runId = `skill-${randomUUID()}`

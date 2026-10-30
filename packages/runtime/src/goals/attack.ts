@@ -3,7 +3,8 @@ import { initialAttack, planAttack, recordAttack } from '../attack.ts'
 import { attackRoster, validateAttackSources } from '../attack-selection.ts'
 import { baseConstraints, formationExists, idsValid, paused, projection, stringsValid, world } from './common.ts'
 import type { GoalContext, GoalHandler } from './types.ts'
-import { validateCoverMotion, emptyCoverMotion, coverMoves } from '../cover.ts'
+import { validateCoverMotion } from '../cover.ts'
+import { emptyUnitOrders, moveOrders } from '../unit-orders.ts'
 import { directAttackOrders } from '../attack-orders.ts'
 
 function roster(ctx: GoalContext<'attack'>) { return [...new Set([...attackRoster(ctx.spec, ctx.goals, ctx.production, ctx.snap, ctx.goal.facts.attack), ...(ctx.goal.facts.coverReleasedIds ?? [])])] }
@@ -44,7 +45,7 @@ export const attack: GoalHandler<'attack'> = {
   observe(ctx) {
     const planned = plan(ctx)
     ctx.goal.facts.attack = planned.state
-    for (const id of planned.view.unobservableIds ?? []) if (ctx.goal.facts.coverMotion) delete ctx.goal.facts.coverMotion.orders[id]
+    for (const id of planned.view.unobservableIds ?? []) if (ctx.goal.facts.unitOrders) delete ctx.goal.facts.unitOrders.orders[id]
     if (paused(ctx)) for (const member of planned.state.members) if (member.acceptedAt !== undefined) member.acceptedAt = ctx.snap.tick
     if (planned.finished) { ctx.goal.status = planned.outcome; if (planned.outcome !== 'completed') ctx.goal.facts.outcomeDetail = planned.view.detail }
   },
@@ -64,15 +65,13 @@ export const attack: GoalHandler<'attack'> = {
   managedMembers: members,
   nativeActions(ctx) {
     const planned = plan(ctx), target = planned.view.targets[0]
-    const motion = ctx.goal.facts.coverMotion ??= emptyCoverMotion()
+    const orders = ctx.goal.facts.unitOrders ??= emptyUnitOrders()
     if (!target) {
       const objective = attackObjective(ctx.spec), destination = objective?.search.destination
       if (objective?.search.kind !== 'region' || !destination) return []
-      const result = coverMoves({ runId: 'ordinary', version: '1', escortIds: [], gap: Number.MAX_SAFE_INTEGER, resumeGap: 1, retryTicks: 90 }, ctx.snap, planned.view.groundIds, destination, motion)
-      ctx.goal.facts.coverMotion = result.state
-      return result.actions
+      return moveOrders(ctx.snap, planned.view.groundIds, destination, orders)
     }
-    return directAttackOrders(ctx.snap, planned.view.readyIds, planned.view.targets, motion,attackObjective(ctx.spec)?.coordination==='focus')
+    return directAttackOrders(ctx.snap, planned.view.readyIds, planned.view.targets, orders,attackObjective(ctx.spec)?.coordination==='focus')
   },
   stopMembers: ctx => members(ctx).filter(id => !ctx.goal.facts.attack?.members.some(member => member.unitId === id && member.phase === 'fired')),
   afterSubmit({ goal, snap }, request, results) { recordAttack(goal.facts.attack ??= initialAttack(), request, results, snap) },

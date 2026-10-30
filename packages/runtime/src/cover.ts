@@ -1,27 +1,25 @@
-import type { ActionRequest, ActionResult, CoverPolicy, GoalView, Region, Snapshot } from '@ra2c/contracts'
+import type { ActionRequest, CoverPolicy, GoalView, Region, Snapshot } from '@ra2c/contracts'
+import type { UnitOrderState } from './unit-orders.ts'
 import { coverCohort, type CoverCohesion } from './cover-cohesion.ts'
 
 export interface CoverMotion {
   pausedAt?: number
   cohesion?: CoverCohesion
-  focusTargetId?: number
   heldIds: number[]
   gathering?: boolean
-  orders: Record<string, { kind: 'move' | 'stop' | 'attack' | 'crush'; x?: number; y?: number; targetId?: number; tick: number }>
   detail?: string
   positions?: Record<string, { x: number; y: number; tick: number; stalls: number }>
   prediction?: { guideId: number; x: number; y: number; dx: number; dy: number }
 }
-export const emptyCoverMotion = (): CoverMotion => ({ heldIds: [], orders: {} })
+export const emptyCoverMotion = (): CoverMotion => ({ heldIds: [] })
 export function validateCoverMotion(state: CoverMotion | undefined): void {
   if(state?.pausedAt!==undefined&&!Number.isFinite(state.pausedAt))throw new Error('掩护暂停进度非法')
-  if(state?.focusTargetId!==undefined&&!Number.isSafeInteger(state.focusTargetId))throw new Error('编队主目标非法')
   if(state?.cohesion) {
     const c=state.cohesion
     if([c.coreIds,c.catchingUpIds,c.regroupIds??[]].some(ids=>!Array.isArray(ids)||new Set(ids).size!==ids.length||ids.some(id=>!Number.isSafeInteger(id)))||c.coreIds.some(id=>c.catchingUpIds.includes(id))||c.regroupSince!==undefined&&!Number.isFinite(c.regroupSince))throw new Error('掩护追赶进度非法')
+    if([c.regroupWaitTicks,c.regroupTick].some(value=>value!==undefined&&(!Number.isSafeInteger(value)||value<0))||c.regroupTick!==undefined&&c.regroupSince===undefined)throw new Error('掩护累计重聚时间非法')
   }
-  if (state && (!Array.isArray(state.heldIds) || state.heldIds.some(id => !Number.isSafeInteger(id)) || !state.orders || typeof state.orders !== 'object' || Array.isArray(state.orders)
-    || Object.values(state.orders).some(order => !order || !['move', 'stop', 'attack', 'crush'].includes(order.kind) || !Number.isFinite(order.tick) || order.kind === 'move' && (!Number.isFinite(order.x) || !Number.isFinite(order.y)) || (order.kind === 'attack' || order.kind === 'crush') && !Number.isSafeInteger(order.targetId)))) throw new Error('掩护行军事实非法')
+  if (state && (!Array.isArray(state.heldIds) || state.heldIds.some(id => !Number.isSafeInteger(id)))) throw new Error('掩护行军事实非法')
   if (state?.positions && (typeof state.positions !== 'object' || Array.isArray(state.positions) || Object.values(state.positions).some(position => !position || ![position.x, position.y, position.tick, position.stalls].every(Number.isFinite) || !Number.isSafeInteger(position.stalls) || position.stalls < 0))) throw new Error('掩护位置事实非法')
   if (state?.prediction && (!Number.isSafeInteger(state.prediction.guideId) || ![state.prediction.x, state.prediction.y, state.prediction.dx, state.prediction.dy].every(Number.isFinite))) throw new Error('掩护预测事实非法')
 }
@@ -45,13 +43,12 @@ export function coverMembers(policy: CoverPolicy, snap: Snapshot, ids: number[])
 export const movementPerTick = (speed: number | undefined) => Number.isFinite(speed) && speed! > 0 ? speed! / 256 : 0
 
 /** 最慢成员直达终点，其余成员追随规则速度推算的前视点；停车仅处理严重脱队。 */
-export function coverMoves(policy: CoverPolicy, snap: Snapshot, ids: number[], destination: { x: number; y: number }, previous: CoverMotion,
+export function coverMoves(policy: CoverPolicy, snap: Snapshot, ids: number[], destination: { x: number; y: number }, previous: CoverMotion, unitOrders: UnitOrderState,
   options: { region?: Region; threat?: { rx: number; ry: number }; directDestination?: boolean } = {}) {
-  const all=coverMembers(policy,snap,ids),cohort=coverCohort(all.members,policy,snap.tick,previous.cohesion)
+  const all=coverMembers(policy,snap,ids),cohort=coverCohort(all.members,policy,snap.tick,previous.cohesion,previous.prediction)
   const { members, escorts, protectedUnits, slowest } = coverMembers(policy, snap, cohort.core.map(unit=>unit.id))
   const state = structuredClone(previous), actions: ActionRequest[] = []
   state.cohesion=cohort.state
-  state.orders = Object.fromEntries(Object.entries(state.orders).filter(([id]) => all.members.some(unit => unit.id === Number(id))))
   const remaining = (unit: { rx: number; ry: number }) => Math.hypot(destination.x - unit.rx, destination.y - unit.ry)
   const span = Math.max(policy.gap, Math.sqrt(members.length))
   const known = slowest.filter(unit => movementPerTick(unit.speed) > 0), drivers = known.length ? known : slowest
@@ -64,7 +61,7 @@ export function coverMoves(policy: CoverPolicy, snap: Snapshot, ids: number[], d
   const oldHeading = previous.prediction
   if (!changedDestination && length > 1e-6) {
     const vx = velocity!.x / length, vy = velocity!.z / length
-    const recentOrder = snap.tick - (previous.orders[anchor!.id]?.tick ?? -Infinity) < 60
+    const recentOrder = snap.tick - (unitOrders.orders[anchor!.id]?.tick ?? -Infinity) < 60
     if (!recentOrder || vx * dx + vy * dy >= -0.2) { dx = vx; dy = vy }
   } else if (!changedDestination && velocity && !anchor?.isIdle && oldHeading) {
     dx = oldHeading.dx; dy = oldHeading.dy
@@ -84,15 +81,15 @@ export function coverMoves(policy: CoverPolicy, snap: Snapshot, ids: number[], d
   state.heldIds = []
   if (members.length && protectedUnits.length) for (const unit of members) {
     const driver=drivers.some(driver=>driver.id===unit.id)
-    const lead=anchor?(unit.rx-anchor.rx)*dx+(unit.ry-anchor.ry)*dy:0
-    const held = cohort.regroup.length ? !cohort.regroup.some(lagging=>lagging.id===unit.id) : coordinated&&!driver&&lead>(previous.cohesion&&previous.heldIds.includes(unit.id)?span:span*2)
+    const held = cohort.regroup.length>0&&!cohort.regroup.some(lagging=>lagging.id===unit.id)
     if (held) state.heldIds.push(unit.id)
-    const order = previous.orders[unit.id]
+    const order = unitOrders.orders[unit.id]
     if (held) {
       if ((!unit.isIdle && (!order || order.kind !== 'stop' || snap.tick - order.tick >= 15)) || order?.kind === 'move') stop.push(unit.id)
       continue
     }
-    const direct = !coordinated || options.directDestination || driver
+    const correcting=cohort.correcting.includes(unit)&&unit.id!==anchor?.id
+    const direct = !coordinated || options.directDestination || driver&&!correcting
     let target = cohort.regroup.length&&cohort.point?clip(cohort.point.rx,cohort.point.ry):destination
     if (!direct && anchor && !cohort.regroup.length) {
       const escort = policy.escortIds.includes(unit.id), role = escort ? escorts : protectedUnits
@@ -117,7 +114,7 @@ export function coverMoves(policy: CoverPolicy, snap: Snapshot, ids: number[], d
   const body=anchor??cohort.point
   if(body) for(const unit of cohort.catchingUp) {
     const forward=Math.min(goalDistance,guideSpeed*predictionTicks)
-    const target=clip(body.rx+dx*forward,body.ry+dy*forward),old=previous.orders[unit.id]
+    const target=clip(body.rx+dx*forward,body.ry+dy*forward),old=unitOrders.orders[unit.id]
     if(!old||old.kind!=='move'||Math.hypot(old.x!-target.x,old.y!-target.y)>=2&&snap.tick-old.tick>=replanTicks||unit.isIdle&&Math.hypot(unit.rx-target.x,unit.ry-target.y)>2&&snap.tick-old.tick>=policy.retryTicks)targets[unit.id]=target
   }
   if (stop.length) actions.push({ kind: 'stop', unitIds: stop })
@@ -129,8 +126,4 @@ export function coverMoves(policy: CoverPolicy, snap: Snapshot, ids: number[], d
   const view: NonNullable<GoalView['cover']> = { protectedIds: all.protectedUnits.map(unit => unit.id), escortIds: all.escorts.map(unit => unit.id), slowestIds: slowest.map(unit => unit.id), heldIds: [...state.heldIds],catchingUpIds:cohort.state.catchingUpIds,
     detail: `被掩护${all.protectedUnits.length}、掩护${all.escorts.length}；${state.heldIds.length ? '严重脱队，有限重聚' : stalled ? '领行受阻，近身靠拢' : '最慢成员直达终点，其余按规则速度预测跟随'}${cohort.catchingUp.length?`；${cohort.catchingUp.length}个成员独立追赶主体`:''}${members.some(unit => unit.speed === undefined) ? '（部分速度规则待就绪）' : ''}` }
   return { actions, state, view }
-}
-export function recordCoverOrder(state: CoverMotion, request: ActionRequest, tick: number, results: ActionResult[]): void {
-  if (!results.length || results.some(result => !result.ok) || !results.some(result => (result.submitted ?? 1) > 0) || request.kind !== 'move' && request.kind !== 'stop' && request.kind !== 'attack' && request.kind !== 'crush') return
-  for (const id of request.unitIds) state.orders[id] = { kind: request.kind, tick, ...(request.kind === 'move' ? { x: request.x, y: request.y } : request.kind === 'attack' || request.kind === 'crush' ? { targetId: request.targetId } : {}) }
 }

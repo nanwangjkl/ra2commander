@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import type { ActionRequest, CoverPolicy, SnapshotUnit } from '../packages/contracts/src/index.ts'
-import { coverMoves, emptyCoverMotion, movementPerTick, recordCoverOrder } from '../packages/runtime/src/cover.ts'
+import { coverMoves, emptyCoverMotion, movementPerTick } from '../packages/runtime/src/cover.ts'
+import { emptyUnitOrders, recordUnitOrder } from '../packages/runtime/src/unit-orders.ts'
 import { FormationRegistry, persistState, restoreState } from '../packages/runtime/src/index.ts'
 import { executeCapabilities, loadCommandPrompts } from '../apps/companion/src/capabilities/index.ts'
 import { GameCatalog } from '../apps/companion/src/game-catalog.ts'
@@ -26,10 +27,11 @@ function simulateMovement(speeds: number[], escortIds: number[], combat = false)
   const orders: Array<{ tick: number; request: ActionRequest }> = []
   const selectedPolicy = { ...policy, escortIds }
   let state = emptyCoverMotion(), maximum = 0
+  const unitOrders = emptyUnitOrders()
   for (let step = 0; step < 150; step++) {
     const snap = snapshot({ tick: step * 15, self: units, enemies: [] }), ids = units.map(unit => unit.id)
     const point = { x: 80, y: 5 }
-    const plan = combat ? coverCombat(selectedPolicy, snap, ids, { targets: [], threats: [], destination: point, region: { name: '全图', x1: 0, y1: 0, x2: 99, y2: 99 }, waiting: false }, state, []) : coverMoves(selectedPolicy, snap, ids, point, state)
+    const plan = combat ? coverCombat(selectedPolicy, snap, ids, { targets: [], threats: [], destination: point, region: { name: '全图', x1: 0, y1: 0, x2: 99, y2: 99 }, waiting: false }, state, [], unitOrders) : coverMoves(selectedPolicy, snap, ids, point, state, unitOrders)
     state = plan.state
     for (const action of plan.actions) {
       orders.push({ tick: snap.tick, request: structuredClone(action) })
@@ -37,7 +39,7 @@ function simulateMovement(speeds: number[], escortIds: number[], combat = false)
         if (action.kind === 'move') destinations.set(id, action)
         if (action.kind === 'stop') destinations.delete(id)
       }
-      recordCoverOrder(state, action, snap.tick, [{ ok: true, submitted: 1, session: 1 }])
+      recordUnitOrder(unitOrders, action, snap.tick, [{ ok: true, submitted: 1, session: 1 }])
     }
     for (const unit of units) {
       const target = destinations.get(unit.id), dx = (target?.x ?? unit.rx) - unit.rx, dy = (target?.y ?? unit.ry) - unit.ry, length = Math.hypot(dx, dy)
@@ -81,26 +83,27 @@ test('预测使用引擎规则速度和公开移动方向，转向与领行成�
   assert.ok(Math.abs(movementPerTick(tankSpeed) - 7 / 65) < 1e-9, '当前游戏每格256内部单位，规则速度按游戏tick换算')
   const predict = (speed: number) => {
     const units = [speed, 80].map((value, i) => ({ ...snapshot().self[0]!, id: i + 1, rx: 10, ry: 10, speed: value, velocity: { x: 1, y: 0, z: 0 } }))
-    return coverMoves({ ...policy, predictionTicks: 15, replanTicks: 15 }, snapshot({ self: units }), [1, 2], { x: 80, y: 10 }, emptyCoverMotion())
+    const unitOrders = emptyUnitOrders()
+    return { ...coverMoves({ ...policy, predictionTicks: 15, replanTicks: 15 }, snapshot({ self: units }), [1, 2], { x: 80, y: 10 }, emptyCoverMotion(), unitOrders), unitOrders }
   }
   const slow = predict(tankSpeed), fast = predict(tankSpeed * 2)
-  const point = (plan: typeof slow) => plan.actions.find(action => action.kind === 'move' && action.unitIds.includes(2)) as Extract<ActionRequest, { kind: 'move' }>
+  const point = (plan: Pick<typeof slow, 'actions'>) => plan.actions.find(action => action.kind === 'move' && action.unitIds.includes(2)) as Extract<ActionRequest, { kind: 'move' }>
   assert.ok(point(fast).x > point(slow).x, '公开移动向量完全相同，仅规则速度变化也应改变预测距离')
-  for (const action of slow.actions) recordCoverOrder(slow.state, action, 15, [{ ok: true, submitted: 1, session: 1 }])
+  for (const action of slow.actions) recordUnitOrder(slow.unitOrders, action, 15, [{ ok: true, submitted: 1, session: 1 }])
   const own = [tankSpeed, 80].map((speed, i) => ({ ...snapshot().self[0]!, id: i + 1, rx: 10, ry: 12, speed, isIdle: false, velocity: { x: 0, y: 1000, z: speed } }))
   const frame = snapshot({ tick: 45, self: own })
-  const corner = coverMoves({ ...policy, predictionTicks: 15, replanTicks: 15 }, frame, [1, 2], { x: 80, y: 10 }, slow.state)
+  const corner = coverMoves({ ...policy, predictionTicks: 15, replanTicks: 15 }, frame, [1, 2], { x: 80, y: 10 }, slow.state, slow.unitOrders)
   assert.equal(point(corner).x, 10)
   assert.ok(point(corner).y > 12, '跟随实际地面x/z方向，不能把垂直分量或直线终点方向当成当前行进方向')
   assert.equal(corner.actions.some(action => action.kind === 'move' && action.unitIds.includes(1)), false)
   own[0]!.velocity = { x: 0, y: 0, z: 0 }
-  const pausedCorner = coverMoves(policy, { ...frame, tick: 60 }, [1, 2], { x: 80, y: 10 }, corner.state)
+  const pausedCorner = coverMoves(policy, { ...frame, tick: 60 }, [1, 2], { x: 80, y: 10 }, corner.state, slow.unitOrders)
   assert.equal(pausedCorner.state.prediction?.dx, 0)
   assert.equal(pausedCorner.state.prediction?.dy, 1, '转弯或短暂拥堵时沿用实际航向，不在终点方向和实际方向间来回改点')
-  const changed = coverMoves(policy, frame, [1, 2], { x: 10, y: 80 }, corner.state)
+  const changed = coverMoves(policy, frame, [1, 2], { x: 10, y: 80 }, corner.state, slow.unitOrders)
   assert.ok(changed.actions.some(action => action.kind === 'move' && action.unitIds.includes(1) && action.x === 10 && action.y === 80))
   frame.self = [own[1]!, { ...own[0]!, id: 3 }]
-  const replacement = coverMoves(policy, frame, [1, 2, 3], { x: 10, y: 80 }, changed.state)
+  const replacement = coverMoves(policy, frame, [1, 2, 3], { x: 10, y: 80 }, changed.state, slow.unitOrders)
   assert.equal(replacement.state.prediction?.guideId, 3)
   assert.ok(replacement.actions.every(action => !('unitIds' in action) || !action.unitIds.includes(1)))
 })
@@ -111,15 +114,16 @@ test('直接攻击不等集结或射程，接敌途中仍兼容更快和更慢�
     const enemy = {id:99,name:'ENEMY',type:7,rx:80,ry:5,isIdle:true}
     const orders = new Map<number, ActionRequest>(), target = {x:80,y:5}
     let state=emptyCoverMotion(), maximum=0
+    const unitOrders = emptyUnitOrders()
     for(let n=0;n<160;n++) {
       const snap=snapshot({tick:n*15,self:units,enemies:[enemy]})
       const ranges=units.map(unit=>({unitId:unit.id,targetId:99,canAttack:true,inRange:Math.hypot(unit.rx-80,unit.ry-5)<=6}))
-      const result=coverCombat(policy,snap,[1,2],{targets:[enemy],threats:[enemy],destination:target,region:{name:'全图',x1:0,y1:0,x2:99,y2:99},waiting:false},state,ranges)
+      const result=coverCombat(policy,snap,[1,2],{targets:[enemy],threats:[enemy],destination:target,region:{name:'全图',x1:0,y1:0,x2:99,y2:99},waiting:false},state,ranges,unitOrders)
       state=result.state
       if(n===0) assert.ok(result.actions.some(action=>action.kind==='attack'&&action.unitIds.includes(1)), '远处已有敌人时主战立即攻击')
       for(const action of result.actions) {
         for(const id of 'unitIds' in action?action.unitIds:[])orders.set(id,action)
-        recordCoverOrder(state,action,snap.tick,[{ok:true,submitted:1,session:1}])
+        recordUnitOrder(unitOrders,action,snap.tick,[{ok:true,submitted:1,session:1}])
       }
       for(const unit of units) {
         const order=orders.get(unit.id), point=order?.kind==='move'?order:order?.kind==='attack'?target:undefined
@@ -225,10 +229,19 @@ test('掩护重决策保留双方成员、数量和编队，不能改为其他Sk
   assert.equal(corrected.capability === 'formation.cover' && corrected.params.memberSource, 'new')
 })
 
-test('新造坦克与IFV掩护一条命令接通，角色只接收本次产物；边生产边入队与重启不重复生产', async () => {
+for (const source of ['explicit', 'unassigned'] as const) test(`${source}：新造坦克掩护衔接真实产物、重启和方位移动，不吸收其他单位或重复生产`, async () => {
   const f = await fixture(39, 27, false), executor = new StepExecutor()
+  const tankName = source === 'explicit' ? 'MTNK' : 'HTNK', escortName = source === 'explicit' ? 'FV' : 'HTK'
+  const unrelated = source === 'explicit' ? [] : [
+    { ...f.own[0]!, id: 1001, name: tankName }, { ...f.own[0]!, id: 1002, name: escortName },
+  ]
+  const catalog = new GameCatalog([...f.catalog.all,
+    { name: 'HTNK', label: '犀牛坦克', type: 7, power: 0, available: true, factions: [], roles: ['tank'], aliases: ['坦克'] },
+    { name: 'HTK', label: '防空履带车', type: 7, power: 0, available: true, factions: [], roles: ['antiAirVehicle'], aliases: ['防空车'] },
+    { name: 'HARV', label: '矿车', type: 7, power: 0, available: true, factions: [], roles: ['harvester'], aliases: ['矿车'] },
+  ], f.runtime.snapshot!, f.prompts.game)
   let runtime = f.runtime
-  const tick = async (self: SnapshotUnit[]) => runtime.onSnapshot(snapshot({ seq: runtime.snapshot!.seq + 1, tick: runtime.snapshot!.tick + 30, self, enemies: [], production: { power: { drain: 0, total: 100, isLowPower: false }, queues: [], available: ['MTNK', 'FV'] } }))
+  const tick = async (self: SnapshotUnit[]) => runtime.onSnapshot(snapshot({ seq: runtime.snapshot!.seq + 1, tick: runtime.snapshot!.tick + 30, mapWidth: 200, mapHeight: 200, self: [...unrelated, ...self], enemies: [], production: { power: { drain: 0, total: 100, isLowPower: false }, queues: [], available: [tankName, escortName, 'HARV'] } }))
   try {
     await tick([])
     // 同一执行器负责真实本机脚本运行，不仅检查生成阶段的空动作。
@@ -236,19 +249,21 @@ test('新造坦克与IFV掩护一条命令接通，角色只接收本次产物�
     await env.runtime.onSnapshot(runtime.snapshot!); runtime = env.runtime
     f.ctx.runtime = runtime; f.ctx.formations = env.formations
     f.ctx.controller = new ProgramController({ runtime, executor, provider: () => ({ generate: async () => ({ text: productionSource, model: 'fixture', durationMs: 0 }) }) as never })
-    const text = '造5辆坦克，编入1队，2个IFV掩护1队'
+    const text = source === 'explicit' ? '造5辆坦克，编入1队，2个IFV掩护1队' : '造5 个坦克，2 个防空车掩护'
     const calls = normalizeOperations(text, [
-      { capability: 'production.produce', params: { target: 'MTNK', quantity: 5, formationId: '1队' } },
-      { capability: 'formation.cover', params: { formationId: '1队', selector: 'FV', quantity: 2, protectedSelector: 'MTNK', protectedQuantity: 5 } },
+      { capability: 'production.produce', params: { target: tankName, quantity: 5, ...(source === 'explicit' ? { formationId: '1队' } : {}) } },
+      ...(source === 'unassigned' ? [{ capability: 'production.produce' as const, params: { target: escortName, quantity: 2 } }] : []),
+      { capability: 'formation.cover', params: { formationId: '1队', selector: escortName, quantity: 2, protectedSelector: 'tanks', protectedQuantity: 5, memberSource: 'auto' } },
       { capability: 'combat.move', params: { formationId: '1队', x: 80, y: 5 } },
-    ], undefined, f.catalog)
-    const result = await executeCapabilities(calls, f.ctx, { text, prompts: f.prompts, catalog: f.catalog })
+      ...(source === 'unassigned' ? [{ capability: 'production.produce' as const, params: { target: 'HARV', quantity: 1 } }] : []),
+    ], undefined, catalog)
+    const result = await executeCapabilities(calls, f.ctx, { text, prompts: f.prompts, catalog })
     assert.deepEqual(result.skipped, [])
-    assert.deepEqual(result.goals.filter(g => g.kind === 'production').map(g => [g.target, g.quantity]), [['MTNK', 5], ['FV', 2]])
+    assert.deepEqual(result.goals.filter(g => g.kind === 'production').map(g => [g.target, g.quantity, g.formationId]), [[tankName, 5, '1队'], [escortName, 2, '1队'], ...(source === 'unassigned' ? [['HARV', 1, undefined]] : [])])
     await tick([])
-    assert.deepEqual(env.submitted.filter(a => a.kind === 'produce').map(a => [a.name, a.quantity]), [['MTNK', 5], ['FV', 2]])
-    const tank = (id: number): SnapshotUnit => ({ ...f.own[0]!, id, primaryWeapon: { maxRange: 5, minRange: 0, aa: false, ag: true } })
-    const ifv = (id: number): SnapshotUnit => ({ ...tank(id), name: 'FV', speed: 39, primaryWeapon: { maxRange: 6, minRange: 0, aa: true, ag: true } })
+    assert.deepEqual(env.submitted.filter(a => a.kind === 'produce').map(a => [a.name, a.quantity]), [[tankName, 5], [escortName, 2], ...(source === 'unassigned' ? [['HARV', 1]] : [])])
+    const tank = (id: number): SnapshotUnit => ({ ...f.own[0]!, id, name: tankName, primaryWeapon: { maxRange: 5, minRange: 0, aa: false, ag: true } })
+    const ifv = (id: number): SnapshotUnit => ({ ...tank(id), name: escortName, speed: 39, primaryWeapon: { maxRange: 6, minRange: 0, aa: true, ag: true } })
     let own = [tank(201)]
     await tick(own); await tick(own)
     assert.equal(runtime.hasCover('1队'), true)
@@ -266,7 +281,16 @@ test('新造坦克与IFV掩护一条命令接通，角色只接收本次产物�
     own.push(ifv(999)); await tick(own)
     assert.equal(runtime.formations.membersOf('1队').length, 7)
     assert.deepEqual(runtime.formations.coverOf('1队')!.escortIds, [701, 702])
+    assert.ok(unrelated.every(unit => !runtime.formations.ownerOf(unit.id)), '同型现有成员不抵消或混入本次明确新造成员')
     assert.equal(restored.submitted.some(a => a.kind === 'produce'), false, '恢复和新增成员不重置已经提交的生产')
+    f.ctx.runtime = runtime; f.ctx.formations = restored.formations
+    f.ctx.controller = new ProgramController({ runtime, executor, provider: () => { throw new Error('掩护移动不应生成脚本') } })
+    const moved = await executeCapabilities([{ capability: 'combat.move', params: { formationId: '1队', regionName: '三楼右侧' } }], f.ctx, { text: '1队去三楼右侧', prompts: f.prompts, catalog })
+    assert.deepEqual(moved.skipped, [])
+    assert.equal(moved.goals[0]!.kind === 'combat' && moved.goals[0]!.destination?.name, '三楼右方')
+    const count = restored.submitted.length; await tick(own)
+    assert.ok(restored.submitted.slice(count).some(action => action.kind === 'move' && action.unitIds.includes(201)))
+    assert.ok(restored.submitted.slice(count).some(action => action.kind === 'move' && action.unitIds.includes(702)))
     runtime.formations.create('2队', []); runtime.formations.transfer([701], '2队')
     await tick(own)
     assert.deepEqual(runtime.formations.coverOf('1队')!.escortIds, [702], '已转出的实际产物不被来源记录重新拉回')
@@ -305,9 +329,9 @@ test('掩护进攻使用同一协调器：主力打基地，IFV优先近处空�
   const p = { ...policy, escortIds: [2] }, snap = snapshot({ self: own.slice(0, 2), enemies: [{ ...base, rx: 5 }] })
   snap.self[1]!.rx = 10
   const intent = { targets: [], threats: snap.enemies, region: { name: '全图', x1: 0, y1: 0, x2: 99, y2: 99 }, waiting: false }
-  const plan = coverCombat(p, snap, [1, 2], intent, emptyCoverMotion(), [])
+  const plan = coverCombat(p, snap, [1, 2], intent, emptyCoverMotion(), [], emptyUnitOrders())
   assert.ok(plan.actions.some(a => a.kind === 'move' && a.unitIds.includes(2) && a.x < snap.self[0]!.rx), '敌人从后方出现时掩护站到受护成员与敌人之间')
-  assert.ok(coverRangePairs(p, snap, [1, 2], intent, emptyCoverMotion()).length <= 64)
+  assert.ok(coverRangePairs(p, snap, [1, 2], intent, emptyUnitOrders()).length <= 64)
   own.shift(); submitted.length = 0; await tick([base])
   assert.ok(submitted.some(a => a.kind === 'attack' && a.unitIds.includes(2) && a.targetId === 90 && !a.holdPosition), '受护成员全灭后，原掩护成员按普通编队继续攻击原目标')
   assert.equal(await runtime.clearLostCover('1队'), false, '已经自动解除，无需等待玩家补发命令')
@@ -320,15 +344,15 @@ test('复现动员兵领行停在基地射程外：慢掩护继续带队接敌�
   own.push(...Array.from({ length: 10 }, (_, index) => ({ ...own[0]!, id: 10 + index, name: 'E2', type: 3, rx: 42, ry: 76 + index % 2, speed: 10.24 })))
   const enemy = { ...snapshot().enemies[0]!, id: 90, name: 'NACNST', type: 2, rx: 38, ry: 81, elevation: 10 }
   const p = { ...policy, escortIds: own.filter(unit => unit.type === 3).map(unit => unit.id) }, ids = own.map(unit => unit.id)
-  const state = emptyCoverMotion()
-  for (const unit of own) state.orders[unit.id] = unit.type === 3 ? { kind: 'stop', tick: 22000 } : { kind: 'move', x: unit.rx, y: unit.ry, tick: 22000 }
+  const state = emptyCoverMotion(), unitOrders = emptyUnitOrders()
+  for (const unit of own) unitOrders.orders[unit.id] = unit.type === 3 ? { kind: 'stop', tick: 22000 } : { kind: 'move', x: unit.rx, y: unit.ry, tick: 22000 }
   state.prediction = { guideId: 10, x: 38, y: 81, dx: -Math.SQRT1_2, dy: Math.SQRT1_2 }
   const intent = { targets: [enemy], threats: [enemy], region: { name: '全图', x1: 0, y1: 0, x2: 199, y2: 199 }, waiting: false }
   const snap = snapshot({ seq: 2, tick: 29642, self: own, enemies: [enemy], mapWidth: 200, mapHeight: 200 })
-  const first = coverCombat(p, snap, ids, intent, state, ids.map(unitId => ({ unitId, targetId: 90, canAttack: true, inRange: false })))
+  const first = coverCombat(p, snap, ids, intent, state, ids.map(unitId => ({ unitId, targetId: 90, canAttack: true, inRange: false })), unitOrders)
   assert.ok(first.actions.some(action => action.kind === 'move' && action.unitIds.includes(10) && action.x === 38 && action.y === 81), '靠近敌人不能提前停掉最慢领行者')
   assert.ok(!first.actions.some(action => action.kind === 'stop' && action.unitIds.includes(10)))
-  const second = coverCombat(p, { ...snap, tick: 29657 }, ids, intent, first.state, ids.map(unitId => ({ unitId, targetId: 90, canAttack: true, inRange: unitId <= 5 })))
+  const second = coverCombat(p, { ...snap, tick: 29657 }, ids, intent, first.state, ids.map(unitId => ({ unitId, targetId: 90, canAttack: true, inRange: unitId <= 5 })), unitOrders)
   assert.ok(second.actions.some(action => action.kind === 'attack' && action.unitIds.includes(1) && !action.holdPosition))
   assert.ok(!second.actions.some(action => action.kind === 'attack' && action.unitIds.some(id => id >= 10)), '射程外掩护不抢着追击')
 })
@@ -525,7 +549,7 @@ test('十个单位同属一队；角色保留、原生移动、暂停恢复和�
   assert.equal(f.generations, 0)
 })
 
-test('更慢的掩护成员落后时受护成员等待，80%到达不能提前推进路线，重启保留角色及进度', async () => {
+test('更慢掩护落后时保留当前路点并预测纠偏，80%到达不能跳过慢成员，重启保留进度', async () => {
   const f = await fixture(4, 10)
   await executeCapabilities([
     { capability: 'combat.move', params: { formationId: '1队', x: 60, y: 5 } },
@@ -536,7 +560,9 @@ test('更慢的掩护成员落后时受护成员等待，80%到达不能提前�
   f.own.forEach(unit => { unit.rx = unit.id === 10 ? 40 : 60; unit.isIdle = false })
   f.submitted.length = 0; await f.tick()
   assert.equal(goal.facts.routeIndex ?? 0, 0)
-  assert.ok(f.submitted.some(action => action.kind === 'stop' && action.unitIds.some(id => id < 6)))
+  assert.equal(f.submitted.some(action => action.kind === 'stop'),false,'普通拉长不靠全队停车维持队形')
+  assert.equal(goal.facts.unitOrders!.orders['10']?.kind,'move','保留慢成员仍有效的移动命令，无需重复下令')
+  assert.equal(goal.facts.coverMotion!.cohesion!.catchingUpIds.includes(10),false,'慢成员仍属于主体，抵达前不能结束当前路点')
   const state = persistState(f.runtime)
   const restored = await harness({ run: async () => outcome([]) }, { formations: new FormationRegistry() })
   await restored.runtime.onSnapshot({ ...f.runtime.snapshot!, seq: f.runtime.snapshot!.seq + 1 })

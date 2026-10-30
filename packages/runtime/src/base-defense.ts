@@ -1,6 +1,6 @@
 import { inTargetRegion, validTargetRegion, type ActionRequest, type TargetRegion } from '@ra2c/contracts'
 import type { GoalContext } from './goals/types.ts'
-import { emptyCoverMotion } from './cover.ts'
+import { emptyUnitOrders } from './unit-orders.ts'
 import { guardAttackOrders } from './attack-orders.ts'
 
 export interface BaseDefenseState { anchorId: number; position: { x: number; y: number }; region: TargetRegion }
@@ -20,7 +20,7 @@ export function observeBaseDefense(ctx: GoalContext<'combat'>): void {
 export function defenseTargets(ctx: GoalContext<'combat'>) { const area=defenseState(ctx).region;return ctx.snap.enemies.filter(unit=>inTargetRegion(unit.rx,unit.ry,area)) }
 export function defenseOrders(ctx: GoalContext<'combat'>): ActionRequest[] {
   const ids=ctx.formations.membersOf(ctx.spec.formationId).filter(id=>ctx.snap.self.some(unit=>unit.id===id)&&!ctx.locked(id))
-  const motion=ctx.goal.facts.coverMotion ??= emptyCoverMotion(), targets=defenseTargets(ctx)
+  const motion=ctx.goal.facts.unitOrders ??= emptyUnitOrders(), targets=defenseTargets(ctx)
   return guardAttackOrders(ctx.snap, ids, targets, motion)
 }
 export function validDefenseState(state: BaseDefenseState): boolean {return !!state&&Number.isSafeInteger(state.anchorId)&&!!state.position&&[state.position.x,state.position.y].every(Number.isFinite)&&validTargetRegion(state.region)}

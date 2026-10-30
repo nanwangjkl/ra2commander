@@ -1,6 +1,7 @@
 import { closeSync, constants, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { ownerId, goalOwner, goalExecutionMode, normalizeAttackGoal, validBuildingPlacement, validTargetRegion } from '@ra2c/contracts'
+import { migrateLegacyUnitOrders } from './unit-orders.ts'
 import { validateCancellation } from './production-cancellation.ts'
 import { validateCover } from './cover.ts'
 import { validateAttackSources } from './attack-selection.ts'
@@ -41,6 +42,8 @@ export function restoreState(runtime: TaskRuntime, state: PersistedState): numbe
   if (!state.sessionKey || runtime.snapshot?.sessionKey !== state.sessionKey) throw new Error('保存状态与当前对局不符，未恢复')
   if (runtime.programs.size || runtime.goals.size) throw new Error('当前已有目标，不能覆盖恢复')
   if (!Array.isArray(state.programs) || !Array.isArray(state.goals) || !Array.isArray(state.formations) || !Array.isArray(state.production) || !Array.isArray(state.handoffs) || !Array.isArray(state.seenUnitIds) || !Array.isArray(state.pausedQueues)) throw new Error('状态结构不完整')
+  state = structuredClone(state)
+  for (const [, goal] of state.goals) if (goal?.facts) migrateLegacyUnitOrders(goal.facts)
   const ids = new Set(state.goals.map(([id]) => id))
   if (state.factoryRallies) validateFactoryRallies(state.factoryRallies, runtime.snapshot)
   if (state.battleResult && (state.battleResult.phase !== 'ended' || !['victory', 'defeat'].includes(state.battleResult.outcome ?? '') || state.battleResult.evidence !== 'public-player-status' || !Array.isArray(state.battleResult.players) || state.battleResult.players.some(player => typeof player.name !== 'string' || [player.allied, player.defeated, player.combatant, player.isObserver].some(flag => typeof flag !== 'boolean')))) throw new Error('对局结束状态非法')

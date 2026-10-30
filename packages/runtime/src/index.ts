@@ -1,24 +1,28 @@
 import { randomUUID } from 'node:crypto'
 import {
-  validateScriptActions, liveScriptActions, inRegion, inTargetRegion, goalExecutionMode, goalOwner, normalizeAttackGoal, attackObjective, ownerId, directionLabels, crushCompatible,
+  validateScriptActions, liveScriptActions, inRegion, inTargetRegion, goalExecutionMode, goalOwner, normalizeAttackGoal, attackObjective, ownerId,
   type ActionRequest, type ActionResult, type ActionContext, type Snapshot, type StepConstraints,
   type GoalConstraints, type GoalSpec, type GoalView, type ScriptAction, type ScriptOwner, type FormationRequest, type GoalExecution, type CoverPolicy, type CrushingRules,
 } from '@ra2c/contracts'
 import { codeHash, type StepExecutor } from '@ra2c/js-worker'
 import { FormationRegistry } from './formation.ts'
-import { emptyFacts, type GoalState, type ProgramState, type ProductionRecord, type Handoff } from './state.ts'
+import { SkillLifecycle } from './skill-lifecycle.ts'
+import { emptyUnitOrders, pruneUnitOrders, UnitOrderBook } from './unit-orders.ts'
+import { CombatCoordinator } from './combat-actions.ts'
+import { ProductionSubmission } from './production-submission.ts'
+import { emptyFacts, type GoalState, type ProgramState, type ProductionRecord, type Handoff, type StepBudget } from './state.ts'
 import { observeProduction, productionProgress } from './production-progress.ts'
-import { cancellationDetail, observeCancellations, pendingProduction, prepareCancellation } from './production-cancellation.ts'
+import { cancellationDetail, observeCancellations, pendingProduction } from './production-cancellation.ts'
 import { ExplorationStore, skillGoalIds, type SkillRun } from './exploration.ts'
 import { RecoveryMonitor } from './recovery.ts'
 import { handlerFor, validateGoalSpec, validateGoalFacts } from './goals/index.ts'
 import { formationPreparing, presentUnitIds, unobservableMembers } from './goals/common.ts'
-import { validateCover, emptyCoverMotion, recordCoverOrder, coverMembers, coverMoves, type CoverMotion } from './cover.ts'
-import { coverCombat, coverRangePairs, airborne, type CoverIntent, type CoverRange } from './cover-combat.ts'
+import { validateCover, coverMembers } from './cover.ts'
+import { airborne, type CoverRange } from './cover-combat.ts'
 import type { GoalContext, GoalProjection } from './goals/types.ts'
 import { FactoryRallies, type FactorySite, type FactoryRallyDeps } from './factory-rally.ts'
 import { ProductionExits, insideFactory, exitPoint, type ExitYield } from './production-exit.ts'
-import { emptyCrushing, planCrushing, recordCrushing, type CrushPair } from './crushing.ts'
+import { recordCrushing } from './crushing.ts'
 export type { ProductionExitState } from './production-exit.ts'
 export { rallyCandidates } from './factory-rally.ts'
 export type { FactorySite, RallySetting, FactoryRallyState } from './factory-rally.ts'
@@ -64,8 +68,6 @@ export interface RuntimeDeps {
   log?: (message: string) => void
 }
 
-interface StepBudget { remaining: number; placementAttempts: Set<string>; crushingPrepared: Set<string> }
-
 export class TaskRuntime {
   battleResult: Snapshot['battle'] | undefined
   session = -1
@@ -73,8 +75,6 @@ export class TaskRuntime {
   private retiredSessions = new Set<string>()
   private latest?: Snapshot
   private draining: Promise<void> | undefined
-  private cancelling: Promise<void> | undefined
-  private coverIdleOrders = new Map<string, CoverMotion>()
   /** 新快照不重置下一位，避免前面的控制对象反复抢先。 */
   private nextProgram = 0
   private pending = new Map<string, { lease: CompileLease; abort: AbortController }>()
@@ -89,13 +89,24 @@ export class TaskRuntime {
   readonly skillRuns = new Map<string, SkillRun>()
   readonly factoryRallies: FactoryRallies
   readonly productionExits = new ProductionExits()
-  private lastUnitOrders = new Map<number, { goalId: string; request: ActionRequest; owner: string; revision: number; generation: number }>()
+  private readonly unitOrders = new UnitOrderBook()
   private exitOrders = { seq: -1, ids: new Set<number>() }
+  private readonly submissions: ProductionSubmission
+  private readonly combat: CombatCoordinator
+  private readonly skills: SkillLifecycle
   private readonly recovery: RecoveryMonitor
 
   constructor(private readonly deps: RuntimeDeps) {
     this.formations = deps.formations ?? new FormationRegistry()
     this.recovery = new RecoveryMonitor(deps.recovery?.stallTicks, deps.recovery?.cooldownTicks)
+    this.combat = new CombatCoordinator({ formations: this.formations, goals: this.goals, programs: this.programs,
+      snapshot: () => this.latest, locked: id => this.locked(id), project: (spec, snap) => this.project(spec, snap),
+      frame: (spec, snap) => this.frame(this.programs.get(this.goals.get(spec.id)!.ownerId)!, [spec], snap, true),
+      submit: deps.submit, ...(deps.coverRanges ? { coverRanges: deps.coverRanges } : {}), ...(deps.crushing ? { crushing: deps.crushing } : {}) })
+    this.skills = new SkillLifecycle({ runs: this.skillRuns, goals: this.goals, formations: this.formations, production: this.production,
+      snapshot: () => this.latest, locked: id => this.locked(id), setCover: (id, policy) => this.setCover(id, policy),
+      uncover: id => this.uncover(id), cancelProductionGoal: id => this.cancelProductionGoal(id), cancelGoal: (id, reason) => this.cancelGoal(id, reason),
+      ...(deps.log ? { log: deps.log } : {}) })
     this.factoryRallies = new FactoryRallies({ current: () => this.latest,
       sites: snap => deps.factorySites?.(snap) ?? Promise.resolve([]),
       tiles: (points, snap) => deps.rallyTiles?.(points, snap) ?? Promise.resolve([]),
@@ -105,6 +116,9 @@ export class TaskRuntime {
       notify: setting => deps.log?.(`[companion] ${setting.name} #${setting.factoryId} 默认集结点${setting.status === 'submitted' ? `指令已提交至 (${setting.point!.x},${setting.point!.y})` : `未设置：${setting.reason ?? setting.status}`}`),
       relocated: (factoryId, before, after, snap) => this.productionExits.relocatePending(factoryId, before, after, snap),
     })
+    this.submissions = new ProductionSubmission({ goals: this.goals, production: this.production, rallies: this.factoryRallies, exits: this.productionExits,
+      ralliesEnabled: !!deps.factorySites, snapshot: () => this.latest, checkpoint: deps.checkpoint, submit: deps.submit,
+      ...(deps.buildingFoundation ? { buildingFoundation: deps.buildingFoundation } : {}) })
   }
   recoveryContext(id: string) { return this.recovery.context(id) }
   private recoveryKey(program: ProgramState): string { return `${this.sessionKey}:${program.revision}:${program.script?.version ?? 0}` }
@@ -166,80 +180,7 @@ export class TaskRuntime {
     return { ...currentProgress, state: continuous ? 'continuous' : 'running', ...(notice ? { detail: [notice, currentProgress.detail].filter(Boolean).join('；') } : {}) }
   }
 
-  async cancelSkillRun(id: string, superseded = false): Promise<void> {
-    const run = this.skillRuns.get(id)
-    if (!run || !['preparing', 'exploring', 'repairing', 'covering'].includes(run.status)) return
-    if (run.kind === 'cover') {
-      if (this.formations.coverOf(run.formationId)?.runId === run.id) await this.uncover(run.formationId)
-      run.status = superseded ? 'superseded' : 'cancelled'
-      for (const goalId of run.ownedPreparationGoalIds ?? run.preparationGoalIds.filter(id => this.goals.get(id)?.spec.skill?.runId === run.id)) {
-        if (this.goals.get(goalId)?.spec.kind === 'production') await this.cancelProductionGoal(goalId)
-        else await this.cancelGoal(goalId, '玩家取消掩护准备')
-      }
-      return
-    }
-    run.status = superseded ? 'superseded' : 'cancelled'
-    run.detail = superseded ? '编队已接受新命令，停止原 Skill 后续步骤' : '玩家取消 Skill；已进入游戏队列的生产不回退'
-    await Promise.all(skillGoalIds(run).map(goalId => {
-      const goal = this.goals.get(goalId)
-      return goal && !['completed', 'partial', 'failed', 'cancelled'].includes(goal.status) ? this.cancelGoal(goalId, run.detail) : Promise.resolve()
-    }))
-  }
-
-  private syncSkillRuns(): void {
-    for (const run of this.skillRuns.values()) {
-      if (!['preparing', 'exploring', 'repairing', 'covering'].includes(run.status)) continue
-      if (run.kind === 'cover') {
-        let profile = this.formations.coverOf(run.formationId)
-        if (run.cover && this.formations.list().some(formation => formation.id === run.formationId)) {
-          const assigned = new Set(run.assignedEscortIds ?? (profile?.runId === run.id ? profile.escortIds : []))
-          const candidates = [...run.escortIds, ...(run.cover.escortSources ?? []).flatMap(source => this.production.filter(record => record.goalId === source.goalId && record.name === (this.goals.get(source.goalId)?.spec as { target?: string })?.target).flatMap(record => record.observedIds).slice(0, source.quantity))]
-          const incoming = candidates.filter(id => !assigned.has(id) && this.latest?.self.some(unit => unit.id === id) && this.formations.ownerOf(id) === run.formationId && !this.locked(id))
-          const kept = profile?.runId === run.id ? profile.escortIds.filter(id => this.formations.ownerOf(id) === run.formationId && this.latest?.self.some(unit => unit.id === id)) : []
-          const desired = { ...run.cover, escortIds: [...new Set([...kept, ...incoming])] }
-          if (JSON.stringify(profile) !== JSON.stringify(desired)) this.setCover(run.formationId, desired)
-          run.assignedEscortIds = [...new Set([...assigned, ...incoming])]
-          run.escortIds = [...new Set([...run.escortIds, ...incoming])]
-          profile = this.formations.coverOf(run.formationId)
-        }
-        if (profile?.runId === run.id) {
-          const escorts = this.latest?.self.filter(unit => profile.escortIds.includes(unit.id) && this.formations.ownerOf(unit.id) === run.formationId).length ?? 0
-          const total = this.latest?.self.filter(unit => this.formations.ownerOf(unit.id) === run.formationId).length ?? 0
-          const preparing = run.preparationGoalIds.some(id => ['pending', 'active'].includes(this.goals.get(id)?.status ?? ''))
-          run.status = escorts && total > escorts ? 'covering' : preparing ? 'preparing' : 'covering'
-          run.detail = `同属${run.formationId}：被掩护${total - escorts}、掩护${escorts}${preparing ? '；等待本次生产和交接，其余可用成员先行动' : escorts ? '；协同行动' : '；掩护成员已损失或准备结束，未追加生产'}`
-        } else if (run.status === 'covering' || run.preparationGoalIds.some(id => this.goals.get(id)?.status === 'cancelled')) { run.status = 'superseded'; run.detail = '掩护已解除或被重新安排' }
-        continue
-      }
-      if (run.kind === 'repair-vehicle') {
-        const repair = this.goals.get(run.repairGoalId)
-        if (repair?.status === 'cancelled') { void this.cancelSkillRun(run.id, true).catch(error => this.deps.log?.(String(error))); continue }
-        if (repair && ['failed', 'partial'].includes(repair.status)) { run.status = repair.status as 'failed' | 'partial'; run.detail = repair.facts.outcomeDetail ?? '维修任务结束'; continue }
-        if (run.preparationGoalIds.some(id => this.goals.get(id)?.status === 'cancelled')) { void this.cancelSkillRun(run.id).catch(error => this.deps.log?.(String(error))); continue }
-        const ready = repair?.facts.repair?.engineerIds ?? []
-        const count = this.latest?.self.filter(unit => this.formations.ownerOf(unit.id) === run.formationId && unit.transport?.unitIds.some(id => ready.includes(id))).length ?? 0
-        run.status = count ? 'repairing' : 'preparing'
-        run.detail = `已组装${count}/${run.quantity}辆维修车`
-        continue
-      }
-      const explore = this.goals.get(run.exploreGoalId), prepare = this.goals.get(run.preparationGoalId)
-      if (explore?.status === 'cancelled') { void this.cancelSkillRun(run.id, true).catch(error => this.deps.log?.(String(error))); continue }
-      if (explore && ['completed', 'partial', 'failed'].includes(explore.status)) {
-        if (explore.status === 'completed' && prepare && !['completed', 'cancelled'].includes(prepare.status)) {
-          run.detail = '探索已完成，等待本次固定数量生产及编队结束'
-          continue
-        }
-        run.status = explore.status as 'completed' | 'partial' | 'failed'
-        run.detail = explore.facts.outcomeDetail ?? '探索完成'
-        if (prepare && !['completed', 'cancelled'].includes(prepare.status)) void this.cancelGoal(prepare.spec.id, run.detail).catch(error => this.deps.log?.(String(error)))
-      } else if (prepare?.status === 'cancelled') {
-        void this.cancelSkillRun(run.id).catch(error => this.deps.log?.(String(error)))
-      } else {
-        const ready = this.latest?.self.some(unit => this.formations.ownerOf(unit.id) === run.formationId && !this.locked(unit.id))
-        run.status = ready ? 'exploring' : 'preparing'
-      }
-    }
-  }
+  cancelSkillRun(id: string, superseded = false): Promise<void> { return this.skills.cancel(id, superseded) }
 
   private program(owner: ScriptOwner): ProgramState {
     const id = ownerId(owner)
@@ -259,12 +200,12 @@ export class TaskRuntime {
       if (old) { old.status = 'superseded'; old.detail = '已重新安排掩护' }
     }
     this.formations.setCover(formationId, cover)
-    this.coverIdleOrders.delete(formationId)
+    this.combat.clearIdle(formationId)
     const program = this.program({ kind: 'formation', formationId })
     program.generation++
     for (const id of program.activeGoalIds) {
       const facts = this.goals.get(id)!.facts
-      if (facts.coverMotion) facts.coverMotion.orders = {}
+      if (facts.unitOrders) facts.unitOrders.orders = {}
       delete facts.coverEnded
     }
   }
@@ -300,7 +241,7 @@ export class TaskRuntime {
     const policy = this.formations.coverOf(formationId)
     if (!policy) return
     this.formations.setCover(formationId)
-    this.coverIdleOrders.delete(formationId)
+    this.combat.clearIdle(formationId)
     const run = this.skillRuns.get(policy.runId)
     if (run?.kind === 'cover') { run.status = failed ? 'failed' : 'partial'; run.detail = detail }
     const present = this.latest ? presentUnitIds(this.latest) : new Set<number>()
@@ -309,6 +250,7 @@ export class TaskRuntime {
     if (program) { program.generation++; program.memory = {} }
     for (const goal of this.goals.values()) if (goal.ownerId === program?.id && (goal.activeSpec || goal.facts.initialized) && ['pending', 'active'].includes(goal.status) && (goal.spec.kind === 'combat' || goal.spec.kind === 'attack')) {
       delete goal.facts.coverMotion
+      delete goal.facts.unitOrders
       goal.facts.coverEnded = detail
       if (goal.spec.kind === 'attack' && released.length) goal.facts.coverReleasedIds = [...new Set([...(goal.facts.coverReleasedIds ?? []), ...released])]
     }
@@ -339,12 +281,12 @@ export class TaskRuntime {
     if (!previous) return
     const snap = this.latest, program = this.programs.get(`formation:${formationId}`)
     this.formations.setCover(formationId)
-    this.coverIdleOrders.delete(formationId)
+    this.combat.clearIdle(formationId)
     const run = this.skillRuns.get(previous.runId)
     if (run) { run.status = 'cancelled'; run.detail = '掩护已解除，成员保留在原队' }
     if (program) {
       program.generation++; program.memory = {}
-      for (const id of program.activeGoalIds) delete this.goals.get(id)!.facts.coverMotion
+      for (const id of program.activeGoalIds) { delete this.goals.get(id)!.facts.coverMotion; delete this.goals.get(id)!.facts.unitOrders }
     }
     const generation = program?.generation
     const ids = snap ? previous.escortIds.filter(id => this.formations.ownerOf(id) === formationId && snap.self.some(unit => unit.id === id)) : []
@@ -593,43 +535,8 @@ export class TaskRuntime {
     await this.cancelGoal(id)
     if (goal.status !== 'cancelled') return '目标已结束'
     goal.facts.cancelProduction = true
-    await this.flushProductionCancellations()
+    await this.submissions.flushCancellations()
     return cancellationDetail(goal, this.production)
-  }
-
-  private flushProductionCancellations(): Promise<void> {
-    return this.cancelling ??= this.sendProductionCancellations().finally(() => { this.cancelling = undefined })
-  }
-  private async sendProductionCancellations(): Promise<void> {
-    for (const record of this.production) {
-      const goal = this.goals.get(record.goalId), snap = this.latest
-      if (!snap || goal?.status !== 'cancelled' || !goal.facts.cancelProduction || !pendingProduction(record)) continue
-      // 其他目标仍需的共享前置保留；这里只撤销本次目标的提交。
-      if (goal.spec.kind === 'production' && record.name !== goal.spec.target && [...this.goals.values()].some(other => other !== goal && ['pending', 'active'].includes(other.status)
-        && other.spec.kind === 'production' && [other.spec.target, ...other.spec.prerequisites].includes(record.name))) continue
-      if (!prepareCancellation(record, this.production, snap)) continue
-      const ticket = record.cancellation!
-      const valid = () => this.sessionKey === snap.sessionKey && this.latest === snap && this.production.includes(record) && record.cancellation === ticket && ticket.state === 'prepared' && goal.status === 'cancelled'
-      try { await this.deps.checkpoint() }
-      catch (error) { delete record.cancellation; goal.facts.blocked = `撤销记录保存失败：${String(error).slice(0, 100)}`; return }
-      try {
-        if (!valid()) { if (record.cancellation === ticket && ticket.state !== 'confirmed') delete record.cancellation; continue }
-        const results = await this.deps.submit([{ kind: 'cancel', name: record.name, quantity: ticket.quantity }], snap, valid)
-        if (ticket.state === 'confirmed') continue
-        if (!results.length || results.every(result => !result.ok && result.submitted === 0)) {
-          delete record.cancellation
-          goal.facts.blocked = `队列撤销尚未发送：${results.map(result => result.reason).join('、')}`
-        } else {
-          ticket.state = results.length && results.every(result => result.ok) ? 'sent' : 'unknown'
-          delete goal.facts.blocked
-        }
-      } catch (error) {
-        // API 调用结果不明时保留票据，重启/重试不能盲目再撤一份。
-        if (ticket.state === 'confirmed') continue
-        ticket.state = 'unknown'
-        goal.facts.blocked = `队列撤销结果待确认：${String(error).slice(0, 120)}`
-      }
-    }
   }
 
   /** 队伍尚未创建时也保留显式控制状态，迟到的成员交接不能恢复它。 */
@@ -674,10 +581,14 @@ export class TaskRuntime {
     if (program) for (const spec of this.activeSpecs(program)) {
       const facts=this.goals.get(spec.id)!.facts, motion=facts.coverMotion
       if(facts.crushing&&this.latest)facts.crushing.pausedAt=this.latest.time
+      if (facts.unitOrders) facts.unitOrders.orders = {}
       if(!motion)continue
-      if(motion.pausedAt!==undefined&&this.latest&&motion.cohesion?.regroupSince!==undefined)motion.cohesion.regroupSince+=Math.max(0,this.latest.tick-motion.pausedAt)
+      if(motion.pausedAt!==undefined&&this.latest&&motion.cohesion?.regroupSince!==undefined) {
+        const elapsed=Math.max(0,this.latest.tick-motion.pausedAt)
+        motion.cohesion.regroupSince+=elapsed
+        if(motion.cohesion.regroupTick!==undefined)motion.cohesion.regroupTick+=elapsed
+      }
       delete motion.pausedAt
-      motion.orders={}
     }
   }
   async stopUnits(ids: number[]): Promise<void> {
@@ -725,9 +636,11 @@ export class TaskRuntime {
 
   private observe(snap: Snapshot): void {
     const converted = new Set<number>()
+    const present = new Set(snap.self.map(unit => unit.id))
     for (const goal of this.goals.values()) {
       // 已退出目标的事实冻结；不能再把后来出现的产物认作旧成员变形。
       if (goal.status !== 'active' && goal.status !== 'pending') continue
+      pruneUnitOrders(goal.facts.unitOrders, present)
       // 回退等待脚本时仍观察已提交的变形，避免把新身份误记成生产。
       const spec = goal.activeSpec ?? (goal.status === 'pending' && goal.facts.initialized ? goal.spec : undefined)
       if (!spec || goal.facts.nativeError) continue
@@ -770,10 +683,10 @@ export class TaskRuntime {
         this.retiredSessions.add(this.sessionKey)
         this.cancelAllCommands()
         this.programs.clear(); this.goals.clear(); this.formations.clear()
-        this.exploration.clear(); this.skillRuns.clear(); this.coverIdleOrders.clear()
+        this.exploration.clear(); this.skillRuns.clear(); this.combat.clearIdle()
         this.recovery.clear()
         this.factoryRallies.reset()
-        this.productionExits.reset(); this.lastUnitOrders.clear()
+        this.productionExits.reset(); this.unitOrders.clear()
         this.exitOrders = { seq: -1, ids: new Set() }
         this.production.length = 0; this.handoffs.length = 0; this.seenUnitIds.clear(); this.pausedQueues.clear()
       }
@@ -788,7 +701,7 @@ export class TaskRuntime {
     // 结束帧可能已经清空己方列表；先结算胜负，冻结最后正常帧的战损和掩护事实。
     if (this.battleResult?.phase === 'ended') this.finishBattle()
     else this.observe(snap)
-    if (this.battleResult?.phase !== 'ended') this.syncSkillRuns()
+    if (this.battleResult?.phase !== 'ended') this.skills.sync()
     if (!this.draining) this.draining = this.drain().finally(() => { this.draining = undefined })
     await this.draining
   }
@@ -828,7 +741,7 @@ export class TaskRuntime {
         if (this.latest !== snap) continue
       }
       if (this.production.some(record => pendingProduction(record) > 0 && this.goals.get(record.goalId)?.facts.cancelProduction)) {
-        await this.flushProductionCancellations()
+        await this.submissions.flushCancellations()
         if (this.latest !== snap) continue
       }
       if (this.handoffs.length) await this.flushHandoffs(snap)
@@ -838,7 +751,7 @@ export class TaskRuntime {
         if (this.latest !== snap) break
         const index = (start + offset) % programs.length
         const program = programs[index]!
-        if (program.status === 'idle' && program.owner.kind === 'formation' && this.formations.coverOf(program.owner.formationId)) await this.coverStandby(program, snap)
+        if (program.status === 'idle' && program.owner.kind === 'formation' && this.formations.coverOf(program.owner.formationId)) await this.combat.standby(program, snap)
         // 在 await 前交棒；当前计算若被新快照抢占，下一轮也不会从它重新开始。
         this.nextProgram = (index + 1) % programs.length
         if (program.status === 'active') {
@@ -954,7 +867,7 @@ export class TaskRuntime {
       for (const blocker of blockers) {
         const point = await this.factoryRallies.point(factory, sites, snap, store.state.yields.map(order => order.point))
         if (!point || !this.exitPointAllowed(blocker.id, point) || this.latest !== snap) continue
-        const stamp = this.exitStamp(blocker.id), previous = this.lastUnitOrders.get(blocker.id)
+        const stamp = this.exitStamp(blocker.id), previous = this.unitOrders.get(blocker.id)
         const resume = previous && previous.owner === stamp.owner && previous.revision === stamp.revision && previous.generation === stamp.generation ? { goalId: previous.goalId, request: structuredClone(previous.request) } : undefined
         const order: ExitYield = { unitId: blocker.id, factoryId: factory.id, point, sentAt: snap.time, ...stamp, ...(resume ? { resume } : {}) }
         store.state.yields.push(order)
@@ -985,54 +898,6 @@ export class TaskRuntime {
       else if (!results.length || results.some(result => !result.ok)) job.detail = '集结移动回执未确认，保留准备状态'
       if (--budget <= 0) break
     }
-  }
-
-  private async coverStandby(program: ProgramState, snap: Snapshot): Promise<void> {
-    if (program.owner.kind !== 'formation') return
-    const formationId = program.owner.formationId, policy = this.formations.coverOf(formationId), revision = this.formations.revision, generation = program.generation
-    if (!policy || this.formations.membersOf(formationId).some(id => this.locked(id))) return
-    const ids = this.formations.membersOf(formationId), previous = this.coverIdleOrders.get(formationId) ?? emptyCoverMotion()
-    if (snap.self.some(unit => ids.includes(unit.id) && unit.isDeployed)) return
-    const intent: CoverIntent = { targets: [], threats: snap.enemies, region: { name: '掩护待命', x1: 0, y1: 0, x2: snap.mapWidth - 1, y2: snap.mapHeight - 1 }, waiting: false }
-    const ranges = await this.deps.coverRanges?.(coverRangePairs(policy, snap, ids, intent, previous), snap).catch(() => []) ?? []
-    const plan = coverCombat(policy, snap, ids, intent, previous, ranges)
-    const guard = () => this.latest === snap && this.sessionKey === snap.sessionKey && program.status === 'idle' && program.generation === generation && this.formations.revision === revision && this.formations.coverOf(formationId) === policy
-    if (!guard()) return
-    this.coverIdleOrders.set(formationId, plan.state)
-    for (const request of plan.actions.slice(0, 20)) {
-      const results = await this.deps.submit([request], snap, guard)
-      if (!guard()) return
-      recordCoverOrder(plan.state, request, snap.tick, results)
-    }
-  }
-
-  private async coverActions(spec: GoalSpec, snap: Snapshot): Promise<ActionRequest[] | undefined> {
-    if ((spec.kind !== 'combat' && spec.kind !== 'attack') || !spec.formationId) return undefined
-    const policy = this.formations.coverOf(spec.formationId)
-    if (!policy) return undefined
-    const goal = this.goals.get(spec.id)!, projected = this.project(spec, snap), ids = projected.constraints.allowedUnitIds
-    // 持续守卫无匹配目标时全队原地待命，不由掩护流程追加站位移动。
-    if (spec.kind === 'combat' && (spec.baseDefense || spec.objective && (spec.mode === 'hold' || spec.mode === 'assault')) && !projected.constraints.enemyIds.length) return undefined
-    const previous = goal.facts.coverMotion ?? emptyCoverMotion()
-    if (spec.kind === 'combat' && goal.facts.retreatTriggered && spec.retreat) {
-      const plan = coverMoves(policy, snap, ids, spec.retreat, previous, { directDestination: true })
-      goal.facts.coverMotion = plan.state
-      return plan.actions
-    }
-    const targetRegion = projected.constraints.targetRegion ?? attackObjective(spec)?.target.region
-    const threats = snap.enemies.filter(unit => !targetRegion || inTargetRegion(unit.rx, unit.ry, targetRegion))
-    let targets = snap.enemies.filter(unit => projected.constraints.enemyIds.includes(unit.id))
-    if (spec.kind === 'combat' && !spec.allowedActions.includes('attack')) targets = []
-    if (spec.kind === 'combat' && spec.patrol) targets = targets.filter(target => snap.self.some(unit => ids.includes(unit.id) && Math.hypot(unit.rx - target.rx, unit.ry - target.ry) <= Math.max(unit.primaryWeapon?.maxRange ?? 0, unit.secondaryWeapon?.maxRange ?? 0) + policy.gap))
-    const intent: CoverIntent = {
-      targets, threats, region: projected.constraints.region!,
-      destination: spec.kind === 'combat' ? spec.route?.[goal.facts.routeIndex ?? 0] ?? spec.destination : attackObjective(spec)?.search.destination,
-      waiting: !policy.escortIds.some(id => snap.self.some(unit => unit.id === id)) && (policy.escortSources ?? []).some(source => ['pending', 'active'].includes(this.goals.get(source.goalId)?.status ?? '')),
-    }
-    const ranges = await this.deps.coverRanges?.(coverRangePairs(policy, snap, ids, intent, previous), snap).catch(() => []) ?? []
-    const plan = coverCombat(policy, snap, ids, intent, previous, ranges)
-    if (this.latest === snap && this.formations.coverOf(spec.formationId) === policy) goal.facts.coverMotion = plan.state
-    return plan.actions
   }
 
   private async flushHandoffs(snap: Snapshot): Promise<void> {
@@ -1132,7 +997,7 @@ export class TaskRuntime {
       const goal = this.goals.get(spec.id)!
       if (goal.facts.nativeError) continue
       try {
-        const requests = await this.coverActions(spec, snap) ?? handlerFor(spec).nativeActions!(this.goalContext(spec, snap))
+        const requests = await this.combat.coverActions(spec, snap) ?? handlerFor(spec).nativeActions!(this.goalContext(spec, snap))
         const actions = requests.slice(0, available).map(request => ({ goalId: spec.id, request }))
         const before = budget.remaining
         await this.submitActions(program, snap, actions, 'native', valid, budget, available, [spec.id])
@@ -1157,7 +1022,7 @@ export class TaskRuntime {
     if (!valid() || !budget.remaining) return
     if (program.owner.kind === 'formation' && this.formations.coverOf(program.owner.formationId) && specs.every(spec => spec.kind === 'combat' || spec.kind === 'attack' && !spec.aircraftIds.length)) {
       for (const spec of specs) {
-        const actions = (await this.coverActions(spec, snap) ?? []).map(request => ({ goalId: spec.id, request }))
+        const actions = (await this.combat.coverActions(spec, snap) ?? []).map(request => ({ goalId: spec.id, request }))
         if (!await this.submitActions(program, snap, actions, 'script', valid, budget, budget.remaining, [spec.id])) return
       }
       return
@@ -1184,74 +1049,10 @@ export class TaskRuntime {
     if (authorized()) { program.memory = outcome.memory; program.stats.errors = 0 }
   }
   /** 模型仍表达攻击意图；只把本帧合法攻击转换为宿主碾压，不扩大成员和目标范围。 */
-  private prepareCrushing(program: ProgramState, snap: Snapshot, actions: ScriptAction[], mode: 'script' | 'native', budget: StepBudget, goalIds: string[]) {
-    const derived = new Set<ActionRequest>(), replacements = new Map<string, ScriptAction[]>()
-    if (!this.deps.crushing) return { actions, derived }
-    for (const spec of this.activeSpecs(program)) {
-      if ((spec.kind !== 'combat' && spec.kind !== 'attack') || !goalIds.includes(spec.id) || goalExecutionMode(spec) !== mode || budget.crushingPrepared.has(spec.id)) continue
-      const goal = this.goals.get(spec.id)!, incoming = actions.filter(item => item.goalId === spec.id)
-      if (goal.facts.nativeError || !incoming.length && !Object.keys(goal.facts.crushing?.pairs ?? {}).length) continue
-      const frame = this.frame(program, [spec], snap, true), constraints = frame.constraints.goals![spec.id]!
-      if (!constraints.allowedActions?.includes('attack') || goal.facts.retreatTriggered) continue
-      budget.crushingPrepared.add(spec.id)
-      // 非法原始请求留给既有错误处理，不能借转换绕过脚本校验。
-      const valid = incoming.filter((item): item is ScriptAction & { request: ActionRequest } => !['createFormation', 'transferUnits', 'dissolveFormation'].includes(item.request.kind) && !validateScriptActions([item], frame.constraints, frame.snapshot))
-      const state = goal.facts.crushing ??= emptyCrushing(), motion = goal.facts.coverMotion ??= emptyCoverMotion()
-      const ids = constraints.allowedUnitIds, policy = spec.formationId ? this.formations.coverOf(spec.formationId) : undefined
-      const targets = snap.enemies.filter(target => constraints.enemyIds.includes(target.id) || constraints.coverFire?.enemyIds.includes(target.id))
-      const members = snap.self.filter(unit => ids.includes(unit.id)), body = members.filter(unit => !policy?.escortIds.includes(unit.id))
-      const guide = members.find(unit => unit.id === motion.prediction?.guideId) ?? members.slice().sort((a, b) => (a.speed ?? 0) - (b.speed ?? 0) || a.id - b.id)[0]
-      const distance = (a: { rx: number; ry: number }, b: { rx: number; ry: number }) => Math.hypot(a.rx - b.rx, a.ry - b.ry)
-      let following: ActionRequest[] | undefined
-      const claims: CrushPair[] = []
-      for (const other of this.goals.values()) {
-        const owner = this.programs.get(other.ownerId), active = other.activeSpec
-        if (other === goal || !Object.keys(other.facts.crushing?.pairs ?? {}).length || other.status !== 'active' || !active || !owner || owner.status !== 'active' || !owner.activeGoalIds.includes(active.id) || other.facts.nativeError || other.facts.retreatTriggered) continue
-        const scope = this.goalConstraints(active, snap)
-        for (const pair of Object.values(other.facts.crushing?.pairs ?? {})) {
-          const enemy = snap.enemies.find(unit => unit.id === pair.targetId), attacker = snap.self.find(unit => unit.id === pair.unitId)
-          if (pair.phase === 'crushing' && scope.allowedUnitIds.includes(pair.unitId) && attacker && enemy && crushCompatible(attacker, enemy, this.deps.crushing) && (scope.enemyIds.includes(enemy.id) || scope.coverFire?.enemyIds.includes(enemy.id))) claims.push({ ...pair, point: { x: enemy.rx, y: enemy.ry, onBridge: !!enemy.onBridge } })
-        }
-      }
-      const requests = planCrushing({ snap, rules: this.deps.crushing, state, unitIds: ids, targets, requests: valid.map(item => item.request), orders: motion.orders, claims, focus: attackObjective(spec)?.coordination === 'focus',
-        escort: id => !!policy?.escortIds.includes(id),
-        canPursue: (unit, target) => {
-          const escort = !!policy?.escortIds.includes(unit.id)
-          if (!escort && !constraints.enemyIds.includes(target.id)) return false
-          if (!policy) return true
-          if (motion.heldIds.includes(unit.id) || motion.cohesion?.catchingUpIds.includes(unit.id)) return false
-          if (!escort) return unit.id === guide?.id || !!guide && distance(target, guide) <= policy.gap && distance(unit, guide) <= policy.gap * 2
-          const near = body.slice().sort((a, b) => distance(unit, a) - distance(unit, b))[0]
-          const followed = body.some(member => state.pairs[member.id]?.targetId === target.id || valid.some(item => item.request.kind === 'attack' && item.request.unitIds.includes(member.id) && item.request.targetId === target.id) || ['attack', 'crush'].includes(motion.orders[member.id]?.kind ?? '') && motion.orders[member.id]?.targetId === target.id)
-          return !!near && followed && distance(unit, near) <= policy.gap && body.some(member => distance(target, member) <= policy.gap)
-        },
-        follow: unit => {
-          if (!policy) return
-          const destination = targets.slice().sort((a, b) => guide ? distance(guide, a) - distance(guide, b) : a.id - b.id)[0]
-          if (!destination) return
-          following ??= coverMoves(policy, snap, ids, { x: destination.rx, y: destination.ry }, motion, { ...(constraints.region ? { region: constraints.region } : {}), threat: destination }).actions
-          const request = following.find(request => 'unitIds' in request && request.unitIds.includes(unit.id))
-          return request && 'unitIds' in request ? { ...request, unitIds: [unit.id] } : undefined
-        },
-      })
-      for (const request of requests) if (request.kind === 'crush') derived.add(request)
-      const accepted = new Set<ScriptAction>(valid)
-      replacements.set(spec.id, [...requests.map(request => ({ goalId: spec.id, request })), ...incoming.filter(item => !accepted.has(item))])
-    }
-    const emitted = new Set<string>(), result: ScriptAction[] = []
-    for (const item of actions) {
-      const replacement = replacements.get(item.goalId)
-      if (!replacement) result.push(item)
-      else if (!emitted.has(item.goalId)) { result.push(...replacement); emitted.add(item.goalId) }
-    }
-    for (const [id, replacement] of replacements) if (!emitted.has(id)) result.push(...replacement)
-    return { actions: result, derived }
-  }
-
   /** 脚本、固定流程及宿主子步骤共用预算、即时校验、台账和回执。 */
   private async submitActions(program: ProgramState, snap: Snapshot, actions: ScriptAction[], mode: 'script' | 'native', valid: () => boolean, budget: StepBudget, limit = budget.remaining, crushingGoals = actions.map(item => item.goalId)): Promise<boolean> {
     if (!valid()) return false
-    const prepared = this.prepareCrushing(program, snap, actions, mode, budget, crushingGoals)
+    const prepared = this.combat.prepareCrushing(this.activeSpecs(program), snap, actions, mode, budget, crushingGoals)
     actions = prepared.actions
     let remaining = limit
     let deferred = false
@@ -1289,45 +1090,13 @@ export class TaskRuntime {
       }
       let record: ProductionRecord | undefined
       if (request.kind === 'produce') {
-        if (this.deps.factorySites) {
-          try {
-            const checked = await this.factoryRallies.beforeProduction(fresh.constraints.goals![item.goalId]!.productionQueueTypes![request.name]!, snap, () => valid() && goal.status === 'active' && goal.activeSpec === activeSpec)
-            if (!valid() || goal.status !== 'active' || goal.activeSpec !== activeSpec) return false
-            if (!checked.ok) { goal.facts.rallyBlocked = true; goal.facts.blocked = checked.reason ?? '等待可用集结点后生产'; deferred = true; continue }
-            if (goal.facts.rallyBlocked) { delete goal.facts.rallyBlocked; delete goal.facts.blocked }
-          } catch (error) {
-            if (!valid() || goal.status !== 'active' || goal.activeSpec !== activeSpec) return false
-            goal.facts.rallyBlocked = true; goal.facts.blocked = `生产前集结点检查未完成：${String(error).slice(0, 120)}`; deferred = true; continue
-          }
-        }
-        const spec = goal.activeSpec
-        // 同一句话明确要求的建筑也可能先被其他目标当作前置生产；统一记到该建设目标，避免换代码后再造一遍。
-        const target = spec.kind === 'production' && request.name !== spec.target ? [...this.goals.values()].find(candidate => {
-          const desired = candidate.activeSpec ?? candidate.spec
-          return !['cancelled', 'completed', 'partial', 'failed'].includes(candidate.status) && desired.kind === 'production' && !desired.maintainPower && !desired.placement && !desired.placementRegion && !desired.afterGoalId && desired.target === request.name
-            && (productionProgress(desired, this.production, snap).remaining[request.name] ?? 0) >= request.quantity
-        }) : undefined
-        record = { id: randomUUID(), goalId: target?.spec.id ?? item.goalId, name: request.name, quantity: request.quantity, building: spec.kind === 'production' && (request.name !== spec.target || spec.targetType === 2), queueType: fresh.constraints.goals![item.goalId]!.productionQueueTypes![request.name]!, state: 'reserved', observedIds: [], placed: false }
-        const ownerSpec = target?.activeSpec ?? target?.spec ?? spec
-        if (ownerSpec.kind === 'production' && ownerSpec.target === request.name && ownerSpec.placementRegion) record.placementRegion = structuredClone(ownerSpec.placementRegion)
-        if (ownerSpec.kind === 'production' && ownerSpec.target === request.name && ownerSpec.placement) {
-          const submitted = this.production.filter(r => r.goalId === record!.goalId && r.name === request.name && r.state !== 'rejected').reduce((n, r) => n + r.quantity, 0)
-          record.placement = { anchor: structuredClone(ownerSpec.placement.anchor), directions: Array.from({ length: request.quantity }, (_, n) => ownerSpec.placement!.directions[Math.min(submitted + n, ownerSpec.placement!.directions.length - 1)]!) }
-          const base = ownerSpec.afterGoalId ? this.goals.get(ownerSpec.afterGoalId)?.facts.relocation : undefined
-          if (base && ownerSpec.placement.anchor.name === '基地') record.placement.anchor = { ...base.position, name: '基地' }
-        }
-        this.production.push(record)
-        try { await this.deps.checkpoint() }
-        catch (err) { record.state = 'rejected'; goal.facts.blocked = `生产预留保存失败: ${String(err)}`; return false }
-        if (!valid() || goal.status !== 'active') { record.state = 'rejected'; return false }
+        const reservation = await this.submissions.reserve(goal, request, fresh.constraints.goals![item.goalId]!, snap, valid)
+        if (reservation.kind === 'interrupted') return false
+        if (reservation.kind === 'deferred') { deferred = true; continue }
+        record = reservation.record
       }
       const guard = () => valid() && goal.status === 'active' && this.goals.get(item.goalId) === goal && goal.activeSpec === activeSpec
-      if (request.kind === 'place') {
-        // 该字段只由宿主按最新集结事实填写，不接受生成脚本自行放宽或伪造。
-        const points = this.factoryRallies.protectedPoints(snap, this.productionExits.state.units)
-        if (points.length) request.rallyPoints = points
-        else delete request.rallyPoints
-      }
+      if (request.kind === 'place') this.submissions.protectPlacement(request, snap)
       let phase: 'prepare' | 'submit' | 'receipt' = 'prepare'
       try {
         const handler = handlerFor(activeSpec)
@@ -1336,41 +1105,17 @@ export class TaskRuntime {
         const results = await this.deps.submit([request], snap, guard)
         if (request.kind === 'crush' && !guard()) return false
         recordCrushing(goal.facts.crushing, request, results, snap)
-        // 让路完成后由碾压协同器按当前敌人和队形重新决策，不旁路重放旧强移。
-        if (request.kind === 'crush' && results.length && results.every(result => result.ok)) for (const unitId of request.unitIds) this.lastUnitOrders.delete(unitId)
-        if ('unitIds' in request && ['move', 'attackMove', 'attack', 'guard'].includes(request.kind) && results.length && results.every(result => result.ok)) {
-          for (const unitId of request.unitIds) this.lastUnitOrders.set(unitId, { goalId: item.goalId, request: { ...request, unitIds: [unitId] }, owner: program.id, revision: program.revision, generation: program.generation })
-        }
-        if (activeSpec.kind === 'combat' || activeSpec.kind === 'attack') goal.facts.coverMotion ??= emptyCoverMotion()
-        if (goal.facts.coverMotion) recordCoverOrder(goal.facts.coverMotion, request, snap.tick, results)
+        const orders = activeSpec.kind === 'combat' || activeSpec.kind === 'attack' ? goal.facts.unitOrders ??= emptyUnitOrders() : undefined
+        this.unitOrders.record(item.goalId, program, request, snap, results, orders)
         phase = 'receipt'
         if (handler.afterSubmit?.(this.goalContext(goal.activeSpec, snap), request, results)) continue
         if (mode === 'script') this.recovery.trace(program.id, this.recoveryKey(program), snap.tick, { goalId: item.goalId, request, results })
         if (request.kind === 'crush' && (!results.length || results.some(result => !result.ok))) continue
-        if (request.kind === 'place' && results.length && results.every(result => !result.ok && result.submitted === 0 && result.reason === 'building-rally-conflict')) {
-          goal.facts.placementBlocked = true
-          const location = results[0]!.placement, foundation = this.deps.buildingFoundation?.(request.name)
-          if (!location || !foundation) goal.facts.blocked = '无法确认建筑占地及替代集结点，保留就绪建筑'
-          else {
-            try {
-              const checked = await this.factoryRallies.beforePlacement({ id: -1, name: request.name, x: location.x, y: location.y, foundation, factory: 0 }, snap, guard, this.productionExits.state.units)
-              if (!guard()) return false
-              goal.facts.blocked = checked.ok ? '已避开建筑落点调整集结点，下一步继续放置' : checked.reason ?? '集结点尚未安全换点，保留就绪建筑'
-            } catch (error) {
-              if (!guard()) return false
-              goal.facts.blocked = `放置前集结点调整未完成，保留就绪建筑：${String(error).slice(0, 120)}`
-            }
-          }
-          continue
-        }
-        if (request.kind === 'place' && results.length && results.every(result => !result.ok && result.submitted === 0 && (['no-spot', 'cannot-place', 'building-spacing'].includes(result.reason ?? '') || result.reason?.startsWith('placement-footprint-unavailable:')))) {
-          goal.facts.placementBlocked = true
-          const missing = results.find(result => result.reason?.startsWith('placement-footprint-unavailable:'))?.reason?.split(':')[1]
-          goal.facts.blocked = missing ? `缺少${missing}的建筑占地数据，保留就绪建筑并继续重试`
-            : request.placement ? `${request.name} 在${request.placement.anchor.name ?? '参照点'}${directionLabels[request.placement.direction]}暂无合法位置，保留就绪建筑并继续尝试该方向`
-            : `${request.name} 暂无可放置位置，保留就绪建筑并继续重试`
-          program.stats.rejected++
-          continue
+        if (request.kind === 'place') {
+          const placement = await this.submissions.placementResult(goal, request, results, snap, guard)
+          if (placement === 'interrupted' || !guard()) return false
+          if (placement === 'rejected') program.stats.rejected++
+          if (placement) continue
         }
         if (request.kind !== 'produce' && results.some(result => !result.ok && ['invisible-target', 'invalid-units', 'stale-snapshot', 'stale-session'].includes(result.reason ?? ''))) continue
         if (!results.length || results.some(r => !r.ok)) {

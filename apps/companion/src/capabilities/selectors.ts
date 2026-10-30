@@ -7,15 +7,8 @@ import { resolveUnitSelection, type SelectionPolicy, type SelectionQuery } from 
 import { GameCatalog } from '../game-catalog.ts'
 export { GameCatalog, loadGameCatalog } from '../game-catalog.ts'
 
-const digits = '零一二三四五六七八九'
-export function chineseNumber(value: string): number {
-  if (/^\d+$/.test(value)) return Number(value)
-  if (value === '两') return 2
-  if (value.includes('十')) { const [tens, ones] = value.split('十'); return (tens ? digits.indexOf(tens) : 1) * 10 + (ones ? digits.indexOf(ones) : 0) }
-  return digits.indexOf(value)
-}
-export const normalizeName = (value: string): string => value.normalize('NFKC').replace(/^@/, '').replace(/\s+/g, '').replace(/([1-9])楼/g, (_match, n: string) => `${digits[Number(n)]}楼`)
-export const formationAlias = (value: string) => normalizeName(value).replace(/^([\d一二三四五六七八九十两]+)队$/, (_match, n: string) => `${chineseNumber(n)}队`)
+export { chineseNumber, normalizeName, formationAlias } from '../command-text.ts'
+import { normalizeName, formationAlias } from '../command-text.ts'
 export function formationName(ctx: CommandContext, value: string, allowNew = false, allowPending = false): string {
   const normalized = formationAlias(value)
   const existing = ctx.formations.list().find(formation => formation.id === value.replace(/^@/, ''))
