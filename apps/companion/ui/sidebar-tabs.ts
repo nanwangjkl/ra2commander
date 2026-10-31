@@ -1,7 +1,7 @@
 declare global { interface Window { __ra2cUnmountSidebarTabs?: () => void } }
 
 /** 页签只改变中间内容的可见性，保留命令订阅、输入和反馈草稿。 */
-export function mountSidebarTabs(): void {
+export function mountSidebarTabs(onSelect: () => void = () => {}): () => void {
   window.__ra2cUnmountSidebarTabs?.()
   const sidebar = document.querySelector<HTMLElement>('#sidebar')!
   const tabs = [...sidebar.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
@@ -14,6 +14,7 @@ export function mountSidebarTabs(): void {
       item.tabIndex = selected ? 0 : -1
       document.getElementById(item.getAttribute('aria-controls')!)!.hidden = !selected
     }
+    onSelect()
   }
   for (const [index, tab] of tabs.entries()) {
     tab.addEventListener('click', () => select(tab), { signal: lifetime.signal })
@@ -26,5 +27,10 @@ export function mountSidebarTabs(): void {
     }, { signal: lifetime.signal })
   }
   select(tabs.find(tab => tab.dataset.page === sidebar.dataset.activePage) ?? tabs[0]!)
-  window.__ra2cUnmountSidebarTabs = () => lifetime.abort()
+  const dispose = () => {
+    lifetime.abort()
+    if (window.__ra2cUnmountSidebarTabs === dispose) delete window.__ra2cUnmountSidebarTabs
+  }
+  window.__ra2cUnmountSidebarTabs = dispose
+  return dispose
 }

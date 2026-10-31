@@ -272,7 +272,7 @@ async function main(): Promise<void> {
   if (legacy) console.log('[companion] 保留正在进行的旧版对局；结束后打开工作台，不自动迁移或刷新')
   else console.log(`[companion] 工作台: ${new URL(WORKBENCH_PATH, server.url).href}`)
   if (!reused) await dismissStartupDialogs(frame)
-  if (reused && !legacy) await refreshCommandPanel(page)
+  if (reused && !legacy) await refreshCommandPanel(page).catch(error => console.log(`[companion] 侧栏更新失败，保留原界面：${String(error)}`))
 
   if (!providers.size) {
     console.log('[companion] 未配置任何云模型 key（.env），task new 不可用；桥命令不受影响。')

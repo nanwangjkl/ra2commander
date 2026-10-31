@@ -13,7 +13,7 @@ export function buildWorkbench(root: string): Record<string, string> {
   const ui = join(root, 'apps/companion/ui')
   const out = join(root, '.runtime/ui')
   mkdirSync(out, { recursive: true })
-  const sources = ['workbench', 'sidebar-tabs', 'command-panel', 'command-card', 'command-feedback']
+  const sources = ['workbench', 'workbench-lifecycle', 'workbench-shell', 'sidebar-tabs', 'command-panel', 'command-card', 'command-feedback']
   uiVersion = createHash('sha256').update(['index.html', 'workbench.css', ...sources.map(name => `${name}.ts`)].map(name => readFileSync(join(ui, name), 'utf8')).join('\n')).digest('hex').slice(0, 12)
   const files: Record<string, string> = { [WORKBENCH_PATH]: join(ui, 'index.html'), [`${WORKBENCH_PATH}index.html`]: join(ui, 'index.html'), [`${WORKBENCH_PATH}workbench.css`]: join(ui, 'workbench.css') }
   for (const name of sources) {
@@ -26,44 +26,18 @@ export function buildWorkbench(root: string): Record<string, string> {
   return files
 }
 
-/** 更新侧栏模块与样式，保留已有游戏文档、全屏桥和窗口焦点。 */
+/** 仅升级工作台模块；并发刷新只允许最新请求挂载，资源失败时旧界面继续工作。 */
 export async function refreshCommandPanel(page: Page): Promise<void> {
   await page.evaluate(async version => {
-    const previous = window as Window & { __ra2cUnmountCommands?: () => void; __ra2cUnmountSidebarTabs?: () => void }
-    // 只替换侧栏子节点以移除旧输入监听，保留布局代码持有的 sidebar 节点。
-    previous.__ra2cUnmountCommands?.()
-    previous.__ra2cUnmountSidebarTabs?.()
-    const response = await fetch(`/commander/?v=${version}`, { cache: 'no-store' })
-    if (!response.ok) throw new Error('侧栏资源读取失败')
-    const template = new DOMParser().parseFromString(await response.text(), 'text/html')
-    // 移动布局代码正在引用的节点，保留点击监听和连接状态轮询；不重载游戏文档。
-    const heading = template.querySelector('.sidebar-heading')!.cloneNode(true) as HTMLElement
-    const status = template.querySelector('.status-bar')!.cloneNode(true) as HTMLElement
-    for (const id of ['toggle-sidebar', 'connection-dot', 'connection-text', 'notice']) {
-      const current = document.getElementById(id)
-      const target = heading.querySelector(`#${id}`) ?? status.querySelector(`#${id}`)
-      if (current && target) {
-        if (id === 'toggle-sidebar') for (const name of ['aria-label', 'title']) current.setAttribute(name, target.getAttribute(name)!)
-        target.replaceWith(current)
-      }
-    }
-    const sidebar = document.querySelector('#sidebar')!
-    sidebar.setAttribute('aria-label', template.querySelector('#sidebar')!.getAttribute('aria-label')!)
-    const replacement = sidebar.cloneNode(false) as HTMLElement
-    replacement.innerHTML = template.querySelector('#sidebar')!.innerHTML
-    sidebar.replaceChildren(...Array.from(replacement.childNodes))
-    document.querySelector('.sidebar-heading')?.remove()
-    document.querySelector('.status-bar')?.remove()
-    document.querySelector('.toolbar')?.remove()
-    sidebar.before(heading)
-    sidebar.after(status)
-    const css = document.querySelector<HTMLLinkElement>('link[rel="stylesheet"]')!
-    css.href = `/commander/workbench.css?v=${version}`
-    const url = `/commander/command-panel.js?v=${version}`
-    const panel = await import(url) as { mountCommandPanel: () => void }
-    const tabs = await import(`/commander/sidebar-tabs.js?v=${version}`) as { mountSidebarTabs: () => void }
-    tabs.mountSidebarTabs()
-    panel.mountCommandPanel()
+    const previous = window.__ra2cWorkbenchRefresh
+    const controller = new AbortController()
+    window.__ra2cWorkbenchRefresh = controller
+    previous?.abort()
+    try {
+      const module = await import(`/commander/workbench-lifecycle.js?v=${version}`) as { refreshWorkbench: (version: string, signal: AbortSignal) => Promise<void> }
+      if (!controller.signal.aborted) await module.refreshWorkbench(version, controller.signal)
+    } catch (error) { if (!controller.signal.aborted) throw error }
+    finally { if (window.__ra2cWorkbenchRefresh === controller) delete window.__ra2cWorkbenchRefresh }
   }, uiVersion)
 }
 

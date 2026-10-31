@@ -3,7 +3,28 @@ import { applyCommandEvent, type CardData } from './command-card.js'
 import { mountFeedback, type FeedbackDraft } from './command-feedback.js'
 import type { CurrentCommands } from '../../../packages/contracts/src/battle-record.ts'
 
-declare global { interface Window { __ra2cUnmountCommands?: () => void } }
+interface CommandPanelState {
+  cards: Map<string, CardData>
+  drafts: Map<string, FeedbackDraft>
+  current: CurrentCommands
+  seq: number
+  initialized: boolean
+  scrollTop: number
+}
+declare global { interface Window { __ra2cUnmountCommands?: () => void; __ra2cCommandPanelState?: CommandPanelState } }
+
+/** 页面内的视图与草稿；重连只读服务端当前局，不重放下令或反馈。兼容旧页面的草稿交接。 */
+export function commandPanelState(): CommandPanelState {
+  if (window.__ra2cCommandPanelState) return window.__ra2cCommandPanelState
+  const state: CommandPanelState = { cards: new Map(), drafts: new Map(), current: { battleId: null, sessionKey: null, events: [], feedback: [], warning: '' }, seq: 0, initialized: false, scrollTop: document.querySelector<HTMLElement>('#command-cards')?.scrollTop ?? 0 }
+  for (const card of document.querySelectorAll<HTMLElement>('[data-command]')) {
+    const note = card.querySelector<HTMLTextAreaElement>('.feedback-form textarea')
+    const panel = card.querySelector<HTMLElement>('.feedback-form')
+    const rating = card.querySelector<HTMLElement>('[data-rating][aria-pressed="true"]')?.dataset.rating as FeedbackDraft['rating']
+    if (note && panel) state.drafts.set(card.dataset.command!, { note: note.value, open: !panel.hidden, ...(rating ? { rating } : {}), ...(card.querySelector<HTMLButtonElement>('[type="submit"]')?.disabled ? { pending: true } : {}) })
+  }
+  return window.__ra2cCommandPanelState = state
+}
 
 const LABEL: Record<string, string> = {
   received: '已收到', understanding: '理解中', queued: '等待前序指令', understood: '已理解', binding: '绑定目标',
@@ -12,20 +33,23 @@ const LABEL: Record<string, string> = {
   partial: '部分执行', 'partial-completed': '部分完成', failed: '失败', cancelled: '已取消', blocked: '执行受阻', paused: '已暂停', faulted: '运行出错',
 }
 
-export function mountCommandPanel(): void {
+export function mountCommandPanel(onReady: () => void = () => {}): () => void {
   window.__ra2cUnmountCommands?.()
   const cards = document.querySelector<HTMLDivElement>('#command-cards')!
   const empty = document.querySelector<HTMLElement>('#empty-state')!
   const form = document.querySelector<HTMLFormElement>('#say-form')!
   const input = document.querySelector<HTMLInputElement>('#say-input')!
   const status = document.querySelector<HTMLElement>('#events-status')!
-  const showStatus = (message: string) => { status.textContent = message; status.parentElement!.hidden = !message }
-  const cardData = new Map<string, CardData>()
-  const drafts = new Map<string, FeedbackDraft>()
+  const showStatus = (message: string) => { if (lifetime.signal.aborted) return; status.textContent = message; status.parentElement!.hidden = !message }
+  const memory = commandPanelState(), cardData = memory.cards, drafts = memory.drafts
   const lifetime = new AbortController()
-  let current: CurrentCommands = { battleId: null, sessionKey: null, events: [], feedback: [], warning: '' }
-  let localSeq = 0
-  let initialized = false
+  cards.addEventListener('scroll', () => { if (cards.getClientRects().length) memory.scrollTop = cards.scrollTop }, { signal: lifetime.signal })
+  let cardsLifetime = new AbortController()
+  let feedbackSignal = AbortSignal.any([lifetime.signal, cardsLifetime.signal])
+  const feedbackUpdates = new Map<string, () => void>()
+  const submissions = new Map<string, string>()
+  let current = memory.current
+  let initialized = memory.initialized
   let refreshing: Promise<void> | undefined
   let queued: CommandEvent[] = []
   cards.replaceChildren()
@@ -34,23 +58,30 @@ export function mountCommandPanel(): void {
 
   const escape = (value: string) => value.replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!)
   function receive(event: CommandEvent) {
-    const data = applyCommandEvent({ ...event, seq: ++localSeq }, cardData.get(event.commandId))
+    if (lifetime.signal.aborted) return
+    const data = applyCommandEvent({ ...event, seq: ++memory.seq }, cardData.get(event.commandId))
     cardData.set(event.commandId, data)
-    let card = [...cards.children].find(child => (child as HTMLElement).dataset.command === event.commandId) as HTMLElement | undefined
+    render(event.commandId, data)
+  }
+  function render(commandId: string, data: CardData) {
+    let card = [...cards.children].find(child => (child as HTMLElement).dataset.command === commandId) as HTMLElement | undefined
     if (!card) {
-      card = document.createElement('article'); card.dataset.command = event.commandId
+      card = document.createElement('article'); card.dataset.command = commandId
       card.innerHTML = '<div class="card-content"></div><div class="card-feedback"></div>'
       const next = [...cards.children].find(child => (cardData.get((child as HTMLElement).dataset.command!)?.at ?? 0) < data.at)
       cards.insertBefore(card, next ?? null)
-      const key = event.commandId
+      const key = commandId
       let draft = drafts.get(key)
       if (!draft) {
-        const feedback = current.feedback.filter(item => item.commandId === event.commandId).at(-1)
+        const feedback = current.feedback.filter(item => item.commandId === commandId).at(-1)
         draft = { note: feedback?.note ?? '', open: false, ...(feedback ? { rating: feedback.rating, saved: feedback } : {}) }; drafts.set(key, draft)
       }
       const cardBattle = current.battleId
-      mountFeedback(card.querySelector('.card-feedback')!, event.commandId, () => cardBattle ?? current.battleId, draft, lifetime.signal)
+      feedbackUpdates.set(key, mountFeedback(card.querySelector('.card-feedback')!, commandId, () => cardBattle ?? current.battleId, draft, feedbackSignal))
     }
+    const draft = drafts.get(commandId), saved = current.feedback.filter(item => item.commandId === commandId).at(-1)
+    if (draft && saved && (!draft.saved || saved.at >= draft.saved.at)) draft.saved = saved
+    feedbackUpdates.get(commandId)?.()
     card.className = `command-card ${data.stage}`
     const errors = [...new Set([data.error, ...[...data.goals.values()].flatMap(goal => [
       ...(['failed', 'cancelled'].includes(goal.stage) ? [goal.error] : []),
@@ -83,20 +114,27 @@ export function mountCommandPanel(): void {
         const response = await fetch('/commander/commands', { cache: 'no-store', signal: lifetime.signal })
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
         const value = await response.json() as CurrentCommands
-        if (value.battleId !== current.battleId) { cardData.clear(); cards.replaceChildren(); cards.hidden = true; empty.hidden = false }
-        current = value
+        if (lifetime.signal.aborted) return
+        if (initialized && value.battleId !== current.battleId) {
+          cardsLifetime.abort(); cardsLifetime = new AbortController()
+          feedbackSignal = AbortSignal.any([lifetime.signal, cardsLifetime.signal])
+          cardData.clear(); drafts.clear(); feedbackUpdates.clear(); memory.scrollTop = 0; cards.replaceChildren(); cards.hidden = true; empty.hidden = false
+        }
+        current = memory.current = value
         // 重连只补齐当前局卡片；普通状态更新保留反馈表单和输入焦点。
         for (const event of current.events) receive(event)
-        initialized = true
+        initialized = memory.initialized = true
         showStatus(value.warning || '')
         const pending = queued; queued = []
         for (const event of pending) if (matchesCurrent(event)) receive(event)
+        onReady()
       } catch (error) { if (!lifetime.signal.aborted) showStatus(`命令记录连接失败：${String(error)}`) }
       finally { refreshing = undefined }
     })()
     return refreshing
   }
   function live(event: CommandEvent) {
+    if (lifetime.signal.aborted) return
     if (refreshing) { queued.push(event); return }
     if (!initialized || !matchesCurrent(event) || (!current.battleId && event.sessionKey !== undefined)) {
       queued.push(event); void refreshCurrent(); return
@@ -104,8 +142,9 @@ export function mountCommandPanel(): void {
     receive(event)
   }
 
+  for (const [id, data] of cardData) render(id, data)
   const source = new EventSource('/commander/events')
-  source.onopen = () => { void refreshCurrent() }
+  source.onopen = () => { if (!lifetime.signal.aborted) void refreshCurrent() }
   source.onerror = () => { showStatus('命令反馈连接中，正在重连…') }
   source.onmessage = message => {
     try { live(JSON.parse(message.data) as CommandEvent) } catch { showStatus('命令反馈异常，等待后续更新') }
@@ -117,6 +156,8 @@ export function mountCommandPanel(): void {
     const text = input.value.trim()
     if (!text) return
     const commandId = `cmd-${crypto.randomUUID()}`
+    const submissionSession = current.sessionKey
+    submissions.set(commandId, text)
     input.value = ''
     // 输入期间即可继续下令；请求结束不改变当前焦点，也不覆盖后来输入的文字。
     receive({ commandId, text, stage: 'received', source: 'sidebar', seq: 0, at: Date.now() })
@@ -127,13 +168,21 @@ export function mountCommandPanel(): void {
         throw new Error(detail.error ?? `HTTP ${response.status}`)
       }
     } catch (error) {
-      if (lifetime.signal.aborted) return
-      const current = cardData.get(commandId)
+      if (lifetime.signal.aborted || submissionSession && current.sessionKey !== submissionSession) return
+      const data = cardData.get(commandId)
       // 已收到模型/脚本事件就说明宿主收到了命令，不能被迟到的提交错误覆盖。
-      if (current && current.stage !== 'received') return
+      if (data && data.stage !== 'received') return
       receive({ commandId, stage: 'failed', source: 'sidebar', seq: 0.5, at: Date.now(), error: `命令提交未确认：${String(error)}。请查看后续反馈，避免重复下令。` })
       if (!input.value) input.value = text
-    }
+    } finally { submissions.delete(commandId) }
   }, { signal: lifetime.signal })
-  window.__ra2cUnmountCommands = () => { lifetime.abort(); source.close() }
+  const dispose = () => {
+    if (lifetime.signal.aborted) return
+    for (const [commandId] of submissions) if (cardData.get(commandId)?.stage === 'received') receive({ commandId, stage: 'failed', source: 'sidebar', seq: 0, at: Date.now(), error: '命令提交未确认。请查看后续反馈，避免重复下令。' })
+    lifetime.abort(); cardsLifetime.abort(); source.close()
+    source.onopen = source.onerror = source.onmessage = null
+    if (window.__ra2cUnmountCommands === dispose) delete window.__ra2cUnmountCommands
+  }
+  window.__ra2cUnmountCommands = dispose
+  return dispose
 }
