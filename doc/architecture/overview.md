@@ -2,7 +2,7 @@
 
 ra2commander 是通过 ra2web 公开玩家 API 运行的本机指挥伴随程序。当前以文本模拟语音，使用 TypeScript / Node.js、Playwright Chromium、独立 QuickJS WASM 子进程和可取消的云模型请求。模型适配与编译流程由项目代码实现，未接入 Pi、LangGraph 或其他 Agent Core。
 
-截至 2026-10-30，工作台、命令侧栏、对局反馈，以及探路、维修车和掩护三个游戏 Skill 已实现。基础攻击、守卫、常规单位部署等已接入本机执行，支持出厂集结、战损转换和进攻时自动碾压；真实录音/识别尚未开始。本轮[架构整理](../roadmap/architecture-consolidation.md)收拢职责与通用事实，具体批准及验收边界见 [AGENTS.md](../../AGENTS.md)。
+截至 2026-11-01，工作台、命令侧栏、对局反馈，以及探路、维修车和掩护三个游戏 Skill 已实现。基础攻击、守卫、常规单位部署、探路、维修车，以及有限生产、持续补电和队列控制默认本机执行，保留旧脚本与按能力回退。运行时职责、共享订单事实、页面桥及 UI 生命周期整理已验收提交；真实录音/识别尚未开始。当前约束见 [AGENTS.md](../../AGENTS.md)，各轮批准及验收见[开发记录](../roadmap/development-history.md)和[架构整理计划](../roadmap/architecture-consolidation.md)。
 
 历史方案和候选选型保留在 `doc/roadmap/` 与 `doc/decisions/`，本页描述当前实现。产品目标见[需求](../spec/requirements.md)，公开 API 调查见[游戏接入](game-api.md)。
 
