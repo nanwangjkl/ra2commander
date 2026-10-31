@@ -1,4 +1,4 @@
-// 注入游戏页面的桥脚本（在页面上下文执行，纯 JS，不打包）。
+// 页面桥安装函数（纯 JS）；由 bridge-source.ts 连同共享算法和版本组成注入脚本。
 //
 // 职责（MVP）：
 //  - 轮询 window.werhd，对局出现时递增会话代次并注册 onTick；
@@ -7,9 +7,8 @@
 //
 // 约束：onTick 同步执行超过约 8ms 会被停用，因此回调内只做采集，
 // 且带性能护栏（超预算自动降频）。
-(() => {
+function installPageBridge(algorithms, BRIDGE_VERSION) {
   'use strict';
-  var BRIDGE_VERSION = 24;
   if (window.__ra2cInstalled && window.__ra2cVersion === BRIDGE_VERSION) return;
   var upgrading = false;
   if (window.__ra2cInstalled && window.__ra2cSessionKey && typeof window.__ra2cSubmit === 'function') {
@@ -122,41 +121,18 @@
         for (var dy = -r; dy <= r; dy += Math.abs(dx) === r || r === 0 ? 1 : 2 * r) {
           if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
           var x = Math.round(anchor.x) + dx, y = Math.round(anchor.y) + dy;
-          if (region && (x < 0 || y < 0 || x >= size.width || y >= size.height || !inPlacementRegion(x, y, region))) continue;
+          if (region && (x < 0 || y < 0 || x >= size.width || y >= size.height || !algorithms.inTargetRegion(x, y, region))) continue;
           var key = x + ',' + y;
           if (tried.indexOf(key) >= 0) continue;
           var tile = placement && w.map.tile ? w.map.tile(x, y) : null;
           var elevation = tile && Number.isFinite(tile.z) ? tile.z : anchor.elevation || 0;
-          if (placement && placementDirection(anchor, x, y, elevation) !== placement.direction) continue;
+          if (placement && algorithms.placementDirection(anchor, { x: x, y: y, elevation: elevation }) !== placement.direction) continue;
           if (!blocksRally(shape, x, y, rallyPoints) && placementSpacing(shape, x, y, scene) && w.canPlace(name, x, y)) { delete placeNoSpots[keyName]; return { x: x, y: y, elevation: elevation, tried: tried } }
         }
       }
     }
     if (region) placeNoSpots[keyName] = { tick: tick, count: self.length };
     return null;
-  }
-
-  // 与 contracts/spatial.ts 一致：边界计入，孔洞内部排除。
-  function inPlacementRegion(x, y, region) {
-    function ring(points) {
-      var inside = false;
-      for (var i = 1; i < points.length; i++) {
-        var ax = points[i - 1][0], ay = points[i - 1][1], bx = points[i][0], by = points[i][1];
-        var cross = (x - ax) * (by - ay) - (y - ay) * (bx - ax);
-        if (Math.abs(cross) <= 1e-7 * Math.max(1, Math.hypot(bx - ax, by - ay)) && x >= Math.min(ax, bx) - 1e-7 && x <= Math.max(ax, bx) + 1e-7 && y >= Math.min(ay, by) - 1e-7 && y <= Math.max(ay, by) + 1e-7) return 0;
-        if ((ay > y) !== (by > y) && x < (bx - ax) * (y - ay) / (by - ay) + ax) inside = !inside;
-      }
-      return inside ? 1 : -1;
-    }
-    return region.polygons.some(function (polygon) { return ring(polygon.outer) !== -1 && !polygon.holes.some(function (hole) { return ring(hole) === 1 }) });
-  }
-
-  // 与 contracts/placement.ts 的画面投影一致；不能把地图 y 轴当作屏幕上下。
-  function placementDirection(anchor, x, y, elevation) {
-    var dx = x - anchor.x, dy = y - anchor.y;
-    var sx = dx - dy, sy = (dx + dy) / 2 - (elevation - (anchor.elevation || 0));
-    if (!sx && !sy) return undefined;
-    return ['right', 'down-right', 'down', 'down-left', 'left', 'up-left', 'up', 'up-right'][(Math.round(Math.atan2(sy, sx) / (Math.PI / 4)) + 8) % 8];
   }
 
   var ENEMY_CAP = 200; // 敌方采集上限护栏
@@ -373,11 +349,11 @@
           } else if (w.canPlace && !w.canPlace(action.name, px, py)) {
             return { ok: false, reason: 'cannot-place', submitted: 0, session: session };
           }
-          if (action.placementRegion && !inPlacementRegion(px, py, action.placementRegion)) return { ok: false, reason: 'wrong-placement-region', submitted: 0, session: session };
+          if (action.placementRegion && !algorithms.inTargetRegion(px, py, action.placementRegion)) return { ok: false, reason: 'wrong-placement-region', submitted: 0, session: session };
           if (action.placement) {
             var targetTile = w.map.tile ? w.map.tile(px, py) : null;
             elevation = targetTile && Number.isFinite(targetTile.z) ? targetTile.z : action.placement.anchor.elevation || 0;
-            if (placementDirection(action.placement.anchor, px, py, elevation) !== action.placement.direction) return { ok: false, reason: 'wrong-placement', submitted: 0, session: session };
+            if (algorithms.placementDirection(action.placement.anchor, { x: px, y: py, elevation: elevation }) !== action.placement.direction) return { ok: false, reason: 'wrong-placement', submitted: 0, session: session };
           }
           if (!placementSpacing(shape, px, py, scene)) return { ok: false, reason: 'building-spacing', submitted: 0, session: session };
           if (blocksRally(shape, px, py, action.rallyPoints)) return { ok: false, reason: 'building-rally-conflict', submitted: 0, session: session, placement: { x: px, y: py, elevation: elevation || 0 } };
@@ -444,11 +420,11 @@
           var crushTarget = (w.units('hostile') || []).find(function (unit) { return unit.id === action.targetId; });
           if (!crushTarget) return { ok: false, reason: 'invisible-target', submitted: 0, session: session };
           var crushRules = window.__ra2cCrushingRules || { attackers: [], targets: [] };
-          if (crushTarget.type !== 3 || crushTarget.zone !== undefined && crushTarget.zone !== 0 || crushTarget.hitPoints !== undefined && crushTarget.hitPoints <= 0 || !crushRules.targets.includes(crushTarget.name) || !ids.every(function (id) {
+          if (!ids.every(function (id) {
             var unit = own.find(function (item) { return item.id === id; });
-            return unit && unit.type === 7 && (unit.zone === undefined || unit.zone === 0) && crushRules.attackers.includes(unit.name) && !!unit.onBridge === !!crushTarget.onBridge;
+            return unit && algorithms.crushCompatible(unit, crushTarget, crushRules);
           })) return { ok: false, reason: 'crush-not-applicable', submitted: 0, session: session };
-          if (action.targetRegion && !inPlacementRegion(crushTarget.tile.rx, crushTarget.tile.ry, action.targetRegion)) return { ok: false, reason: 'crush-target-outside', submitted: 0, session: session };
+          if (action.targetRegion && !algorithms.inTargetRegion(crushTarget.tile.rx, crushTarget.tile.ry, action.targetRegion)) return { ok: false, reason: 'crush-target-outside', submitted: 0, session: session };
           var crushPoint = { x: crushTarget.tile.rx, y: crushTarget.tile.ry, onBridge: !!crushTarget.onBridge };
           if (!w.order(ids, { type: 1, target: crushPoint })) return { ok: false, reason: 'crush-order-rejected', submitted: 0, session: session };
           return { ok: true, submitted: ids.length, session: session, targetPosition: crushPoint };
@@ -520,4 +496,4 @@
       delete speedRequests[key];
     });
   }, 500);
-})();
+}

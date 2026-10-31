@@ -181,6 +181,7 @@ export interface ActionContext {
 
 export { validateActions, validateScriptActions, liveScriptActions, inRegion } from './validate-actions.ts';
 export { crushCompatible, type CrushingRules } from './crushing.ts';
+export { createGameAlgorithms } from './game-algorithms.ts';
 export { inTargetRegion, validTargetRegion, type TargetRegion } from './spatial.ts';
 export * from './control.ts';
 export * from './attack-objective.ts';

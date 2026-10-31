@@ -94,6 +94,7 @@ RTS 优先快速反应。能理解行动目标时，Agent 应结合当前战况�
 - 探路 `scout@1.5.0` 默认由本机完成现有犬编队、新造犬有限生产和按既有落点并行发令。`RA2C_SCOUT_EXECUTOR=script pnpm companion` 独立回退探索，旧无标记探索不自动迁移。探索发令本机化已于 2026-10-30 验收，生产部分已随下述生产计划于 2026-10-31 通过用户实机验收。
 - `repair-vehicle@1.2.0` 默认本机完成现有组件编队、新造组件有限生产、组装、维修与跟随发令，原配对及伤员分工不变。`RA2C_REPAIR_EXECUTOR=script pnpm companion` 独立回退组装维修，旧无标记维修不自动迁移。组装维修本机化已提交 `578d395`，生产部分已随下述生产计划于 2026-10-31 通过用户实机验收。
 - 用户已批准[生产协调本机化计划](doc/roadmap/production-native-execution.md)，并于 2026-10-31 明确要求继续阶段2。新有限生产、持续补电和显式队列控制默认本机执行，独立准备真实规则，共享前置、供需、队列与生产台账，保留集结交接、位置和取消恢复。队列只认领正回执确认的自身暂停；未决操作持久化，不在恢复时重发。`RA2C_PRODUCTION_EXECUTOR=script pnpm companion` 回退生产，无标记旧目标保持脚本。用户已于 2026-10-31 实机验收通过并要求提交推送，两阶段完成；不据此启动其他路线图阶段。详见[生产执行方式](doc/spec/production-execution.md)。
+- 用户随后授权继续[页面桥整理](doc/roadmap/architecture-consolidation.md)。异形分区、建筑方位及碾压条件共用 `contracts/game-algorithms.ts` 的自包含纯函数工厂，`game-werhd/bridge-source.ts` 统一注入和桥版本；保留游戏 API、采样、发令与升级时的当局身份规则。用户已于 2026-10-31 实机验收通过并要求提交推送；工作台生命周期及 AGENTS 历史精简留待后续阶段。
 
 ```sh
 pnpm install

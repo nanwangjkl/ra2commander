@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { runInNewContext } from 'node:vm'
 import { WerhdBridge } from '../packages/game-werhd/src/page-bridge.ts'
+import { BRIDGE_VERSION, createBridgeSource } from '../packages/game-werhd/src/bridge-source.ts'
 import { loadPrompts } from '../packages/command/src/index.ts'
 import { snapshot } from './helpers.ts'
 import { placementDirection, inTargetRegion, type TargetRegion, type PlacementDirection } from '../packages/contracts/src/index.ts'
@@ -11,7 +12,7 @@ import { placementDirection, inTargetRegion, type TargetRegion, type PlacementDi
 const buildingFoundations = Object.fromEntries(loadPrompts().game.entries().flatMap(item =>
   item.type === 2 && item.foundation ? [[item.name, item.foundation]] : []))
 const bridgeSource = readFileSync(new URL('../packages/game-werhd/src/bridge.js', import.meta.url), 'utf8')
-function pageBridge(source = `window.__ra2cBuildingFoundations = ${JSON.stringify(buildingFoundations)};\nwindow.__ra2cCrushingRules = ${JSON.stringify(loadPrompts().game.crushing())};\n${bridgeSource}`) {
+function pageBridge(source = createBridgeSource(bridgeSource, buildingFoundations, loadPrompts().game.crushing())) {
   let poll!: () => void
   let onTick!: (context: { tick: number }) => void
   let tick = 15
@@ -35,7 +36,7 @@ function pageBridge(source = `window.__ra2cBuildingFoundations = ${JSON.stringif
     rules: (_name: string, _type: number) => ({ unsellable: false }),
   }
   const window: Record<string, any> = { werhd: api, __ra2cSnapshot: (s: ReturnType<typeof snapshot>) => snapshots.push(s) }
-  const install = () => runInNewContext(source, {
+  const install = (script = source) => runInNewContext(script, {
     // 固定采集耗时，避免测试并行调度触发实机采样降频而读到上一帧。
     window, crypto: { randomUUID }, performance: { now: () => 0 }, setInterval: (fn: () => void) => { poll = fn; return 1 }, clearInterval: () => {},
   })
@@ -247,6 +248,7 @@ test('宿主向页面注入建筑占地，自动选址和分区方位选址都�
   const bridge = new WerhdBridge({ pages: () => [], exposeBinding: async () => {}, addInitScript: async (value: string) => { source = value } } as never, undefined, buildingFoundations)
   await bridge.install()
   const page = pageBridge(source)
+  assert.equal(page.window.__ra2cVersion, BRIDGE_VERSION)
   page.own.push({ ...page.own[0]!, id: 100, name: 'GACNST', type: 2, tile: { rx: 50, ry: 50 } })
   page.api.canPlace = (_name, x, y) => [54, 55, 57, 58].includes(x) && y === 50
   const snap = page.sample()
@@ -451,6 +453,26 @@ test('桥升级保留对局身份并递增序号，上车和维修使用原生�
   page.setTick(1); page.window.__ra2cVersion = 5
   page.install(); page.poll()
   assert.notEqual(page.sample().sessionKey, upgraded.sessionKey) // 升级期间实际换局仍必须撤销旧身份。
+})
+
+test('宿主安装自动升级已打开的旧桥，使用共享算法且保留当局身份，不发游戏动作', async () => {
+  const page = pageBridge(), before = page.sample()
+  page.window.__ra2cVersion = BRIDGE_VERSION - 1
+  let installs = 0
+  const frame = { url: () => 'https://game.test/', evaluate: async (source: string) => {
+    if (source === 'window.__ra2cVersion ?? 0') return page.window.__ra2cVersion
+    installs++; return page.install(source)
+  } }
+  const bridge = new WerhdBridge({ pages: () => [{ frames: () => [frame] }], exposeBinding: async () => {}, addInitScript: async () => {} } as never, 'https://game.test/', buildingFoundations, loadPrompts().game.crushing())
+  await bridge.install(); page.poll()
+  const after = page.next()
+  assert.equal(page.window.__ra2cVersion, BRIDGE_VERSION)
+  assert.equal(after.sessionKey, before.sessionKey)
+  assert.equal(after.session, before.session)
+  assert.ok(after.seq > before.seq)
+  await bridge.install()
+  assert.equal(installs, 1, '同版本不重复安装')
+  assert.equal(page.submitted.length, 0)
 })
 test('建筑按画面上左下找合法位置；指定方向无地可放时保留建筑，普通放置仍可执行', () => {
   const page = pageBridge(), anchor = { x: 50, y: 50, elevation: 0 }

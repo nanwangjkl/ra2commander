@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import type { BrowserContext, Frame } from 'playwright'
 import { BINDING, type ActionRequest, type ActionResult, type Snapshot, type ActionContext, type CrushingRules } from '@ra2c/contracts'
+import { BRIDGE_VERSION, createBridgeSource } from './bridge-source.ts'
 
 /** 页面内桥状态（window.__ra2cState() 的返回）。 */
 export interface BridgeState {
@@ -15,14 +16,6 @@ export interface BridgeState {
   stats: { samples: number; collectMsMax: number; degradeCount: number }
 }
 
-/**
- * 宿主侧桥：把 bridge.js 注入游戏页面，订阅快照，提交动作。
- *
- * install() 必须在打开任何页面之前调用（exposeBinding/addInitScript 是 context 级）。
- */
-/** 桥版本（与 bridge.js 的 BRIDGE_VERSION 保持一致；升级后对已开页面重装）。 */
-const BRIDGE_VERSION = 24
-
 export function isGameDocument(url: string, gameUrl: string): boolean {
   try {
     const current = new URL(url), expected = new URL(gameUrl)
@@ -30,6 +23,7 @@ export function isGameDocument(url: string, gameUrl: string): boolean {
   } catch { return false }
 }
 
+/** 注册快照 binding 与初始化脚本，并向已打开的游戏文档补装或升级页面桥。 */
 export class WerhdBridge {
   private ruleSession = ''
   private ruleCache = new Map<string, unknown>()
@@ -45,7 +39,7 @@ export class WerhdBridge {
   ) {}
 
   private async source(): Promise<string> {
-    return this.bridgeSource ??= `window.__ra2cBuildingFoundations = ${JSON.stringify(this.buildingFoundations)};\nwindow.__ra2cCrushingRules = ${JSON.stringify(this.crushingRules ?? { attackers: [], targets: [] })};\n${await readFile(new URL('./bridge.js', import.meta.url), 'utf8')}`
+    return this.bridgeSource ??= createBridgeSource(await readFile(new URL('./bridge.js', import.meta.url), 'utf8'), this.buildingFoundations, this.crushingRules)
   }
 
   async install(): Promise<void> {
