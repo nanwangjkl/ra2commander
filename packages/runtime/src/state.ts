@@ -24,6 +24,8 @@ export interface GoalProgress {
   placementBlocked?: boolean
   rallyBlocked?: boolean
   cancelProduction?: boolean
+  preparationError?: string
+  queueControl?: import('./production-queues.ts').QueueControlState
   repair?: import('./repair.ts').RepairState
   relocation?: import('./relocation.ts').RelocationState
   mining?: import('./mining.ts').MiningState
@@ -35,7 +37,7 @@ export interface GoalProgress {
 }
 export interface GoalFactKeys {
   combat: 'unitOrders' | 'routeIndex' | 'coverMotion' | 'coverEnded' | 'baseDefense' | 'crushing'
-  production: 'completedQuantity' | 'placementBlocked' | 'rallyBlocked' | 'cancelProduction'
+  production: 'completedQuantity' | 'placementBlocked' | 'rallyBlocked' | 'cancelProduction' | 'preparationError' | 'queueControl'
   repair: 'repair' | 'unitOrders'
   relocate: 'relocation'
   mining: 'mining'

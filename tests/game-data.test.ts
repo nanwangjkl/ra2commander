@@ -48,7 +48,7 @@ test('重放最新反馈：电厂和飞机都进入理解候选，原样的“�
     const result = await runTranscript('补一个电厂，造 4 个飞机', ctx, root)
     assert.doesNotMatch(result, /未执行|未找到/)
     assert.deepEqual([...runtime.goals.values()].flatMap(goal => goal.spec.kind === 'production' ? [[goal.spec.target, goal.spec.quantity]] : []), [['GAPOWR', 1], ['ORCA', 4]])
-    assert.equal(interpretations, 1); assert.equal(compilations, 1)
+    assert.equal(interpretations, 1); assert.equal(compilations, 0)
     await runtime.onSnapshot({ ...initial, seq: 3, tick: initial.tick + 30 })
     assert.deepEqual(submitted.filter(action => action.kind === 'produce').map(action => [action.name, action.quantity]), [['GAPOWR', 1], ['ORCA', 4]])
   } finally { await executor.dispose(); rmSync(root, { recursive: true, force: true }) }
@@ -86,7 +86,7 @@ test('完整中文目录在巨炮尚未解锁时仍能绑定；类别前置自�
   const latest = await executeCapabilities([
     { capability: 'production.produce', params: { target: '盟军战车工厂', quantity: 1 } },
     { capability: 'production.produce', params: { target: '灰熊坦克', quantity: 5, formationId: '1队' } },
-  ], { runtime, formations: runtime.formations, controller: { refresh: async () => '绑定检查' } } as unknown as CommandContext, { text: '造重工，出5台坦克编入1队', catalog })
+  ], { runtime, formations: runtime.formations, controller: { activateNative: () => '绑定检查', refresh: async () => '绑定检查' } } as unknown as CommandContext, { text: '造重工，出5台坦克编入1队', catalog })
   assert.deepEqual(latest.skipped, [])
   assert.deepEqual(latest.goals.flatMap(goal => goal.kind === 'production' ? [[goal.target, goal.quantity]] : []), [['GAWEAP', 1], ['MTNK', 5]])
   const supplied = catalog.forTranscript('补两个电厂，在基地上方，左边和右边各造一个巨炮')

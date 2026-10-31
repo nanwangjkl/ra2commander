@@ -504,7 +504,7 @@ test('取消只撤销掩护新增准备；解散后独立生产保留但不重�
   const f = await fixture(), executor = new StepExecutor()
   try {
     f.ctx.controller = new ProgramController({ runtime: f.runtime, executor, provider: () => ({ generate: async () => ({ text: productionSource, model: 'fixture', durationMs: 0 }) }) as never })
-    f.runtime.upsertGoal(production({ id: 'independent', formationId: '1队', quantity: 5 }))
+    activate(f.runtime, production({ id: 'independent', formationId: '1队', quantity: 5 }), productionSource)
     const arranged = await f.run('formation.cover', { formationId: '1队', selector: 'FV', quantity: 2, memberSource: 'new' })
     const added = arranged.goals.find(goal => goal.kind === 'production')!
     assert.equal(added.kind === 'production' && added.quantity, 2)

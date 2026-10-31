@@ -77,7 +77,7 @@ test('前置按当前引擎计算并共享查询，生成和逐步执行使用�
     let compilePlan: unknown
     const controller = new ProgramController({ runtime, executor, provider: () => ({ generate: async (input: { messages: Array<{ content: string }> }) => { compilePlan = JSON.parse(input.messages[1]!.content).control.goals[0].productionPlan; return reply(source) } }) as never,
       prepare: (goals, signal, prompts) => prepareGoals(goals, runtime.snapshot!, rules, signal, prompts.game) })
-    await controller.submit(production({ target: 'CAWEAP' }))
+    await controller.submit(production({ target: 'CAWEAP', executionMode: 'script' }))
     assert.deepEqual((compilePlan as { availableToProduce: string[] }).availableToProduce, ['CAPOWR'])
     await runtime.onSnapshot({ ...initial, seq: 3 })
     await runtime.onSnapshot({ ...initial, seq: 4, production: { ...initial.production!, queues: [{ type: 0, status: 1, size: 1, maxSize: 1, items: [{ name: 'CAPOWR', quantity: 1, progress: 0.5, creditsEach: 500, creditsSpent: 250 }] }] } })

@@ -1,4 +1,6 @@
 import test from 'node:test'
+// 保留脚本生成、替换与修复链路的覆盖；默认本机生产另由集成用例验证。
+process.env.RA2C_PRODUCTION_EXECUTOR = 'script'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'

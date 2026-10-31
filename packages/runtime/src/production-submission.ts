@@ -73,13 +73,16 @@ export class ProductionSubmission {
     }
     const spec = activeSpec
     // 同一句话明确要求的建筑也可能先被其他目标当作前置生产；统一记到该建设目标，避免换代码后再造一遍。
-    const target = spec.kind === 'production' && request.name !== spec.target ? [...this.deps.goals.values()].find(candidate => {
+    const powerTarget = spec.kind === 'production' && !!spec.maintainPower && request.name === spec.target
+    const target = spec.kind === 'production' && (request.name !== spec.target || powerTarget) ? [...this.deps.goals.values()].find(candidate => {
       const desired = candidate.activeSpec ?? candidate.spec
-      return !['cancelled', 'completed', 'partial', 'failed'].includes(candidate.status) && desired.kind === 'production' && !desired.maintainPower && !desired.placement && !desired.placementRegion && !desired.afterGoalId && desired.target === request.name
-        && (productionProgress(desired, this.deps.production, snap).remaining[request.name] ?? 0) >= request.quantity
+      return !['cancelled', 'completed', 'partial', 'failed'].includes(candidate.status) && !candidate.facts.preparationError && desired.kind === 'production' && !desired.maintainPower
+        && (powerTarget ? !desired.afterGoalId || this.deps.goals.get(desired.afterGoalId)?.status === 'completed' : !desired.placement && !desired.placementRegion && !desired.afterGoalId) && desired.target === request.name
+        && (productionProgress(desired, this.deps.production, snap).remaining[request.name] ?? 0) >= (powerTarget ? 1 : request.quantity)
     }) : undefined
-    const record: ProductionRecord = { id: randomUUID(), goalId: target?.spec.id ?? goal.spec.id, name: request.name, quantity: request.quantity, building: spec.kind === 'production' && (request.name !== spec.target || spec.targetType === 2), queueType: constraints.productionQueueTypes![request.name]!, state: 'reserved', observedIds: [], placed: false }
     const ownerSpec = target?.activeSpec ?? target?.spec ?? spec
+    if (powerTarget && target && ownerSpec.kind === 'production') request.quantity = Math.min(request.quantity, productionProgress(ownerSpec, this.deps.production, snap).remaining[request.name] ?? 0)
+    const record: ProductionRecord = { id: randomUUID(), goalId: target?.spec.id ?? goal.spec.id, name: request.name, quantity: request.quantity, building: spec.kind === 'production' && (request.name !== spec.target || spec.targetType === 2), queueType: constraints.productionQueueTypes![request.name]!, state: 'reserved', observedIds: [], placed: false }
     if (ownerSpec.kind === 'production' && ownerSpec.target === request.name && ownerSpec.placementRegion) record.placementRegion = structuredClone(ownerSpec.placementRegion)
     if (ownerSpec.kind === 'production' && ownerSpec.target === request.name && ownerSpec.placement) {
       const submitted = this.deps.production.filter(r => r.goalId === record.goalId && r.name === request.name && r.state !== 'rejected').reduce((n, r) => n + r.quantity, 0)

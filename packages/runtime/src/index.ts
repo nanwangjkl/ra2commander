@@ -10,6 +10,7 @@ import { SkillLifecycle } from './skill-lifecycle.ts'
 import { emptyUnitOrders, pruneUnitOrders, UnitOrderBook } from './unit-orders.ts'
 import { CombatCoordinator } from './combat-actions.ts'
 import { ProductionSubmission } from './production-submission.ts'
+import { observeQueueControl, reserveQueueOrder, recordQueueOrder, queueControlDetail, type QueueRequest } from './production-queues.ts'
 import { emptyFacts, type GoalState, type ProgramState, type ProductionRecord, type Handoff, type StepBudget } from './state.ts'
 import { observeProduction, productionProgress } from './production-progress.ts'
 import { cancellationDetail, observeCancellations, pendingProduction } from './production-cancellation.ts'
@@ -49,6 +50,12 @@ export interface CompileLease {
   readonly recoveryStatus?: 'active' | 'paused'
   goals: GoalSpec[]
 }
+export interface NativePreparationLease {
+  readonly ownerId: string
+  readonly sessionKey: string
+  readonly spec: GoalSpec
+  readonly signal: AbortSignal
+}
 export interface RuntimeDeps {
   executor: Pick<StepExecutor, 'run'>
   submit: (actions: ActionRequest[], context: ActionContext, guard: () => boolean) => Promise<ActionResult[]>
@@ -78,6 +85,8 @@ export class TaskRuntime {
   /** 新快照不重置下一位，避免前面的控制对象反复抢先。 */
   private nextProgram = 0
   private pending = new Map<string, { lease: CompileLease; abort: AbortController }>()
+  private preparingNative = new Map<string, { lease: NativePreparationLease; abort: AbortController }>()
+  private preparedNative = new WeakSet<GoalSpec>()
   readonly programs = new Map<string, ProgramState>()
   readonly goals = new Map<string, GoalState>()
   readonly formations: FormationRegistry
@@ -152,9 +161,10 @@ export class TaskRuntime {
     const progress = this.latest && ['completed', 'partial', 'failed'].includes(goal.status) ? handler.progress?.(this.goalContext(goal.spec, this.latest), this.project(goal.spec, this.latest).view) ?? {} : {}
     if (goal.status === 'partial' || goal.status === 'failed') return { ...progress, state: goal.status, detail: [goal.facts.outcomeDetail ?? '探索未全部完成', progress.detail].filter(Boolean).join('；') }
     if (goal.status === 'completed') return { state: 'completed', ...progress }
-    if (goal.status === 'cancelled') return { state: 'cancelled', detail: goal.facts.cancelProduction ? cancellationDetail(goal, this.production) : goal.facts.cancelReason ?? '目标已取消或被替换' }
+    if (goal.status === 'cancelled') return { state: 'cancelled', detail: [goal.facts.cancelProduction ? cancellationDetail(goal, this.production) : goal.facts.cancelReason ?? '目标已取消或被替换', goal.spec.kind === 'production' ? queueControlDetail(goal, this.pausedQueues) : undefined].filter(Boolean).join('；') }
     const program = this.programs.get(goal.ownerId)
     const spec = goal.activeSpec
+    if (!spec && goal.facts.preparationError) return { state: 'faulted', detail: `生产准备出错：${goal.facts.preparationError}` }
     if (!spec && goal.status === 'pending' && goal.facts.completedQuantity !== undefined) return { state: 'completed', detail: `前次${goal.facts.completedQuantity}个已完成，新增总量待生效` }
     if (!spec || !program?.activeGoalIds.includes(id) || !this.latest) return program?.status === 'paused' ? { state: 'paused', detail: '目标保留，控制对象已暂停' } : undefined
     if (program.status === 'paused') return program.stats.errors >= 3 && program.stats.lastError
@@ -169,7 +179,7 @@ export class TaskRuntime {
     const exitNotices = this.productionExits.state.blockages.filter(block => factories.has(block.factoryId) && block.state !== 'recovered').map(block => block.detail)
     const redirects = this.productionExits.state.units.filter(unit => exitIds.has(unit.unitId) && unit.redirectFrom)
     if (redirects.length) exitNotices.push(`${redirects.length} 个新产物等待确认集结改点${redirects.some(unit => unit.attempts >= 3) ? '，部分移动有限重试已用尽' : ''}`)
-    const notice = [goal.facts.coverEnded, goal.facts.crushing?.detail, ...exitNotices].filter(Boolean).join('；')
+    const notice = [goal.facts.coverEnded, goal.facts.crushing?.detail, goal.facts.preparationError && `新要求准备失败，原目标继续：${goal.facts.preparationError}`, ...exitNotices].filter(Boolean).join('；')
     if (execution) return { ...execution, ...(notice ? { detail: [notice, execution.detail].filter(Boolean).join('；') } : {}) }
     const currentProgress = activeHandler.progress?.(ctx, view) ?? {}
     const unmet = view.productionPlan?.unmetConditions ?? []
@@ -345,6 +355,8 @@ export class TaskRuntime {
     if (old && (old.ownerId !== program.id || old.spec.kind !== spec.kind || old.status === 'cancelled')) throw new Error('不能复用其他对象或已取消目标的 ID')
     if (old?.status === 'completed' && spec.kind !== 'production') throw new Error('该目标已完成，请建立新目标')
     if (old) {
+      this.cancelNativePreparation(spec.id)
+      delete old.facts.preparationError
       const completedQuantity = old.status === 'completed' && old.spec.kind === 'production' ? old.activeSpec?.kind === 'production' ? old.activeSpec.quantity : old.spec.quantity : undefined
       old.spec = structuredClone(spec)
       if (old.status === 'completed') {
@@ -378,6 +390,7 @@ export class TaskRuntime {
     for (const goalId of program.goalIds) {
       const goal = this.goals.get(goalId)!
       if (!goal || !['pending', 'active'].includes(goal.status) || goalExecutionMode(goal.spec) !== 'native' || JSON.stringify(goal.spec) === JSON.stringify(goal.activeSpec)) continue
+      if (goal.spec.kind === 'production' && !this.preparedNative.has(goal.spec)) continue
       if (program.owner.kind === 'formation') {
         for (const oldId of program.activeGoalIds) if (oldId !== goalId) {
           const old = this.goals.get(oldId)
@@ -404,6 +417,7 @@ export class TaskRuntime {
     const changed: string[] = []
     for (const goal of this.goals.values()) {
       if (!kinds.includes(goal.spec.kind) || goalExecutionMode(goal.spec) !== 'native' || !['pending', 'active'].includes(goal.status)) continue
+      this.cancelNativePreparation(goal.spec.id)
       goal.spec = { ...goal.spec, executionMode: 'script' }
       delete goal.activeSpec
       delete goal.facts.nativeError
@@ -417,6 +431,43 @@ export class TaskRuntime {
     }
     return changed
   }
+
+  /** 生产准备按目标失效，不占用同一全局对象的脚本编译或其他目标。 */
+  beginNativePreparation(id: string): NativePreparationLease {
+    const goal = this.goals.get(id)
+    if (!goal || goal.spec.kind !== 'production' || goalExecutionMode(goal.spec) !== 'native' || !['pending', 'active'].includes(goal.status) || this.battleResult?.phase === 'ended') throw new Error('没有可准备的本机生产目标')
+    this.cancelNativePreparation(id)
+    const abort = new AbortController()
+    const lease = { ownerId: goal.ownerId, sessionKey: this.sessionKey, spec: goal.spec, signal: abort.signal }
+    this.preparingNative.set(id, { lease, abort })
+    return lease
+  }
+  isNativePreparationCurrent(lease: NativePreparationLease): boolean {
+    const goal = this.goals.get(lease.spec.id)
+    return this.preparingNative.get(lease.spec.id)?.lease === lease && !lease.signal.aborted && this.sessionKey === lease.sessionKey && this.battleResult?.phase !== 'ended' && goal?.spec === lease.spec && ['pending', 'active'].includes(goal.status)
+  }
+  commitNativePreparation(lease: NativePreparationLease, spec: GoalSpec): boolean {
+    if (!this.isNativePreparationCurrent(lease)) return false
+    if (spec.id !== lease.spec.id || spec.kind !== 'production' || lease.spec.kind !== 'production' || spec.target !== lease.spec.target || ownerId(goalOwner(spec)) !== lease.ownerId || goalExecutionMode(spec) !== 'native') throw new Error('准备改变了目标身份或执行方式')
+    const goal = this.goals.get(spec.id)!
+    // 解散编队可在查询期间移除归属；准备只补规则，不覆盖当前玩家要求。
+    const prepared = structuredClone(goal.spec)
+    for (const field of ['prerequisites', 'targetType', 'queueTypes', 'powerCosts', 'unlockConditions', 'maintainPower'] as const) {
+      if (Object.hasOwn(spec, field)) Object.assign(prepared, { [field]: structuredClone(spec[field]) })
+    }
+    this.validateGoal(prepared)
+    goal.spec = prepared
+    delete goal.facts.preparationError
+    this.preparedNative.add(goal.spec)
+    return true
+  }
+  failNativePreparation(lease: NativePreparationLease, error: unknown): void {
+    if (this.isNativePreparationCurrent(lease)) this.goals.get(lease.spec.id)!.facts.preparationError = String(error).slice(0, 300)
+  }
+  releaseNativePreparation(lease: NativePreparationLease): void {
+    if (this.preparingNative.get(lease.spec.id)?.lease === lease) this.cancelNativePreparation(lease.spec.id)
+  }
+  private cancelNativePreparation(id: string): void { this.preparingNative.get(id)?.abort.abort(); this.preparingNative.delete(id) }
 
   beginCompile(id: string, repair = false): CompileLease {
     const program = this.programs.get(id)
@@ -442,6 +493,7 @@ export class TaskRuntime {
       // 管理动作可能已提交归属、仍等待停车确认，不能要求“新队尚不存在”。
       if (goal.kind !== 'formation') this.validateGoal(goal)
       this.goals.get(goal.id)!.spec = structuredClone(goal)
+      delete this.goals.get(goal.id)!.facts.preparationError
     }
     lease.goals = structuredClone(goals)
     return true
@@ -497,11 +549,15 @@ export class TaskRuntime {
   }
   cancelCommand(id: string): void { this.pending.get(id)?.abort.abort(); this.pending.delete(id) }
   releaseCommand(lease: CompileLease): void { if (this.pending.get(lease.ownerId)?.lease === lease) this.cancelCommand(lease.ownerId) }
-  cancelAllCommands(): void { for (const id of this.pending.keys()) this.cancelCommand(id) }
+  cancelAllCommands(): void {
+    for (const id of this.pending.keys()) this.cancelCommand(id)
+    for (const id of this.preparingNative.keys()) this.cancelNativePreparation(id)
+  }
 
   async cancelGoal(id: string, reason = '玩家已取消该目标'): Promise<void> {
     const goal = this.goals.get(id)
     if (!goal || ['completed', 'partial', 'failed', 'cancelled'].includes(goal.status)) return
+    this.cancelNativePreparation(id)
     goal.status = 'cancelled'
     goal.facts.cancelReason = reason
     const program = this.programs.get(goal.ownerId)!
@@ -516,13 +572,31 @@ export class TaskRuntime {
       const owner = goalOwner(spec)
       if (stoppedIds.length) await this.deps.submit([{ kind: 'stop', unitIds: stoppedIds }], snap, () => this.sessionKey === snap.sessionKey && goal.status === 'cancelled' && this.goals.get(id) === goal && (program.owner.kind === 'global' || !program.activeGoalIds.some(other => other !== id && this.goals.get(other)?.status === 'active')) && stoppedIds.every(unit => owner.kind === 'global' ? !this.formations.ownerOf(unit) : this.formations.ownerOf(unit) === owner.formationId))
     }
+    if (snap) await this.restoreOwnedQueues(goal, snap)
+  }
+
+  /** 先落盘意图再调用 API；暂停以正回执认领，恢复以公开队列状态确认。 */
+  private async submitQueueOrder(goal: GoalState, request: QueueRequest, snap: Snapshot, guard: () => boolean): Promise<ActionResult[] | undefined> {
+    const order = reserveQueueOrder(goal, request, snap, this.pausedQueues, this.goals)
+    if (!order) return
+    const current = () => goal.facts.queueControl?.orders[request.queueType] === order
+    try { await this.deps.checkpoint() }
+    catch (error) { if (current()) delete goal.facts.queueControl!.orders[request.queueType]; throw error }
+    if (!guard() || !current()) { if (current()) delete goal.facts.queueControl!.orders[request.queueType]; return }
+    try {
+      const results = await this.deps.submit([request], snap, () => guard() && current())
+      if (this.sessionKey === snap.sessionKey && this.goals.get(goal.spec.id) === goal) recordQueueOrder(goal, request.queueType, order, results, this.pausedQueues)
+      return results
+    } catch (error) { if (current()) order.state = 'unknown'; throw error }
+  }
+
+  private async restoreOwnedQueues(goal: GoalState, snap: Snapshot): Promise<void> {
+    if (this.battleResult?.phase === 'ended') return
     for (const [queue, owner] of this.pausedQueues) {
-      if (owner !== id || !snap) continue
-      const guard = () => this.sessionKey === snap.sessionKey && this.pausedQueues.get(queue) === id && goal.status === 'cancelled'
-      if (snap.production?.queues.some(q => q.type === queue && q.status === 2)) {
-        const result = await this.deps.submit([{ kind: 'resumeQueue', queueType: queue }], snap, guard)
-        if (result.length && result.every(r => r.ok) && guard()) this.pausedQueues.delete(queue)
-      } else if (snap.production?.queues.some(q => q.type === queue)) this.pausedQueues.delete(queue)
+      if (owner !== goal.spec.id || !snap.production?.queues.some(q => q.type === queue && q.status === 2)) continue
+      const guard = () => this.latest === snap && this.sessionKey === snap.sessionKey && this.goals.get(owner) === goal && ['cancelled', 'completed', 'partial', 'failed'].includes(goal.status) && this.pausedQueues.get(queue) === owner
+      try { await this.submitQueueOrder(goal, { kind: 'resumeQueue', queueType: queue }, snap, guard) }
+      catch (error) { goal.facts.blocked = `恢复队列结果待确认：${String(error).slice(0, 120)}` }
     }
   }
 
@@ -558,6 +632,7 @@ export class TaskRuntime {
     this.cancelCommand(id)
     const program = this.controlProgram(id)
     if (program) {
+      for (const [goalId, pending] of this.preparingNative) if (pending.lease.ownerId === program.id) this.cancelNativePreparation(goalId)
       if(this.latest)for(const spec of this.activeSpecs(program)) {
         const facts=this.goals.get(spec.id)!.facts, motion=facts.coverMotion
         if(motion?.cohesion?.regroupSince!==undefined)motion.pausedAt??=this.latest.tick
@@ -651,6 +726,7 @@ export class TaskRuntime {
     if (this.deps.factorySites) this.productionExits.observe(snap, this.factoryRallies.knownSites, this.factoryRallies.state.settings, this.seenUnitIds, this.production, converted, !this.exitAllowed(), this.factoryRallies.clear)
     observeProduction(this.production, this.seenUnitIds, snap, converted)
     observeCancellations(this.production, snap)
+    observeQueueControl(this.goals, this.pausedQueues, snap)
     // 先解除失效角色，再结算攻击；剩余掩护成员可在同轮接续原任务。
     this.observeCoverLosses(snap)
     for (const last of [false, true]) for (const goal of this.goals.values()) {
@@ -744,6 +820,11 @@ export class TaskRuntime {
         await this.submissions.flushCancellations()
         if (this.latest !== snap) continue
       }
+      for (const id of new Set(this.pausedQueues.values())) {
+        const goal = this.goals.get(id)
+        if (goal && ['cancelled', 'completed', 'partial', 'failed'].includes(goal.status)) await this.restoreOwnedQueues(goal, snap)
+      }
+      if (this.latest !== snap) continue
       if (this.handoffs.length) await this.flushHandoffs(snap)
       const programs = [...this.programs.values()]
       const start = this.nextProgram % (programs.length || 1)
@@ -956,7 +1037,7 @@ export class TaskRuntime {
         delete pending.spec.formationId
         if (pending.activeSpec?.kind === 'production') delete pending.activeSpec.formationId
         const producing = this.programs.get(pending.ownerId)
-        if (producing) { producing.revision++; this.cancelCommand(producing.id) }
+        if (producing && goalExecutionMode(pending.spec) === 'script') { producing.revision++; this.cancelCommand(producing.id) }
       }
       const program = this.programs.get(ownerId({ kind: 'formation', formationId: request.formationId }))
       if (program) {
@@ -989,7 +1070,9 @@ export class TaskRuntime {
   private async nativeStep(program: ProgramState, snap: Snapshot, budget: StepBudget): Promise<void> {
     const generation = program.generation, formationRevision = this.formations.revision
     const valid = () => this.programs.get(program.id) === program && program.status === 'active' && program.generation === generation && this.sessionKey === snap.sessionKey && this.latest === snap && this.formations.revision === formationRevision
-    const specs = this.activeSpecs(program).filter(spec => goalExecutionMode(spec) === 'native')
+    const order = new Map(program.goalIds.map((id, index) => [id, index]))
+    // 独立准备可以先就绪先跑；同轮已就绪后仍按绑定顺序，而非规则查询返回顺序。
+    const specs = this.activeSpecs(program).filter(spec => goalExecutionMode(spec) === 'native').sort((a, b) => (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.id) ?? Number.MAX_SAFE_INTEGER))
     // 混合对象给脚本保留一半预算；未发送的固定步骤下步仍由真实事实提出。
     let available = this.activeSpecs(program).some(spec => goalExecutionMode(spec) === 'script') ? Math.floor(budget.remaining / 2) : budget.remaining
     for (const spec of specs) {
@@ -1102,7 +1185,8 @@ export class TaskRuntime {
         const handler = handlerFor(activeSpec)
         handler.beforeSubmit?.(this.goalContext(goal.activeSpec, snap), request)
         phase = 'submit'
-        const results = await this.deps.submit([request], snap, guard)
+        const results = request.kind === 'pauseQueue' || request.kind === 'resumeQueue' ? await this.submitQueueOrder(goal, request, snap, guard) : await this.deps.submit([request], snap, guard)
+        if (!results) continue
         if (request.kind === 'crush' && !guard()) return false
         recordCrushing(goal.facts.crushing, request, results, snap)
         const orders = ['combat', 'attack', 'explore', 'repair'].includes(activeSpec.kind) ? goal.facts.unitOrders ??= emptyUnitOrders() : undefined
@@ -1126,8 +1210,6 @@ export class TaskRuntime {
           return false
         }
         if (record) record.state = 'submitted'
-        if (request.kind === 'pauseQueue' && snap.production?.queues.some(q => q.type === request.queueType && q.status !== 2)) this.pausedQueues.set(request.queueType, item.goalId)
-        if (request.kind === 'resumeQueue') this.pausedQueues.delete(request.queueType)
         delete goal.facts.blocked
         delete goal.facts.placementBlocked
         program.stats.actions++

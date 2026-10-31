@@ -37,7 +37,17 @@ const executor = { run: async (_code: string, value: unknown, memory: unknown) =
   return { ok: true, actions, memory }
 } }
 function context(runtime: Awaited<ReturnType<typeof harness>>['runtime']): CommandContext {
-  return { runtime, formations: runtime.formations, controller: { activateNative(owner: string) { runtime.activateNativeGoals(owner); return '本机执行' }, async refresh(owner: string) { const lease = runtime.beginCompile(owner); assert.equal(runtime.commitCompile(lease, 'function step(s,m){return {actions:[],memory:m}}'), true); return 'ok' } } } as unknown as CommandContext
+  return { runtime, formations: runtime.formations, controller: {
+    activateNative(owner: string) { runtime.activateNativeGoals(owner); return '本机执行' },
+    async prepareNative(owner: string) {
+      for (const goal of runtime.goals.values()) if (goal.ownerId === owner && goal.spec.kind === 'production' && goal.spec.executionMode === 'native') {
+        const lease = runtime.beginNativePreparation(goal.spec.id)
+        runtime.commitNativePreparation(lease, goal.spec); runtime.releaseNativePreparation(lease)
+      }
+      runtime.activateNativeGoals(owner); return '本机执行'
+    },
+    async refresh(owner: string) { const lease = runtime.beginCompile(owner); assert.equal(runtime.commitCompile(lease, 'function step(s,m){return {actions:[],memory:m}}'), true); return 'ok' },
+  } } as unknown as CommandContext
 }
 
 test('目录名称/角色同时用于生产、现有成员和待加入候选；先过滤归属再取数量', async () => {

@@ -9,6 +9,7 @@ import { relocationKey } from '../base-relocation.ts'
 import { retainBindingRepairs } from './binding-recovery.ts'
 import { InterruptedOperation, interruptTranscripts, priorityCall } from '../transcript-queue.ts'
 import { linkCoverProduction } from './cover.ts'
+import { productionExecution } from '../execution-modes.ts'
 
 export function validateBindings(prompts: PromptLibrary): void { prompts.capabilities.assertBindings(Object.keys(bindings)) }
 export function loadCommandPrompts(): PromptLibrary { return loadPrompts({ validate: validateBindings }) }
@@ -56,6 +57,8 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
   const acceptedCalls: CapabilityCall[] = [], failures: BindingFailure[] = []
   let publishedSummary = ''
   const acceptedGoals = new Map<string, number>()
+  const nativeGoalIds = new Set<string>()
+  const ruleCache = new Map<string, Promise<unknown>>()
   let catalog = options.catalog ? Promise.resolve(options.catalog) : undefined
   const context: BindingContext = { ctx, text: options.text, check,
     formationGoals: new Map(),
@@ -99,6 +102,7 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
         const goalFailures: string[] = []
         let boundGoals = 0
         for (const item of result.goals ?? []) {
+          item.goal = productionExecution(item.goal)
           const existing = ctx.runtime.goals.get(item.goal.id)
           const track = !existing
           const tracked = state.goals.findIndex(goal => goal.id === item.goal.id)
@@ -118,6 +122,7 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
             }
             owners.add(owner); suppressed.delete(owner)
             if (goalExecutionMode(item.goal) === 'script') scriptOwners.add(owner)
+            else nativeGoalIds.add(item.goal.id)
             if (tracked >= 0) {
               state.goals[tracked] = item.goal; state.choices[tracked] = item.choice
               accepted[acceptedGoals.get(item.goal.id)!] = item.choice
@@ -185,12 +190,15 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
       if (native && !scriptOwners.has(owner)) state.results.push(native)
     }
     options.onUpdate?.(state)
+    const preparing = [...owners].filter(owner => retained(owner) && [...ctx.runtime.goals.values()].some(goal => goal.ownerId === owner && goalExecutionMode(goal.spec) === 'native' && ['pending', 'active'].includes(goal.status))).map(owner => ctx.controller.prepareNative?.(owner, {
+      prompts, ruleCache, ...(nativeGoalIds.size ? { goalIds: [...nativeGoalIds] } : {}),
+    }).then(result => { if (result) state.results.push(result); options.onUpdate?.(state) }))
     for (const owner of owners) {
       // 理解被新命令替代，不撤销已经接收的独立目标；停止/改令由各控制对象自己使其失效。
       if (!scriptOwners.has(owner) || !retained(owner) || ctx.runtime.hasPendingCommand(owner)) continue
       emit({ stage: 'generating', owner, executionMode: 'script' })
       try {
-        state.results.push(await ctx.controller.refresh(owner, false, { prompts, ...(options.commandId ? { commandId: options.commandId } : {}), onPromptVersion: version => options.onPromptVersion?.(owner, version) }))
+        state.results.push(await ctx.controller.refresh(owner, false, { prompts, ruleCache, ...(options.commandId ? { commandId: options.commandId } : {}), onPromptVersion: version => options.onPromptVersion?.(owner, version) }))
         compileFailures.delete(owner)
       } catch (error) {
         compileFailures.set(owner, String(error))
@@ -203,6 +211,7 @@ export async function executeCapabilities(calls: readonly unknown[], ctx: Comman
       }
       options.onUpdate?.(state)
     }
+    await Promise.all(preparing)
     owners.clear(); scriptOwners.clear()
   }
   await bindCalls(calls, failures)

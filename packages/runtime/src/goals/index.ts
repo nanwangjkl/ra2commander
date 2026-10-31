@@ -17,6 +17,7 @@ import { unitDeploy } from './unit-deploy.ts'
 import type { GoalHandler, GoalKind, MapSize } from './types.ts'
 import { validateUnitOrders } from '../unit-orders.ts'
 import { validateCrushing } from '../crushing.ts'
+import { validateQueueControl } from '../production-queues.ts'
 
 /** 新目标必须在这里登记；不引入动态插件、隐藏顺序或运行时注册。 */
 export const goalHandlers = { attack, building, combat, deploy, explore, formation, mining, production, rally, reinforce, relocate, repair, transport, unitDeploy } satisfies { [K in GoalKind]: GoalHandler<K> }
@@ -35,6 +36,8 @@ export function validateGoalFacts(goal: GoalState, map: MapSize): void {
   const facts = goal.facts
   validateUnitOrders(facts?.unitOrders)
   validateCrushing(facts?.crushing)
+  validateQueueControl(facts?.queueControl)
+  if (facts?.queueControl && goal.spec.kind !== 'production') throw new Error('生产队列控制进度与目标不符')
   if (facts?.crushing && goal.spec.kind !== 'combat' && goal.spec.kind !== 'attack') throw new Error('碾压进度与目标不符')
   if (!facts || typeof facts.initialized !== 'boolean' || !Array.isArray(facts.members) || facts.members.some(member => !Number.isSafeInteger(member.id) || typeof member.name !== 'string' || !Number.isFinite(member.rx) || !Number.isFinite(member.ry)) || !Number.isFinite(facts.lossRatio) || facts.lossRatio < 0 || facts.lossRatio > 1 || typeof facts.retreatTriggered !== 'boolean') throw new Error('目标事实非法')
   const kinds = { repair: 'repair', relocation: 'relocate', mining: 'mining', attack: 'attack', building: 'building', unitDeployment: 'unitDeploy', baseDefense:'combat', routeIndex: 'combat', coverReleasedIds: 'attack', completedQuantity: 'production', placementBlocked: 'production', rallyBlocked: 'production', cancelProduction: 'production' } as const
@@ -42,6 +45,7 @@ export function validateGoalFacts(goal: GoalState, map: MapSize): void {
   if (facts.routeIndex !== undefined && (!Number.isSafeInteger(facts.routeIndex) || facts.routeIndex < 0) || facts.completedQuantity !== undefined && (!Number.isSafeInteger(facts.completedQuantity) || facts.completedQuantity < 0) || facts.placementBlocked !== undefined && typeof facts.placementBlocked !== 'boolean') throw new Error('目标进度非法')
   if (facts.cancelProduction !== undefined && (typeof facts.cancelProduction !== 'boolean' || goal.status !== 'cancelled')) throw new Error('生产撤销标记非法')
   if (facts.rallyBlocked !== undefined && typeof facts.rallyBlocked !== 'boolean') throw new Error('生产集结点等待标记非法')
+  if (facts.preparationError !== undefined && (goal.spec.kind !== 'production' || typeof facts.preparationError !== 'string')) throw new Error('生产准备错误记录非法')
   if (facts.nativeError !== undefined && (goal.spec.executionMode !== 'native' || typeof facts.nativeError !== 'string')) throw new Error('本机执行错误记录非法')
   if (facts.endedByBattle !== undefined && (!['victory', 'defeat'].includes(facts.endedByBattle) || !['completed', 'partial', 'failed'].includes(goal.status))) throw new Error('对局结束目标状态非法')
   if (facts.unitOrders !== undefined && !['combat', 'attack', 'explore', 'repair'].includes(goal.spec.kind)) throw new Error('单位发令进度与目标不符')

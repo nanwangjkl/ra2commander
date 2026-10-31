@@ -1,9 +1,11 @@
 import { validBuildingPlacement, validTargetRegion } from '@ra2c/contracts'
-import type { GoalConstraints, GoalView } from '@ra2c/contracts'
+import type { ActionRequest, FormationRequest, GoalConstraints, GoalView } from '@ra2c/contracts'
 import { productionProgress } from '../production-progress.ts'
 import { pendingProduction } from '../production-cancellation.ts'
 import { alive as living, baseConstraints, projection, stringsValid } from './common.ts'
 import type { GoalContext, GoalHandler } from './types.ts'
+import { planQueueControl } from '../production-queues.ts'
+import type { ProductionRecord } from '../state.ts'
 
 function constraintsFor(ctx: GoalContext<'production'>, observed: ReturnType<typeof productionProgress>): GoalConstraints {
   const { spec, goal, snap, production, formations, pausedQueues } = ctx
@@ -13,16 +15,21 @@ function constraintsFor(ctx: GoalContext<'production'>, observed: ReturnType<typ
     if (dependency?.status !== 'completed') return { ...base, allowedProduce: [], allowedPlace: [], produceRemaining: {}, blocked: `等待基地搬迁完成${dependency && ['failed', 'partial', 'cancelled'].includes(dependency.status) ? `（搬迁已${dependency.status === 'cancelled' ? '取消' : '失败'}，未在旧址建造）` : dependency ? '' : '（搬迁目标尚未绑定）'}` }
   }
   const desired = goal.spec
-  // 减少产量属于立即收紧；增量仍需等候新代码激活。
+  // 减少产量属于立即收紧；增量仍需等候新要求准备并生效。
   const quantity = desired?.kind === 'production' ? Math.min(spec.quantity, desired.quantity) : spec.quantity
-  const progress = quantity === spec.quantity ? observed : productionProgress({ ...spec, quantity }, production, snap)
-  const pendingBuildings = production.filter(r => r.building && !r.placed && pendingProduction(r) > 0 && !ctx.goals.get(r.goalId)?.facts.cancelProduction)
-  const allowedPlace = pendingBuildings.filter(r => r.name === spec.target ? r.goalId === spec.id : spec.prerequisites.includes(r.name)).map(r => r.name)
+  const progress = quantity === spec.quantity ? observed : productionProgress({ ...spec, quantity }, production, snap, ctx.goals)
+  const sharedPrerequisite = (record: ProductionRecord) => {
+    const owner = ctx.goals.get(record.goalId), source = owner?.activeSpec ?? owner?.spec
+    return source?.kind === 'production' && source.target !== record.name
+  }
+  const pendingBuildings = production.filter(r => r.building && !r.placed && pendingProduction(r) > 0 && (!ctx.goals.get(r.goalId)?.facts.cancelProduction || sharedPrerequisite(r) && (!r.cancellation || r.cancellation.state === 'confirmed')))
+  const eligible = (record: ProductionRecord) => record.name === spec.target ? record.goalId === spec.id || !!spec.maintainPower && sharedPrerequisite(record) : spec.prerequisites.includes(record.name)
+  const allowedPlace = pendingBuildings.filter(eligible).map(r => r.name)
   const placements: NonNullable<GoalConstraints['placements']> = {}
   const placementRegions: NonNullable<GoalConstraints['placementRegions']> = {}
   if (spec.placementRegion) placementRegions[spec.target] = spec.placementRegion
   for (const name of allowedPlace) {
-    const record = pendingBuildings.find(r => r.name === name && (name === spec.target ? r.goalId === spec.id : spec.prerequisites.includes(name)))
+    const record = pendingBuildings.find(r => r.name === name && eligible(r))
     if (record?.placementRegion) placementRegions[name] = record.placementRegion
     const direction = record?.placement?.directions[record.observedIds.length]
     if (record?.placement && direction) placements[name] = { id: `${record.id}:${record.observedIds.length}`, anchor: record.placement.anchor, direction }
@@ -51,15 +58,18 @@ export const production: GoalHandler<'production'> = {
     if (spec.maintainPower && (!Number.isFinite(spec.maintainPower.reserve) || spec.maintainPower.reserve < 0 || !Number.isFinite(spec.maintainPower.output) || spec.maintainPower.output <= 0)) throw new Error('补电参数非法')
   },
   validateLive({ spec, goals }) { if (spec.afterGoalId && goals.has(spec.afterGoalId) && goals.get(spec.afterGoalId)?.spec.kind !== 'relocate') throw new Error('建造依赖必须指向基地搬迁目标') },
+  initialize({ goal }) { goal.facts.initialized = true },
   requiredActions(ctx) {
-    const constraints = constraintsFor(ctx, productionProgress(ctx.spec, ctx.production, ctx.snap))
-    return readyBuildings(constraints, ctx.snap).map(name => ({ kind: 'place' as const, name }))
+    const constraints = constraintsFor(ctx, productionProgress(ctx.spec, ctx.production, ctx.snap, ctx.goals))
+    return [...readyBuildings(constraints, ctx.snap).map(name => ({ kind: 'place' as const, name })), ...planQueueControl(ctx, constraints.produceRemaining ?? {}).actions.filter(action => action.kind === 'resumeQueue')]
   },
   observe(ctx) {
     const { spec, snap, goal } = ctx
-    const progress = productionProgress(spec, ctx.production, snap)
+    const progress = productionProgress(spec, ctx.production, snap, ctx.goals)
+    const desiredQuantity = goal.spec.kind === 'production' ? Math.max(spec.quantity, goal.spec.quantity) : spec.quantity
     const assigned = (progress.observed[spec.target] ?? []).filter(id => snap.self.some(u => u.id === id)).every(id => !ctx.locked(id) && (!spec.formationId || ctx.formations.ownerOf(id) === spec.formationId))
-    if (!spec.maintainPower && assigned && (progress.observed[spec.target]?.length ?? 0) >= spec.quantity && !progress.uncertain.includes(spec.target)) {
+    const queueWaiting = [...ctx.pausedQueues.values()].includes(spec.id) || Object.keys(goal.facts.queueControl?.orders ?? {}).length > 0
+    if (!spec.maintainPower && !queueWaiting && assigned && (progress.observed[spec.target]?.length ?? 0) >= desiredQuantity && !progress.uncertain.includes(spec.target)) {
       if (progress.placement && progress.placement.completed < spec.quantity) {
         goal.status = 'partial'; goal.facts.outcomeDetail = `已生产${spec.quantity}座，按指定${spec.placementRegion ? '分区及位置' : '方位'}建成${progress.placement.completed}座；位置未达标的建筑：${progress.placement.mismatchedIds.join('、') || '尚未确认'}，未额外补造`
       } else goal.status = 'completed'
@@ -67,10 +77,12 @@ export const production: GoalHandler<'production'> = {
   },
   project(ctx) {
     const { spec, goal: { facts }, snap, production } = ctx
-    const progress = productionProgress(spec, production, snap), constraints = constraintsFor(ctx, progress)
+    const progress = productionProgress(spec, production, snap, ctx.goals), constraints = constraintsFor(ctx, progress)
     const view: Partial<GoalView> = { submitted: progress.sent, observed: progress.observed, uncertain: progress.uncertain }
     const missingPrerequisites = snap.production?.available.includes(spec.target) ? [] : spec.prerequisites.filter(name => !snap.self.some(unit => unit.type === 2 && unit.name === name))
     view.productionPlan = {
+      ...(progress.power ? { power: progress.power } : {}),
+      ...(spec.queues.length ? { queueControl: planQueueControl(ctx, constraints.produceRemaining ?? {}) } : {}),
       missingPrerequisites,
       unmetConditions: snap.production?.available.includes(spec.target) ? [] : (spec.unlockConditions ?? []).filter(condition => !condition.requiresExisting || !snap.self.some(unit => unit.type === 2 && unit.name === condition.name)),
       pendingPrerequisites: missingPrerequisites.filter(name => (progress.sent[name] ?? 0) > (progress.observed[name]?.length ?? 0)),
@@ -85,8 +97,29 @@ export const production: GoalHandler<'production'> = {
     else if (!facts.placementBlocked && facts.blocked) view.blocked = facts.blocked
     return projection(ctx, constraints, view)
   },
+  nativeActions(ctx) {
+    if (ctx.goal.status !== 'active') return []
+    const { constraints, view } = production.project(ctx)
+    const actions: Array<ActionRequest | FormationRequest> = (view.productionPlan?.readyToPlace ?? []).map(name => ({ kind: 'place', name }))
+    actions.push(...view.productionPlan?.queueControl?.actions ?? [])
+    const management = constraints.management
+    if (management?.allowedUnitIds.length) actions.push({ kind: management.kind, formationId: management.formationId, unitIds: management.allowedUnitIds })
+    for (const name of view.productionPlan?.availableToProduce ?? []) {
+      const quantity = Math.min(constraints.produceRemaining?.[name] ?? 0, constraints.queueSpace?.[constraints.productionQueueTypes?.[name] ?? 0] ?? Infinity)
+      if (quantity > 0) actions.push({ kind: 'produce', name, quantity })
+    }
+    return actions
+  },
   continuous: ({ spec }) => !!spec.maintainPower,
   execution(ctx, { view }) {
+    const queues = view.productionPlan?.queueControl
+    if (queues?.pending) return { state: 'pending', detail: queues.detail ?? '等待队列控制确认' }
+    const power = view.productionPlan?.power
+    if (power && !view.blocked && !ctx.goal.facts.placementBlocked) {
+      const waiting = power.additional > 0 && !view.productionPlan?.availableToProduce.length && !view.productionPlan?.readyToPlace.length
+      return { state: waiting ? 'pending' : power.additional ? 'running' : power.futureOutput > 0 && power.margin - power.futureDrain < power.reserve ? 'pending' : 'continuous',
+        detail: waiting ? view.productionPlan?.unmetConditions?.map(condition => condition.reason).join('；') || '等待电厂生产前置或队列空位' : power.additional ? `按实际电量及待建耗电，仍需补${power.additional}座${ctx.spec.target}` : power.uncertain ? '等待电力相关提交确认，未重复补造' : power.futureOutput > 0 && power.margin - power.futureDrain < power.reserve ? '等待已提交电厂建成，未重复补造' : `电量余量满足${power.reserve}，持续待命` }
+    }
     const pending = view.productionPlan?.pendingRallyIds ?? []
     if (pending.length) return { state: 'pending', detail: `已生产${view.observed[ctx.spec.target]?.length ?? 0}个，其中${pending.length}个等待抵达集结点及交接；不补造、不提前停车`, progress: { completed: view.observed[ctx.spec.target]?.length ?? 0, total: ctx.spec.quantity, label: '已生产，等待集结交接' } }
   },

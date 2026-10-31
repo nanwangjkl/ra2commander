@@ -168,6 +168,8 @@ export interface GoalView {
     follow?: { x: number; y: number }; waiting: boolean
   }
   productionPlan?: {
+    power?: { additional: number; futureDrain: number; futureOutput: number; margin: number; reserve: number; uncertain: boolean }
+    queueControl?: { actions: Array<Extract<ActionRequest, { kind: 'pauseQueue' | 'resumeQueue' }>>; pending: boolean; detail?: string }
     pendingRallyIds?: number[]
     missingPrerequisites: string[]
     pendingPrerequisites: string[]

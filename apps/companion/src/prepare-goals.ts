@@ -4,8 +4,13 @@ import { loadPrompts, type GameProfile } from '@ra2c/command'
 import { createRuleLookup, type RuleQuery } from './game-rules.ts'
 
 /** 查询当前对局的真实规则；目录只提供角色、类别与类型提示。 */
-export async function prepareGoals(goals: GoalSpec[], snap: Snapshot, rules: RuleQuery, signal: AbortSignal, profile: GameProfile = loadPrompts().game): Promise<GoalSpec[]> {
-  const lookup = createRuleLookup(rules, () => signal.throwIfAborted(), profile, new Map(snap.self.map(unit => [unit.name, unit.type])))
+export async function prepareGoals(goals: GoalSpec[], snap: Snapshot, rules: RuleQuery, signal: AbortSignal, profile: GameProfile = loadPrompts().game, cache = new Map<string, Promise<unknown>>()): Promise<GoalSpec[]> {
+  const lookup = createRuleLookup((name, type) => {
+    const key = `${type}:${name}`
+    let request = cache.get(key)
+    if (!request) { request = rules(name, type); cache.set(key, request) }
+    return request
+  }, () => signal.throwIfAborted(), profile, new Map(snap.self.map(unit => [unit.name, unit.type])))
   const result: GoalSpec[] = []
   const factories = profile.productionFactories(snap.self)
   const categories = { ...profile.categories(snap.self), ...factories }

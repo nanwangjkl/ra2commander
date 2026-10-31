@@ -82,7 +82,7 @@ test('反馈复现：生产两名辐射工兵后前往部署，不虚构编队�
     assert.equal(deployment.spec.sources[0]!.quantity, 2)
     assert.equal(deployment.spec.formationId, undefined)
     assert.equal(f.formations.list().length, 0)
-    assert.deepEqual(f.requests, ['interpret', 'compile'])
+    assert.deepEqual(f.requests, ['interpret'])
     await f.tick()
     const born = [member(101, 'DESO', false, 21, 21), member(102, 'DESO', false, 21, 21)]
     await f.tick([...f.own, ...born])
@@ -186,7 +186,7 @@ test('同句新建编队的成员先完成生产交接，再分头移动部署',
     assert.equal(f.formations.ownerOf(102), '2队')
     assert.ok(f.submitted.some(action => action.kind === 'move' && action.unitIds.includes(101)))
     assert.ok(f.submitted.some(action => action.kind === 'move' && action.unitIds.includes(102)))
-    assert.deepEqual(f.requests, ['interpret', 'compile'])
+    assert.deepEqual(f.requests, ['interpret'])
     f.formations.dissolve('2队')
     const before = f.submitted.length
     await f.tick([...f.own, ...born], 300)

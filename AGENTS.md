@@ -91,8 +91,9 @@ RTS 优先快速反应。能理解行动目标时，Agent 应结合当前战况�
 - 游戏资源默认 `~/Downloads/full-pack.7z`，导入一次后保存在 `.runtime/profile`。
 - 环境覆盖：`RA2C_GAME_DIR`、`RA2C_PACK`、`RA2C_PORT`、`RA2C_PROFILE`。
 - 建筑操作、采矿、搬迁默认本机执行；分别设置 `RA2C_BUILDING_EXECUTOR=script`、`RA2C_MINING_EXECUTOR=script`、`RA2C_RELOCATION_EXECUTOR=script` 后运行 `pnpm companion` 可回退对应能力，保留目标 ID 和实际进度并生成脚本接管。默认模式不迁移无标记的旧脚本目标。
-- 探路 `scout@1.4.0` 默认由本机按既有探索落点并行发令；现有犬编队也本机执行，新造犬生产保留原脚本。`RA2C_SCOUT_EXECUTOR=script pnpm companion` 可回退探索发令，旧无标记探索不自动迁移。用户已于 2026-10-30 验收探路本机化并要求提交推送。
-- 用户随后批准继续维修车本机化。`repair-vehicle@1.1.0` 默认本机完成现有组件编队、组装、维修与跟随发令；新造组件生产保留原脚本，原配对及伤员分工不变。`RA2C_REPAIR_EXECUTOR=script pnpm companion` 可回退，旧无标记维修不自动迁移。本轮待用户实机验收；生产协调留待后续评估。
+- 探路 `scout@1.5.0` 默认由本机完成现有犬编队、新造犬有限生产和按既有落点并行发令。`RA2C_SCOUT_EXECUTOR=script pnpm companion` 独立回退探索，旧无标记探索不自动迁移。探索发令本机化已于 2026-10-30 验收，生产部分已随下述生产计划于 2026-10-31 通过用户实机验收。
+- `repair-vehicle@1.2.0` 默认本机完成现有组件编队、新造组件有限生产、组装、维修与跟随发令，原配对及伤员分工不变。`RA2C_REPAIR_EXECUTOR=script pnpm companion` 独立回退组装维修，旧无标记维修不自动迁移。组装维修本机化已提交 `578d395`，生产部分已随下述生产计划于 2026-10-31 通过用户实机验收。
+- 用户已批准[生产协调本机化计划](doc/roadmap/production-native-execution.md)，并于 2026-10-31 明确要求继续阶段2。新有限生产、持续补电和显式队列控制默认本机执行，独立准备真实规则，共享前置、供需、队列与生产台账，保留集结交接、位置和取消恢复。队列只认领正回执确认的自身暂停；未决操作持久化，不在恢复时重发。`RA2C_PRODUCTION_EXECUTOR=script pnpm companion` 回退生产，无标记旧目标保持脚本。用户已于 2026-10-31 实机验收通过并要求提交推送，两阶段完成；不据此启动其他路线图阶段。详见[生产执行方式](doc/spec/production-execution.md)。
 
 ```sh
 pnpm install

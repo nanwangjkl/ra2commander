@@ -303,7 +303,7 @@ test('探路展开固定生产与独立编队；首条狗交接后即可出发�
     assert.ok(run.kind !== 'repair-vehicle' && run.kind !== 'cover')
     assert.equal(run.quantity, 3)
     assert.equal(run.commandId, 'test-command')
-    assert.equal(f.generations(), 1, '只生成全局生产代码，侦察队不再请求模型')
+    assert.equal(f.generations(), 0, '生产和探索均不生成代码')
     assert.equal(f.runtime.goals.get(run.exploreGoalId)!.spec.executionMode, 'native')
     assert.equal(f.runtime.programs.get(`formation:${run.formationId}`)!.script, undefined)
     await f.tick()
@@ -339,7 +339,10 @@ test('探路编译验证后续成员转入，拦截只会首次建队的脚本�
   const f = await fixture()
   let lease: ReturnType<typeof f.runtime.beginCompile> | undefined
   try {
-    await f.run({ useExisting: false })
+    const previous = process.env.RA2C_PRODUCTION_EXECUTOR
+    process.env.RA2C_PRODUCTION_EXECUTOR = 'script'
+    try { await f.run({ useExisting: false }) }
+    finally { if (previous === undefined) delete process.env.RA2C_PRODUCTION_EXECUTOR; else process.env.RA2C_PRODUCTION_EXECUTOR = previous }
     lease = f.runtime.beginCompile('global')
     const frame = f.runtime.compileFrame(lease)
     const broken = `function step(s,m){const actions=[];for(const g of s.control.goals){const c=s.constraints.goals[g.spec.id];if(g.produceRemaining[g.spec.target]>0)actions.push({goalId:g.spec.id,request:{kind:'produce',name:g.spec.target,quantity:g.produceRemaining[g.spec.target]}});if(c.management.kind==='createFormation'&&g.unitIds.length)actions.push({goalId:g.spec.id,request:{kind:'createFormation',formationId:g.spec.formationId,unitIds:g.unitIds}})}return {actions,memory:m}}`

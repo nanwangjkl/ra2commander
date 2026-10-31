@@ -99,7 +99,7 @@ test('基地搬迁换ID、候选展开与后续区域矿场按真实状态串联
     assert.deepEqual(result.skipped, [])
     const relocation = result.goals.find(goal => goal.kind === 'relocate') as RelocateGoal
     const mine = result.goals.find(goal => goal.kind === 'production') as ProductionGoal
-    assert.equal(f.generations(), 1, '混合命令仅为后续生产生成一次脚本')
+    assert.equal(f.generations(), 0, '搬迁后的固定生产也直接本机执行')
     assert.equal(relocation.executionMode, 'native')
     assert.equal(mine.afterGoalId, relocation.id)
     assert.equal(mine.placementRegion!.name, '一楼')

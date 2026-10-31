@@ -160,6 +160,6 @@ test('尚未创建的编队也可先停止，迟到生产保留，旧移动与�
     f.runtime.setCover('1队', { runId: 'late-cover', version: '1', escortIds: [4], gap: 4, resumeGap: 2, retryTicks: 90 })
     await f.runtime.onSnapshot(snapshot({ seq: 2 }))
     assert.equal(f.runtime.programs.get('formation:1队')!.status, 'stopped')
-    assert.equal(f.submitted.length, 0)
+    assert.ok(f.submitted.every(action => action.kind === 'produce'), '迟到生产可继续，停止的编队不移动')
   } finally { f.dispose() }
 })

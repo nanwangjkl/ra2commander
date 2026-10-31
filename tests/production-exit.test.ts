@@ -10,21 +10,26 @@ const unit = (id: number, name: string, rx: number, ry: number, type = 7, isIdle
 const buildings = [unit(3226, 'NAWEAP', 147, 122, 2, true), unit(3214, 'NAHAND', 148, 118, 2, true)]
 const sites = async (snap: ReturnType<typeof snapshot>): Promise<FactorySite[]> => snap.self.filter(unit => unit.type === 2).map(unit => ({ id: unit.id, name: unit.name, x: unit.rx, y: unit.ry, elevation: 0, foundation: unit.name === 'NAWEAP' ? { width: 5, height: 3 } : { width: 2, height: 2 }, factory: unit.name === 'NAWEAP' ? 3 : 2 }))
 const tiles = async (points: Array<{ x: number; y: number }>) => points.map(point => ({ ...point, z: 0, landType: 0 }))
-async function fixture() {
+async function fixture(mode: 'script' | 'native' = 'script') {
   const executor = new StepExecutor()
   const h = await harness(executor, { formations: new FormationRegistry(), factorySites: sites, rallyTiles: tiles })
   let time = 0, seq = 2, own = [...buildings]
   await h.runtime.onSnapshot(snapshot({ seq, time, mapWidth: 200, mapHeight: 200, self: own }))
   const tick = async (members = own, seconds = 0.5) => { own = members; time += seconds; await h.runtime.onSnapshot({ ...h.runtime.snapshot!, seq: ++seq, tick: Math.round(time * 30) + 15, time, self: own }) }
   const queue = (name = 'HTNK', quantity = 1, id = 'tanks') => {
-    activate(h.runtime, production({ id, target: name, targetType: name === 'E2' ? 3 : 7, quantity, formationId: '1队' }), source)
+    const spec = production({ id, target: name, targetType: name === 'E2' ? 3 : 7, quantity, formationId: '1队', executionMode: mode })
+    if (mode === 'script') activate(h.runtime, spec, source)
+    else {
+      const owner = h.runtime.upsertGoal(spec), lease = h.runtime.beginNativePreparation(spec.id)
+      h.runtime.commitNativePreparation(lease, spec); h.runtime.releaseNativePreparation(lease); h.runtime.activateNativeGoals(owner)
+    }
     h.runtime.production.push({ id: `${id}-record`, goalId: id, name, quantity, building: false, queueType: name === 'E2' ? 2 : 3, state: 'submitted', observedIds: [], placed: false })
   }
   return { ...h, tick, queue, dispose: () => executor.dispose(), own: () => own }
 }
 
-test('复现最新反馈：坦克出现及离开厂房均不编队，抵达集结点以后才交接停车', async () => {
-  const f = await fixture()
+for (const mode of ['script', 'native'] as const) test(`${mode}：坦克出现及离开厂房均不编队，抵达集结点以后才交接停车`, async () => {
+  const f = await fixture(mode)
   try {
     f.queue('HTNK', 2); await f.tick()
     const point = f.runtime.factoryRallies.state.settings.find(setting => setting.factoryId === 3226)!.point!

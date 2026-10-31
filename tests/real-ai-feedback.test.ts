@@ -214,7 +214,7 @@ test('胜局反馈：核电站尚未解锁也绑定核子反应炉，修正不�
       {capability:'production.produce',params:{target:'核电站',quantity:1}},
     ])
     assert.deepEqual([...f.runtime.goals.values()].flatMap(goal=>goal.spec.kind==='production'?[goal.spec.target]:[]),['NATECH','NANRCT'])
-    assert.deepEqual(f.calls(),{interpretations:1,generations:1},'别名直接绑定，无额外失败重决策')
+    assert.deepEqual(f.calls(),{interpretations:1,generations:0},'别名直接绑定，本机生产不生成代码')
     const catalog=await loadGameCatalog(f.ctx,()=>{},prompts.game)
     assert.ok(catalog.forTranscript('造核电站').some(item=>item.name==='NANRCT'&&!item.available))
     const original={capability:'production.produce',params:{target:'核电站',quantity:2,placementDirections:['up']}}

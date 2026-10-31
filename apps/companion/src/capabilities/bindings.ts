@@ -94,6 +94,7 @@ async function control(params: CapabilityParameters['control.stop'], context: Bi
     const scripted = goals.filter(goal => goal!.spec.executionMode !== 'native')
     if (scripted.length && (!program.script || program.compileError || scripted.some(goal => JSON.stringify(goal!.spec) !== JSON.stringify(goal!.activeSpec)))) refreshOwners.push(owner)
     else ctx.runtime.resume(owner)
+    if (goals.some(goal => goal!.spec.kind === 'production' && goal!.spec.executionMode === 'native' && JSON.stringify(goal!.spec) !== JSON.stringify(goal!.activeSpec)) && !refreshOwners.includes(owner)) refreshOwners.push(owner)
   }
   return { choices: [`${owners.join('、') || '全部脚本'} 已恢复保留的目标`], refreshOwners }
 }

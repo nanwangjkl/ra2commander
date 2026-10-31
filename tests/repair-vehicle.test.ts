@@ -41,7 +41,7 @@ test('维修车别名和固定配方：默认新造整套，两车同队组件�
     assert.deepEqual(f.prompts.skills.parameters('维修车', {}), { quantity: 1, memberSource: 'new' })
     const execution = await f.run({ quantity: 2, formationId: '1队' })
     assert.deepEqual(execution.skipped, [])
-    assert.equal(f.generations(), 1, '只为两个组件目标生成一次全局生产代码')
+    assert.equal(f.generations(), 0, '组件生产、组装和维修均本机执行')
     const run = [...f.runtime.skillRuns.values()][0]!
     assert.ok(run.kind === 'repair-vehicle')
     assert.equal(f.runtime.goals.get(run.repairGoalId)!.spec.executionMode, 'native')
@@ -99,12 +99,12 @@ test('按全量真实血量分工：排除满血、矿车及敌人，修满或�
   assert.ok(scope.view.follow)
 })
 
-test('auto 只补缺失组件，本机编队和脚本生产共用全局对象仍完成交接与组装', async () => {
+test('auto 只补缺失组件，本机生产与编队仍完成交接与组装', async () => {
   const f = await fixture()
   try {
     await f.tick([...f.runtime.snapshot!.self, unit(1, 'FV')])
     await f.run({ memberSource: 'auto', formationId: '维修队' })
-    assert.equal(f.generations(), 1)
+    assert.equal(f.generations(), 0)
     await f.tick(); await f.tick()
     assert.deepEqual(f.submitted.filter(action => action.kind === 'produce'), [{ kind: 'produce', name: 'ENGINEER', quantity: 1 }])
     await f.tick([...f.runtime.snapshot!.self, unit(103, 'ENGINEER')]); await f.tick(); await f.tick()

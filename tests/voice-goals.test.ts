@@ -29,18 +29,18 @@ test('模拟转写保留原话，将显示名绑定为内部名并合并卫星�
     assert.match(output, /已生效/)
     const prompts = loadPrompts()
     assert.equal(inputs[0]!.messages[0]!.content, prompts.render('interpret'))
-    assert.equal(inputs[1]!.messages[0]!.content, prompts.compileFor([...runtime.goals.values()].map(goal => goal.spec)))
+    assert.equal(inputs.length, 1, '卫星与持续补电共用本机执行，只调用模型理解一次')
     const requestId = /记录：(\S+)/.exec(output)![1]!
     const archive = new BattleRecords(folder)
     const saved = archive.read(archive.list()[0]!.id)!.transcripts[requestId]!
     const versions = saved.promptVersions as { interpret: string; compile: Record<string, string> }
     assert.equal(versions.interpret, prompts.version)
-    assert.equal(versions.compile.global, prompts.version)
+    assert.deepEqual(versions.compile, {})
     const goals = [...runtime.goals.values()]
     assert.equal(goals.length, 2)
     assert.ok(goals.every(g => g.spec.rawText === text && g.status === 'active'))
     assert.deepEqual(goals.map(g => g.spec.kind === 'production' ? g.spec.target : ''), ['GASPYSAT', 'GAPOWR'])
-    assert.equal(runtime.programs.get('global')!.script!.version, 1)
+    assert.equal(runtime.programs.get('global')!.script, undefined)
     assert.equal(JSON.parse(inputs[0]!.messages[1]!.content).faction, 'Allied 盟军')
   } finally { await executor.dispose(); rmSync(folder, { recursive: true, force: true }) }
 })

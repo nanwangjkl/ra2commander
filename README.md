@@ -1,10 +1,10 @@
 # ra2commander
 
-基于 [ra2web](https://github.com/ra2web/ra2web.github.io) 的独立开源本机语音指挥执行系统。玩家巡视战场并下达战略命令，AI 为每个编队和全局管理分别生成 JavaScript，在玩家授权范围内执行战术微操和生产。
+基于 [ra2web](https://github.com/ra2web/ra2web.github.io) 的独立开源本机语音指挥执行系统。玩家巡视战场并下达战略命令，AI 理解目标，本机流程或对应控制对象的 JavaScript 执行战术微操和生产。
 
 设计上优先快速反应：命令有合理解释就行动，接受误判与次优结果，由玩家后续命令纠正。“造重工”按当前对局选择，不因未说明盟军或苏军而停下来询问。
 
-每队一份脚本，全局一份脚本，共用生成、校验、替换和修复机制；目标与执行进度独立保存。系统由命令编译器与实时任务运行时组成，具有战术执行层的自主性。主程序使用 TypeScript / Node.js；云端模型生成和修复代码，本机脚本持续观察战况并执行动作。
+每队与全局分别是独立控制对象，目标与执行进度独立保存。固定流程由本机执行，需要代码的目标在对应对象内共用一份脚本及生成、校验、替换和修复机制。主程序使用 TypeScript / Node.js；云端模型理解命令并按需生成代码，实时运行时持续观察战况并提交动作。新生产、持续补电及队列控制的执行方式见[生产说明](doc/spec/production-execution.md)。
 
 语音绑定失败会单独重决策；执行错误或具备条件却长期没有进展时，携带实际动作与结果限次修复脚本。见[自动恢复](doc/spec/automatic-recovery.md)。
 
@@ -24,7 +24,9 @@ M1（公共 API 桥）与 M2 单队循环已实测：文本命令经云模型（
 | [实施与验证计划](doc/roadmap/implementation-plan.md) | 先做什么，如何测量和验证首版？ |
 | [编队与全局脚本改造方案](doc/roadmap/script-ownership-refactor.md) | 如何改为每编队一份脚本、全局一份脚本，并统一替换？ |
 | [运行时整理与响应速度改造计划](doc/roadmap/runtime-simplification.md) | 如何分阶段改善调度、目标扩展、对象选择、归档和模型调用？（阶段 1～5 全部验收） |
-| [里程碑后的架构整理](doc/roadmap/architecture-consolidation.md) | 如何收拢运行时职责、分离订单与掩护事实、统一命令校正，再逐项迁移固定流程？（第一轮待验收） |
+| [里程碑后的架构整理](doc/roadmap/architecture-consolidation.md) | 如何收拢运行时职责、分离订单与掩护事实、统一命令校正，再逐项迁移固定流程？ |
+| [生产协调本机化计划](doc/roadmap/production-native-execution.md) | 如何分两阶段迁移有限生产、持续补电与显式队列控制，并保留共享前置、出厂交接和恢复？（两阶段均已验收） |
+| [生产执行方式](doc/spec/production-execution.md) | 哪些生产由本机执行，如何准备科技树、共享台账及耗电，如何取消、恢复和回退？ |
 | [六句模拟语音测试](doc/roadmap/voice-six-commands.md) | 展开、建设、造兵编队、地名移动、补电和进攻的实机效果如何？ |
 | [工作台、侧栏与语音开发计划](doc/roadmap/browser-workbench-and-voice.md) | 如何分阶段加入游戏右侧命令栏和真实语音，逐阶段由玩家验收？ |
 | [探路 Skill](doc/spec/scouting-skills.md) | 如何配置、调用、取消和恢复探路，以及如何确认真实探索覆盖？ |

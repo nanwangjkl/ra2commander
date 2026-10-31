@@ -186,10 +186,10 @@ async function main(): Promise<void> {
   controller = new ProgramController({
     runtime, executor: executors.compilation, provider: currentModel,
     recordCompilation: records.compilation,
-    prepare: (goals, signal, prompts) => {
+    prepare: (goals, signal, prompts, ruleCache) => {
       const snap = runtime.snapshot
       if (!snap) throw new Error('当前没有有效快照')
-      return prepareGoals(goals, snap, (name, type) => gameBridge.rules(name, type), signal, prompts.game)
+      return prepareGoals(goals, snap, (name, type) => gameBridge.rules(name, type), signal, prompts.game, ruleCache)
     },
     log: message => console.log(message),
   })
@@ -255,6 +255,7 @@ async function main(): Promise<void> {
       if (restored) {
         for (const program of runtime.programs.values()) {
           if (program.status !== 'stopped') controller.activateNative(program.id)
+          if (!['paused', 'stopped'].includes(program.status)) void controller.prepareNative(program.id).catch(err => console.log(`[companion] 恢复本机准备失败：${String(err)}`))
           const waiting = program.goalIds.some(id => { const goal = runtime.goals.get(id); return goal && goal.spec.executionMode !== 'native' && !['cancelled', 'completed', 'partial', 'failed'].includes(goal.status) && JSON.stringify(goal.spec) !== JSON.stringify(goal.activeSpec) })
           if (waiting && program.status !== 'paused' && program.status !== 'stopped') void controller.refresh(program.id).catch(err => console.log(`[companion] 恢复待生效目标失败：${String(err)}`))
           else if (program.status === 'active' && program.script) {
