@@ -1,11 +1,16 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
+import { createServer } from 'node:http'
+import { once } from 'node:events'
 import { chromium, type Browser } from 'playwright'
 import { buildWorkbench, refreshCommandPanel } from '../src/workbench.ts'
+import { restoreBrowserDownloads } from '../src/browser-downloads.ts'
 import type { CurrentCommands } from '../../../packages/contracts/src/index.ts'
+import type { ModelSettingsView } from '../../../packages/contracts/src/index.ts'
 
 interface TestUI {
   sources: Array<{ closed: boolean; onmessage: ((event: { data: string }) => void) | null }>
@@ -21,6 +26,40 @@ const root = resolve(import.meta.dirname, '../../..')
 let browser: Browser
 test.before(async () => { browser = await chromium.launch({ headless: true }) })
 test.after(async () => { await browser?.close() })
+
+test('CDP 重连后下载使用原生文件名与目录，断连后文件保留', { timeout: 20_000 }, async () => {
+  const folder = mkdtempSync(join(tmpdir(), 'ra2c-native-download-')), profile = join(folder, 'profile'), downloads = join(folder, 'downloads')
+  mkdirSync(join(profile, 'Default'), { recursive: true }); mkdirSync(downloads)
+  writeFileSync(join(profile, 'Default/Preferences'), JSON.stringify({ download: { default_directory: downloads, prompt_for_download: false } }))
+  const native = await chromium.launchPersistentContext(profile, { headless: true, channel: 'chromium', args: ['--remote-debugging-port=0'] })
+  const zip = Buffer.from('504b0506000000000000000000000000000000000000', 'hex')
+  const server = createServer((req, res) => {
+    if (req.url === '/battle.zip') {
+      res.writeHead(200, { 'content-type': 'application/zip', 'content-disposition': 'attachment; filename="battle-test.zip"' }); res.end(zip)
+    } else { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end('<a href="/battle.zip" download>下载</a>') }
+  })
+  server.listen(0, '127.0.0.1'); await once(server, 'listening')
+  let attached: Browser | undefined
+  try {
+    const port = readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0]
+    attached = await chromium.connectOverCDP(`http://127.0.0.1:${port}`)
+    await restoreBrowserDownloads(attached)
+    const page = attached.contexts()[0]!.pages()[0]!
+    page.setDefaultTimeout(5000)
+    // 原生下载不经过页面 route；只访问独立本机服务，不访问真实游戏、归档或云服务。
+    await page.goto(`http://127.0.0.1:${(server.address() as { port: number }).port}/`)
+    await page.getByRole('link', { name: '下载' }).click()
+    const saved = join(downloads, 'battle-test.zip')
+    for (let i = 0; i < 100 && !existsSync(saved); i++) await delay(50)
+    assert.ok(existsSync(saved), '文件应以 ZIP 名称保存到浏览器配置目录，而非 Playwright GUID 临时文件')
+    assert.deepEqual(readFileSync(saved), zip)
+    await attached.close(); attached = undefined
+    assert.deepEqual(readFileSync(saved), zip, 'Companion 断连不删除用户下载')
+  } finally {
+    server.closeAllConnections(); server.close()
+    await attached?.close(); await native.close(); rmSync(folder, { recursive: true, force: true })
+  }
+})
 
 async function fixture(legacy = false) {
   const folder = mkdtempSync(join(tmpdir(), 'ra2c-ui-'))
@@ -54,6 +93,7 @@ async function fixture(legacy = false) {
   page.on('pageerror', error => errors.push(error.message))
   const current: CurrentCommands = { battleId: 'battle-a', sessionKey: 'session-a', warning: '', feedback: [], events: Array.from({ length: 24 }, (_, i) => ({ commandId: `known-${i}`, source: 'sidebar', stage: 'understood', text: `已有命令 ${i}`, summary: '执行既有任务', seq: i + 1, at: Date.now() - i * 1000, sessionKey: 'session-a' })) }
   const model = { current, game: 'ready', htmlVersion: 0, failHtml: false, failCss: false, holdHtml: false, pendingHtml: [] as Array<() => Promise<void>> }
+  let settings: ModelSettingsView = { revision: 0, warning: '', baseUrl: 'https://fixture.example/v1', model: 'old', hasKey: true }
   let htmlHeld = () => {}
   const holdHtml = () => { model.holdHtml = true; return new Promise<void>(resolve => { htmlHeld = resolve }) }
   await page.route('**/*', async route => {
@@ -65,6 +105,15 @@ async function fixture(legacy = false) {
     if (path === '/commander/status') { await route.fulfill({ json: { game: model.game } }); return }
     if (path === '/commander/commands') { await route.fulfill({ json: model.current }); return }
     if (path === '/commander/say') { await route.fulfill({ status: 202, json: {} }); return }
+    if (path === '/commander/history') { await route.fulfill({ json: { records: [{ id: 'battle-fixture', sessionKey: 'old-game', startedAt: 1, commands: 3, feedback: 1 }], warning: '' } }); return }
+    if (path === '/commander/settings') {
+      if (route.request().method() === 'POST') {
+        const input = route.request().postDataJSON()
+        settings = { revision: settings.revision + 1, warning: '', baseUrl: input.baseUrl, model: input.model, hasKey: true }
+      }
+      await route.fulfill({ json: settings }); return
+    }
+    if (path === '/commander/settings/test') { await route.fulfill({ json: { ok: true } }); return }
     if (path === '/commander/feedback') {
       const value = route.request().postDataJSON()
       const feedback = { id: crypto.randomUUID(), at: Date.now(), ...value, observed: [] }
@@ -209,6 +258,68 @@ test('旧页面只换命令及页签，不叠加无法卸载的旧外壳监听�
     assert.equal(await page.evaluate(() => window.__ra2cWorkbench!.legacyShell), true)
     assert.equal(await page.evaluate(() => window.__uiTest.sources.filter(source => !source.closed).length), 1)
     assert.equal(await page.evaluate(() => window.__uiTest.requests.filter(request => request.path === '/commander/status').length), 0)
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+test('历史页按需读取，模型草稿跨切页与重连保留；保存不回显 Key，迟到旧回调不能覆盖新状态', { timeout: 20_000 }, async () => {
+  const f = await fixture(), { page } = f
+  try {
+    const token = await page.locator('#ra2c-game').evaluate(el => Reflect.get((el as HTMLIFrameElement).contentWindow!, '__fixtureToken'))
+    await page.locator('#tab-history').click()
+    await page.locator('.history-card').waitFor()
+    assert.match(await page.locator('#history-list').innerText(), /3 条命令.*1 条反馈/)
+    assert.equal(await page.locator('#history-refresh').count(), 0)
+    assert.equal(await page.locator('#history-status').textContent(), '')
+    const reads = await page.evaluate(() => window.__uiTest.requests.filter(r => r.path === '/commander/history').length)
+    await page.locator('#tab-commands').click(); await page.locator('#tab-history').click()
+    await page.waitForFunction(before => window.__uiTest.requests.filter(r => r.path === '/commander/history').length > before, reads)
+    await page.locator('#tab-settings').click()
+    await page.waitForFunction(() => (document.getElementById('model-model') as HTMLInputElement).value === 'old')
+    await page.locator('#model-url').fill('https://new-fixture.example/v1')
+    await page.locator('#model-model').fill('new-model')
+    await page.locator('#model-key').fill('temporary-ui-secret')
+    await page.locator('#tab-commands').click(); await page.locator('#tab-settings').click()
+    await refreshCommandPanel(page)
+    assert.equal(await page.locator('#model-url').inputValue(), 'https://new-fixture.example/v1')
+    assert.equal(await page.locator('#model-key').inputValue(), 'temporary-ui-secret')
+    await page.locator('#model-save').click()
+    await page.waitForFunction(() => document.getElementById('model-status')!.textContent!.includes('已保存'))
+    assert.equal(await page.locator('#model-key').inputValue(), '')
+    assert.equal(await page.locator('#model-key').getAttribute('placeholder'), '已配置；留空保留，填写则替换')
+    const payload = await page.evaluate(() => window.__uiTest.requests.filter(r => r.path === '/commander/settings' && r.body).at(-1)!.body)
+    assert.equal(JSON.parse(payload).apiKey, 'temporary-ui-secret')
+    assert.equal(await page.locator('#model-form input').count(), 3)
+    assert.equal(await page.locator('#model-form select').count(), 0)
+    assert.equal(await page.locator('#model-form button').count(), 2)
+    const saves = await page.evaluate(() => window.__uiTest.requests.filter(r => r.path === '/commander/settings' && r.body).length)
+    await page.locator('#model-model').fill('test-only-model')
+    await page.locator('#model-test').click()
+    await page.waitForFunction(() => document.getElementById('model-status')!.textContent === '连接成功')
+    assert.equal(await page.locator('#model-model').inputValue(), 'test-only-model')
+    assert.equal(await page.evaluate(() => window.__uiTest.requests.filter(r => r.path === '/commander/settings' && r.body).length), saves)
+    await page.evaluate(() => window.__uiTest.hold.add('/commander/settings'))
+    await page.locator('#model-model').fill('pending-model')
+    await page.locator('#model-save').click()
+    await page.waitForFunction(() => window.__uiTest.pending.some(r => r.path === '/commander/settings'))
+    await refreshCommandPanel(page)
+    await page.waitForFunction(() => window.__uiTest.pending.length >= 2)
+    await page.evaluate(() => {
+      window.__uiTest.hold.clear()
+      const latest = window.__uiTest.pending.pop()!
+      latest.resolve(new Response(JSON.stringify({ revision: 1, baseUrl: 'https://new-fixture.example/v1', model: 'new-model', hasKey: true, warning: '' })))
+    })
+    await page.locator('#model-model').fill('latest-model')
+    await page.locator('#model-save').click()
+    await page.waitForFunction(() => document.getElementById('model-status')!.textContent!.includes('已保存'))
+    await page.evaluate(() => {
+      for (const p of window.__uiTest.pending.splice(0)) p.resolve(new Response(JSON.stringify({ revision: 99, baseUrl: 'https://stale.example', model: 'stale', hasKey: true })))
+    })
+    await page.waitForTimeout(30)
+    assert.match(await page.locator('#model-status').innerText(), /已保存/)
+    assert.equal(await page.locator('#model-model').inputValue(), 'latest-model')
+    assert.equal(await page.locator('#ra2c-game').evaluate(el => Reflect.get((el as HTMLIFrameElement).contentWindow!, '__fixtureToken')), token)
+    assert.equal(await page.evaluate(() => window.__uiTest.sources.filter(s => !s.closed).length), 1)
     assert.deepEqual(f.errors, [])
   } finally { await f.close() }
 })

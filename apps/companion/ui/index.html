@@ -37,10 +37,22 @@
             </footer>
           </section>
           <section id="page-history" class="sidebar-page" role="tabpanel" aria-labelledby="tab-history" tabindex="0" hidden>
-            <div class="page-placeholder"><p>历史对战页面待完善</p></div>
+            <div class="page-content">
+              <div class="page-actions"><span>最近 10 局</span></div>
+              <p id="history-status" class="page-message" role="status"></p>
+              <div id="history-list" class="history-list"></div>
+            </div>
           </section>
           <section id="page-settings" class="sidebar-page" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden>
-            <div class="page-placeholder"><p>设置页面待完善</p></div>
+            <div class="page-content">
+              <form id="model-form" class="settings-form">
+                <label>URL<input id="model-url" type="url" required autocomplete="off" placeholder="https://api.example.com/v1" maxlength="2048" /></label>
+                <label>API Key<input id="model-key" type="password" autocomplete="new-password" placeholder="填写服务的 API Key" maxlength="8192" /></label>
+                <label>模型名称<input id="model-model" type="text" required autocomplete="off" placeholder="模型 ID" maxlength="200" /></label>
+                <div class="settings-actions"><button id="model-save" type="submit">保存</button><button id="model-test" type="button">测试连接</button></div>
+              </form>
+              <p id="model-status" class="page-message" role="status"></p>
+            </div>
           </section>
         </aside>
         <footer class="status-bar" aria-label="工作台状态">

@@ -75,6 +75,7 @@ export interface CommandContext {
   formations: FormationRegistry
   providers: Map<string, OpenAICompatibleProvider>
   currentProvider: () => OpenAICompatibleProvider
+  selectProvider?: (name: string) => void
   mapRegions?: MapRegionIndex
   mapSessionKey?: string
   mapPlayableArea?: import('../../../packages/maps/src/index.ts').PlayableAreaIndex
@@ -151,7 +152,8 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       const name = args[0]
       const p = name ? ctx.providers.get(name) : undefined
       if (!p) return `用法: model <${[...ctx.providers.keys()].join('|')}>`
-      ctx.currentProvider = () => p
+      if (ctx.selectProvider) ctx.selectProvider(name!)
+      else ctx.currentProvider = () => p
       return `编译模型切换为 ${p.config.name} (${p.model})`
     }
     case 'cap': {

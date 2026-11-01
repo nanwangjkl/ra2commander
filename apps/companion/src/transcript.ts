@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { providerInfo } from '@ra2c/model-providers'
 import type { CapabilityCall } from '@ra2c/command'
 import type { GoalSpec } from '@ra2c/contracts'
 import type { CommandContext } from './commands.ts'
@@ -23,7 +24,7 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
   }
   const requestId = active?.commandId ?? randomUUID()
   const record = { requestId, text, at: Date.now(), source: active?.source ?? 'cli', model: '', durationMs: 0, sessionKey: key,
-    messages: [] as Array<{ role: 'system' | 'user'; content: string }>, rawResponse: '', usage: undefined as unknown,
+    messages: [] as Array<{ role: 'system' | 'user'; content: string }>, rawResponse: '', usage: undefined as unknown, provider: undefined as ReturnType<typeof providerInfo>,
     promptVersions: { interpret: undefined as string | undefined, compile: {} as Record<string, string> },
     plan: undefined as { summary: string; operations: unknown[] } | undefined,
     modelPlan: undefined as { summary: string; operations: unknown[] } | undefined,
@@ -61,7 +62,9 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
         map: ctx.mapRegions && ctx.mapSessionKey === key ? { name: ctx.mapRegions.scheme.map.name, regions: ctx.mapRegions.scheme.regions.map(region => region.name) } : null }) },
     ]
     save()
-    const result = await ctx.currentProvider().generate({ messages: record.messages, maxTokens: 2048, thinking: 'disabled', signal })
+    const provider = ctx.currentProvider()
+    record.provider = providerInfo(provider); save()
+    const result = await provider.generate({ messages: record.messages, maxTokens: 2048, thinking: 'disabled', signal })
     record.rawResponse = result.text
     record.model = result.model
     record.durationMs = result.durationMs
@@ -115,10 +118,11 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
             catalog: catalog.forTranscript(`${text} ${JSON.stringify(failures)}`),
           }) },
         ]
-        const attempt = { at: Date.now(), promptVersion: prompts.version, failures, messages, response: undefined as unknown, error: '' }
+        const provider = ctx.currentProvider()
+        const attempt = { at: Date.now(), promptVersion: prompts.version, failures, messages, provider: providerInfo(provider), response: undefined as unknown, error: '' }
         record.bindingRepairs.push(attempt); save()
         try {
-          const result = await ctx.currentProvider().generate({ messages, maxTokens: 2048, thinking: 'disabled', signal })
+          const result = await provider.generate({ messages, maxTokens: 2048, thinking: 'disabled', signal })
           attempt.response = result; save(); check()
           const parsed = JSON.parse(result.text.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '').trim())
           if (!Array.isArray(parsed?.repairs) || parsed.repairs.length > failures.length) throw new Error('绑定修正格式非法')

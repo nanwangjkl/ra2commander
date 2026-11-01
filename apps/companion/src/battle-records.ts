@@ -236,6 +236,9 @@ export class BattleRecords {
       catch (error) { this.warn(`[companion] 无法读取 ${id}：${String(error)}`); return [] }
     }).sort((a, b) => b.startedAt - a.startedAt)
   }
+  history(gameActive: boolean): BattleRecordInfo[] {
+    return this.list().filter(record => !!record.sessionKey && (!gameActive || record.id !== this.currentId || !!record.result)).slice(0, 10)
+  }
   feedback(id: string, commandId: string, rating: FeedbackRating, note: string): CommandFeedback {
     if (!Object.hasOwn(RATINGS, rating) || typeof note !== 'string' || note.length > 4000) throw new Error('反馈格式错误，备注最多 4000 字')
     const record = this.readStored(id)

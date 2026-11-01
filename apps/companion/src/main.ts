@@ -12,7 +12,9 @@ import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { chromium, type Browser, type BrowserContext } from 'playwright'
 import { createScriptExecutors } from '@ra2c/js-worker'
-import { configuredProviderNames, providerFromEnv, type OpenAICompatibleProvider } from '@ra2c/model-providers'
+import { ModelSettings } from './model-settings.ts'
+import { BattleDownloads } from './battle-downloads.ts'
+import { restoreBrowserDownloads } from './browser-downloads.ts'
 import {
   FormationRegistry,
   persistState,
@@ -96,6 +98,7 @@ async function ensureBrowserContext(): Promise<{ browser: Browser; context: Brow
   const browser = await chromium.connectOverCDP(cdpUrl)
   const context = browser.contexts()[0]
   if (!context) throw new Error('CDP 连接没有可用 context')
+  await restoreBrowserDownloads(browser)
   return { browser, context }
 }
 
@@ -103,18 +106,12 @@ async function main(): Promise<void> {
   try {
     process.loadEnvFile(join(ROOT, '.env'))
   } catch (err) {
-    console.log(`[companion] .env 未加载（${String(err).slice(0, 120)}）；仅桥命令可用`)
+    console.log('[companion] .env 未加载；可在设置页配置模型')
   }
 
   const scriptKinds = scriptedFixedKinds()
-  const providers = new Map<string, OpenAICompatibleProvider>()
-  for (const name of configuredProviderNames(process.env)) {
-    try {
-      providers.set(name, providerFromEnv(name, process.env))
-    } catch (err) {
-      console.log(`[companion] 云模型 ${name} 不可用: ${String(err).slice(0, 120)}`)
-    }
-  }
+  const models = new ModelSettings(ROOT), providers = models.providers
+  if (models.view().warning) console.log(`[companion] ${models.view().warning}`)
 
   let bridge: WerhdBridge | undefined
   // 阶段 2：命令记录与事件流；HTTP 端点在 ctx 建立前注册，处理函数延后绑定。
@@ -122,7 +119,7 @@ async function main(): Promise<void> {
   records.importTranscripts(ROOT)
   const commandLog = new CommandLog(records)
   let submitSay: ((text: string, source: 'sidebar' | 'cli', commandId: string) => Promise<string>) | undefined
-  const api = new WorkbenchApi({ log: commandLog, records, ready: () => !!submitSay,
+  const api = new WorkbenchApi({ log: commandLog, records, models, downloads: new BattleDownloads(ROOT), ready: () => !!submitSay,
     submit: (text, commandId) => submitSay!(text, 'sidebar', commandId),
     status: async () => (await bridge?.state())?.apiAlive ? 'ready' : bridge ? 'waiting' : 'loading',
   })
@@ -155,12 +152,7 @@ async function main(): Promise<void> {
   const formations = new FormationRegistry()
   const iceMap = await loadIceMap()
   let controller!: ProgramController
-  let currentProvider: OpenAICompatibleProvider | undefined
-  const currentModel = () => {
-    currentProvider ??= providers.values().next().value
-    if (!currentProvider) throw new Error('没有可用的云模型（检查 .env 的 *_API_KEY）')
-    return currentProvider
-  }
+  const currentModel = models.current
   const runtime: TaskRuntime = new TaskRuntime({
     executor: executors.runtime, formations,
     ...(crushing ? { crushing } : {}),
@@ -275,11 +267,12 @@ async function main(): Promise<void> {
   if (reused && !legacy) await refreshCommandPanel(page).catch(error => console.log(`[companion] 侧栏更新失败，保留原界面：${String(error)}`))
 
   if (!providers.size) {
-    console.log('[companion] 未配置任何云模型 key（.env），task new 不可用；桥命令不受影响。')
+    console.log('[companion] 未配置云模型，可在设置页填写 URL、Key 和模型名称；桥命令不受影响。')
   }
   const ctx: CommandContext = {
     browser, bridge: gameBridge, page, runtime, formations, providers, controller,
     currentProvider: currentModel,
+    selectProvider: () => { models.current() },
     commandLog,
   }
   commandContext = ctx

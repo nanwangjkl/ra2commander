@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url'
 import { BattleRecords } from '../src/battle-records.ts'
 import { openBattleBundle } from '../src/battle-export.ts'
+import { openBattleZip } from '../src/battle-zip.ts'
 
 const records = new BattleRecords(fileURLToPath(new URL('../../../', import.meta.url)))
 const [id, option] = process.argv.slice(2)
@@ -10,6 +11,7 @@ try {
   else {
     if (option && option !== '--summary') throw new Error('支持的选项为 --summary')
     if (id.endsWith('.gz')) opened = await openBattleBundle(id)
+    if (id.endsWith('.zip')) opened = await openBattleZip(id)
     const source = opened?.records ?? records, key = opened?.id ?? id
     const output = option === '--summary' ? source.summary(key) : source.read(key)
     if (!output) throw new Error('找不到对局；用 pnpm records:read --list 查看 ID')

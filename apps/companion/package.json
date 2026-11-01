@@ -10,6 +10,12 @@
     "@ra2c/js-worker": "workspace:*",
     "@ra2c/model-providers": "workspace:*",
     "@ra2c/runtime": "workspace:*",
-    "playwright": "^1.49.0"
+    "playwright": "^1.49.0",
+    "yauzl": "^3.4.0",
+    "yazl": "^3.3.1"
+  },
+  "devDependencies": {
+    "@types/yauzl": "^3.4.0",
+    "@types/yazl": "^3.3.1"
   }
 }

@@ -7,6 +7,9 @@ import { tmpdir } from 'node:os'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { decodeObservation, encodeObservation } from '../apps/companion/src/battle-codec.ts'
 import { compactBattle, exportBattle, logicalEntries, openBattleBundle } from '../apps/companion/src/battle-export.ts'
+import { exportBattleZip, openBattleZip } from '../apps/companion/src/battle-zip.ts'
+import { BattleDownloads } from '../apps/companion/src/battle-downloads.ts'
+import { setTimeout as delay } from 'node:timers/promises'
 import { BattleJournal, type ArchiveEntry } from '../apps/companion/src/battle-storage.ts'
 import { BattleRecords } from '../apps/companion/src/battle-records.ts'
 import { activate, harness, outcome, production } from './helpers.ts'
@@ -36,6 +39,43 @@ function legacy(root: string) {
   writeFileSync(join(folder, 'objects', '0'.repeat(64) + '.txt'), '无引用的旧正文')
   return { id, folder, code, prompt }
 }
+
+test('ZIP 保留旧格式和 v3 的全部逻辑内容，离线打开不依赖原档，后台导出不阻塞主线程', { timeout: 20_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ra2c-zip-test-')), converted = mkdtempSync(join(tmpdir(), 'ra2c-v3-test-'))
+  const downloads = new BattleDownloads(root)
+  try {
+    const fixture = legacy(root), source = readFileSync(join(fixture.folder, 'events.jsonl'))
+    writeFileSync(join(root, '.env'), 'PRIVATE_MODEL_KEY')
+    mkdirSync(join(root, '.runtime'), { recursive: true }); writeFileSync(join(root, '.runtime/settings.json'), 'PRIVATE_MODEL_KEY')
+    const first = downloads.start(fixture.id)
+    assert.equal(downloads.start(fixture.id).token, first.token, '同局重复下载复用正在运行的 worker')
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(downloads.status(first.token)?.state, 'preparing', '主线程仍可响应，不在 HTTP 线程同步转换大日志')
+    let job = downloads.status(first.token)!
+    for (let n = 0; job.state === 'preparing' && n < 300; n++) { await delay(20); job = downloads.status(first.token)! }
+    assert.equal(job.state, 'ready', job.error)
+    const file = downloads.acquire(first.token), opened = await openBattleZip(file.path)
+    try {
+      const record = opened.records.read(opened.id)!
+      assert.equal(record.observations.length, 17)
+      assert.equal(record.compilations[0]!.code, fixture.code)
+      assert.deepEqual(record.feedback.map(f => f.note), ['没有执行', '补充反馈'])
+      const folder = join(opened.root, '.runtime/battles', opened.id)
+      const manifest = JSON.parse(readFileSync(join(folder, 'manifest.json'), 'utf8'))
+      assert.deepEqual(Object.keys(manifest.files).filter(name => !name.startsWith('objects/')).sort(), ['events.jsonl', 'meta.json', 'summary.md'])
+      assert.doesNotMatch(JSON.stringify(record), /PRIVATE_MODEL_KEY|无引用的旧正文/)
+      compactBattle(root, fixture.id, converted)
+      const path = join(converted, 'v3.zip')
+      await exportBattleZip(converted, fixture.id, path)
+      const second = await openBattleZip(path)
+      try { assert.deepEqual(second.records.read(second.id), record) } finally { second.dispose() }
+      const bytes = readFileSync(path); writeFileSync(path, bytes.subarray(0, bytes.length - 25))
+      await assert.rejects(openBattleZip(path))
+    } finally { opened.dispose(); file.release() }
+    assert.equal(existsSync(file.path), false, '下载流释放后清理临时文件')
+    assert.deepEqual(readFileSync(join(fixture.folder, 'events.jsonl')), source)
+  } finally { downloads.close(); rmSync(root, { recursive: true, force: true }); rmSync(converted, { recursive: true, force: true }) }
+})
 
 test('动态列表只保存变化成员，成员加入删除、字段删除和重排都能准确恢复', () => {
   const initial = { self: Array.from({ length: 200 }, (_, id) => ({ id, name: 'MTNK', rx: id, ry: 20, hitPoints: 100, ammo: 4 })), credits: 1000 }

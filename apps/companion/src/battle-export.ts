@@ -22,7 +22,7 @@ const bytes = (folder: string): number => readdirSync(folder, { withFileTypes: t
 const fingerprint = (folder: string) => ['meta.json', 'events.jsonl'].map(name => { const stat = statSync(join(folder, name)); return [stat.ino, stat.size, stat.mtimeMs] })
 const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical((value as Record<string, unknown>)[key])])) : value
-const hashEntry = (hash: ReturnType<typeof createHash>, entry: ArchiveEntry) => hash.update(JSON.stringify(canonical({ kind: entry.kind, at: entry.at, value: entry.value })) + '\n')
+export const hashEntry = (hash: ReturnType<typeof createHash>, entry: ArchiveEntry) => hash.update(JSON.stringify(canonical({ kind: entry.kind, at: entry.at, value: entry.value })) + '\n')
 
 /** 顺序展开 v1/v2/v3；只保留最新观察和每条命令，不把整局展开到内存。 */
 export function* logicalEntries(journal: BattleJournal): Generator<ArchiveEntry> {

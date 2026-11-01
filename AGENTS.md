@@ -36,7 +36,9 @@ RTS 优先快速反应。能理解行动目标时，Agent 应结合当前战况�
 
 [里程碑后的架构整理](doc/roadmap/architecture-consolidation.md)已完成运行时职责收拢、探路与维修车本机化、生产协调、页面桥和 UI 生命周期整理，并经用户验收提交。最后的文档精简已于 2026-11-01 获用户确认并要求提交，本轮整理收尾，新功能另定范围。早前[运行时整理](doc/roadmap/runtime-simplification.md)阶段 1～5 已全部验收，没有阶段 6。
 
-用户于 2026-11-01 将尚未完成的开发按[新阶段计划](doc/roadmap/client-development-phases.md)重排为：1 历史和设置页内容 → 2 语音识别模块 → 3 Electron 或其他打包客户端方案。已完成部分及验收记录不变，原工作台计划保留作历史参考。本次只确定后续顺序，逐阶段实施和验收；当前历史与设置仍为页签框架，真实语音及客户端未接入。历史页可接入对局列表与概览，详细复盘仍使用独立 URL，指挥记录保持当前局命令与反馈。
+用户于 2026-11-01 将尚未完成的开发按[新阶段计划](doc/roadmap/client-development-phases.md)重排为：1 历史和设置页内容 → 2 语音识别模块 → 3 Electron 或其他打包客户端方案。已完成部分及验收记录不变，原工作台计划保留作历史参考，各阶段单独实施和验收。阶段 1 已于 2026-11-02 获用户验收并要求提交推送，同日授权开始阶段 2 语音识别；打包客户端尚未启动；指挥记录保持当前局命令与反馈。
+
+阶段 1 的最近 10 局列表、完整 ZIP 下载、模型 URL/Key/模型名设置已于 2026-11-02 完成开发检查并获用户验收。沿用文件归档，以 `.runtime/settings.json` 保存模型配置，不引入 SQLite；独立复盘页面和其他设置项暂不实施。行为见[模型设置](doc/spec/model-settings.md)、[对局记录](doc/spec/battle-records.md)，范围见[详细方案](doc/roadmap/history-download-and-model-settings.md)。
 
 ## 游戏行为约束
 
@@ -72,6 +74,8 @@ Companion 启动本地 HTTPS 服务和常驻 Chromium，导入资源、注入页
 
 侧栏输入文本或终端 `say <原话>` 模拟语音；真实录音/识别尚未接入。终端 `help` 查看命令，TCP 入口为 `127.0.0.1:8790`。基础能力、运行行为、完成判定与显式调试参数见[运行时行为与调试入口](doc/architecture/runtime-control.md)。
 
+模型可在“设置”页填写 Base URL、Key 与模型名，保存后用于新请求，无需重启游戏。只保留当前一套配置，保存覆盖旧值；已有 `.env` 兼容读取，本机配置优先，空 Key 保留原值，更换 URL 需填写适用的 Key。设置页保留三个字段及保存、测试连接按钮，不提供多配置管理；只有主动点击测试连接才额外请求模型，测试不保存配置。配置保存在已忽略的 `.runtime/settings.json`，不写入调试包，详见[模型设置](doc/spec/model-settings.md)。
+
 ## 修改与验证
 
 ```sh
@@ -101,10 +105,11 @@ pnpm records:read --list
 pnpm records:read <battle-id>             # 展开引用输出完整 JSON，无需游戏或 Companion
 pnpm records:read <battle-id> --summary
 pnpm records:export <battle-id>          # 无损去重并生成单局 .ra2c.jsonl.gz 提交包
+pnpm records:export <battle-id> --zip    # 标准 ZIP，网页下载使用同一格式
 pnpm records:read <提交包路径> --summary  # 可在没有游戏和原档的机器读取
 ```
 
-归档供玩家与开发 Agent 复盘。提交包默认写 `.runtime/record-exports/`，导出前后逐事件校验，保留所有命令、反馈、错误、代码和历史观察，原档不改写；不包含无引用正文、临时文件和派生摘要，不上传。只优化后续新增记录，存量原档保持原样。指挥记录只保留当前局命令和反馈，卡片不提供代码预览；历史页和独立复盘页面按[新阶段计划](doc/roadmap/client-development-phases.md)接入，不在指挥记录顶部恢复历史管理控件。数据格式与接口见[对局记录](doc/spec/battle-records.md)。
+归档供玩家与开发 Agent 复盘。终端提交包默认写 `.runtime/record-exports/`，网页 ZIP 由独立 worker 在临时目录准备，下载完成或过期后清理。两种格式均校验全部逻辑事件，保留命令、反馈、错误、代码和历史观察，原档不改写；不包含无引用正文、模型配置、Key、浏览器资料或其他对局，不上传。ZIP 另含派生摘要和校验清单，旧 gzip 格式保持兼容。历史页按开局时间显示最近十局，排除未进局记录和当前进行中的对局，不删除更早归档。指挥记录保持当前局命令与反馈，不提供代码预览。只优化后续新增记录，存量原档保持原样。数据格式与接口见[对局记录](doc/spec/battle-records.md)。
 
 ## 地图工具
 

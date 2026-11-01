@@ -13,7 +13,7 @@ export function buildWorkbench(root: string): Record<string, string> {
   const ui = join(root, 'apps/companion/ui')
   const out = join(root, '.runtime/ui')
   mkdirSync(out, { recursive: true })
-  const sources = ['workbench', 'workbench-lifecycle', 'workbench-shell', 'sidebar-tabs', 'command-panel', 'command-card', 'command-feedback']
+  const sources = ['workbench', 'workbench-lifecycle', 'workbench-shell', 'sidebar-tabs', 'command-panel', 'command-card', 'command-feedback', 'history-panel', 'model-settings-panel']
   uiVersion = createHash('sha256').update(['index.html', 'workbench.css', ...sources.map(name => `${name}.ts`)].map(name => readFileSync(join(ui, name), 'utf8')).join('\n')).digest('hex').slice(0, 12)
   const files: Record<string, string> = { [WORKBENCH_PATH]: join(ui, 'index.html'), [`${WORKBENCH_PATH}index.html`]: join(ui, 'index.html'), [`${WORKBENCH_PATH}workbench.css`]: join(ui, 'workbench.css') }
   for (const name of sources) {

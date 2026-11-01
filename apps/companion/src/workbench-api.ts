@@ -1,7 +1,11 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { createReadStream } from 'node:fs'
+import { pipeline } from 'node:stream/promises'
 import { CommandLog, newCommandId } from './command-log.ts'
 import type { BattleRecords } from './battle-records.ts'
-import type { FeedbackRating } from '@ra2c/contracts'
+import type { FeedbackRating, ModelSettingsInput } from '@ra2c/contracts'
+import type { ModelSettings } from './model-settings.ts'
+import type { BattleDownloads } from './battle-downloads.ts'
 
 interface ApiOptions {
   log: CommandLog
@@ -9,6 +13,8 @@ interface ApiOptions {
   submit: (text: string, commandId: string) => Promise<unknown>
   status: () => Promise<string>
   records?: BattleRecords
+  models?: ModelSettings
+  downloads?: BattleDownloads
 }
 
 /** 工作台接口及其长连接的生命周期；退出时不能让 SSE 心跳残留进程。 */
@@ -19,12 +25,66 @@ export class WorkbenchApi {
 
   async handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     const path = new URL(req.url ?? '/', 'https://127.0.0.1').pathname
-    if (!['/commander/say', '/commander/events', '/commander/status', '/commander/commands', '/commander/feedback', '/commander/records'].includes(path) && !path.startsWith('/commander/records/')) return false
+    if (!['/commander/say', '/commander/events', '/commander/status', '/commander/commands', '/commander/feedback', '/commander/records', '/commander/history', '/commander/settings', '/commander/settings/test'].includes(path) && !path.startsWith('/commander/records/') && !path.startsWith('/commander/exports/')) return false
     const json = (status: number, data: unknown) => { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(data)) }
     if (this.closing) { json(503, { error: '伴随程序正在退出' }); return true }
     if (req.method === 'POST' && req.headers.origin) {
       try { if (req.headers.origin === 'null' || new URL(req.headers.origin).host !== req.headers.host) throw new Error('origin') }
       catch { json(403, { error: '请从当前工作台提交' }); return true }
+    }
+    if (path === '/commander/settings' || path === '/commander/settings/test') {
+      const models = this.options.models
+      if (!models) { json(503, { error: '模型设置尚未就绪' }); return true }
+      if (req.method === 'GET' && path === '/commander/settings') { json(200, models.view()); return true }
+      if (req.method !== 'POST') { json(405, { error: '请使用 POST' }); return true }
+      const lifetime = new AbortController(), close = () => lifetime.abort()
+      res.once('close', close); this.clients.add(close)
+      try {
+        const input = await readJson(req) as ModelSettingsInput
+        if (path.endsWith('/test')) {
+          await models.test(input, AbortSignal.any([lifetime.signal, AbortSignal.timeout(15_000)]))
+          if (!lifetime.signal.aborted) json(200, { ok: true })
+        } else json(200, models.save(input))
+      }
+      catch (error) { if (!res.destroyed) json(400, { error: models.sanitize(error) }) }
+      finally { this.clients.delete(close); res.off('close', close) }
+      return true
+    }
+    if (path === '/commander/history') {
+      if (req.method !== 'GET') { json(405, { error: '请使用 GET' }); return true }
+      if (!this.options.records) { json(503, { error: '对局记录尚未就绪' }); return true }
+      const active = await this.options.status().then(status => status === 'ready', () => true)
+      json(200, { records: this.options.records.history(active), warning: this.options.records.warning }); return true
+    }
+    const exportRequest = /^\/commander\/records\/(battle-[a-f0-9]{24})\/export$/.exec(path)
+    if (exportRequest) {
+      if (req.method !== 'POST') { json(405, { error: '请使用 POST' }); return true }
+      try {
+        const records = this.options.records, active = await this.options.status().then(status => status === 'ready', () => true)
+        if (!records || !this.options.downloads) throw new Error('调试包服务尚未就绪')
+        if (active && records.currentId === exportRequest[1] && !records.list().find(record => record.id === exportRequest[1])?.result) throw new Error('当前对局仍在进行，请结束或退出对局后下载')
+        records.flush()
+        json(202, this.options.downloads.start(exportRequest[1]!))
+      } catch (error) { json(400, { error: String(error) }) }
+      return true
+    }
+    if (path.startsWith('/commander/exports/')) {
+      if (req.method !== 'GET') { json(405, { error: '请使用 GET' }); return true }
+      const match = /^\/commander\/exports\/([a-f0-9-]{36})(\/download)?$/.exec(path)
+      const downloads = this.options.downloads, job = match && downloads?.status(match[1]!)
+      if (!match || !job || !downloads) { json(404, { error: '找不到调试包，请重新下载' }); return true }
+      if (!match[2]) { json(200, job); return true }
+      let release = () => {}
+      const cancel = () => res.destroy()
+      try {
+        const file = downloads.acquire(match[1]!)
+        release = file.release
+        this.clients.add(cancel)
+        res.writeHead(200, { 'content-type': 'application/zip', 'cache-control': 'no-store', 'content-disposition': `attachment; filename="${file.filename}"` })
+        await pipeline(createReadStream(file.path), res)
+      } catch (error) { if (!res.headersSent) json(400, { error: String(error) }); else res.destroy() }
+      finally { this.clients.delete(cancel); release() }
+      return true
     }
     if (path === '/commander/feedback') {
       if (req.method !== 'POST') { json(405, { error: '请使用 POST' }); return true }
@@ -124,5 +184,17 @@ export class WorkbenchApi {
   close(): void {
     this.closing = true
     for (const close of this.clients) close()
+    this.options.downloads?.close()
   }
+}
+
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = []; let bytes = 0
+  for await (const chunk of req) {
+    bytes += Buffer.byteLength(chunk)
+    if (bytes > 32_768) throw new Error('设置内容过长')
+    chunks.push(Buffer.from(chunk))
+  }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) }
+  catch { throw new Error('请求格式错误') }
 }

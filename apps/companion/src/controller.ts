@@ -1,6 +1,6 @@
 import { compileCommand, CompileError, loadPrompts, type PromptLibrary, type PromptLoader } from '@ra2c/command'
 import { goalExecutionMode, type GoalSpec } from '@ra2c/contracts'
-import type { OpenAICompatibleProvider } from '@ra2c/model-providers'
+import { providerInfo, type OpenAICompatibleProvider } from '@ra2c/model-providers'
 import type { StepExecutor } from '@ra2c/js-worker'
 import type { CompileLease, TaskRuntime } from '@ra2c/runtime'
 import { randomUUID } from 'node:crypto'
@@ -161,7 +161,9 @@ export class ProgramController {
         const frame = runtime.compileFrame(lease)
         const program = runtime.programs.get(id)!
         const diagnostic = repair && program.script ? { code: program.script.code, error: program.stats.lastError ?? '脚本故障', context: runtime.recoveryContext(id) } : undefined
-        const output = goals.length ? await compileCommand(this.deps.provider(), { ...frame, ...(diagnostic ? { diagnostic } : {}) }, this.deps.executor, {
+        const provider = goals.length ? this.deps.provider() : undefined
+        if (provider) record({ stage: 'model-selected', provider: providerInfo(provider) })
+        const output = goals.length ? await compileCommand(provider!, { ...frame, ...(diagnostic ? { diagnostic } : {}) }, this.deps.executor, {
           signal: lease.signal,
           prompts: prompts!,
           onTrace: trace => record({ ...trace }),

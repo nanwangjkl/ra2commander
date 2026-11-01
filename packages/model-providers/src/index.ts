@@ -36,6 +36,14 @@ export interface ProviderConfig {
   baseUrl: string
   apiKey: string
   model: string
+  revision?: number
+  source?: 'file' | 'env'
+}
+
+/** 归档只记录公开配置，不复制认证字段。 */
+export function providerInfo(provider: OpenAICompatibleProvider) {
+  const c = provider.config
+  return c ? { name: c.name, baseUrl: c.baseUrl, model: c.model, revision: c.revision ?? 0, source: c.source ?? 'env' } : undefined
 }
 
 export class ProviderError extends Error {
@@ -104,7 +112,7 @@ export class OpenAICompatibleProvider {
     if (!res.ok) {
       const body = await res.text().catch(() => '')
       throw new ProviderError(
-        `HTTP ${res.status}: ${body.slice(0, 200)}`,
+        `HTTP ${res.status}: ${(this.config.apiKey ? body.split(this.config.apiKey).join('[已隐藏]') : body).slice(0, 200)}`,
         res.status,
         RETRYABLE_STATUS.has(res.status),
       )

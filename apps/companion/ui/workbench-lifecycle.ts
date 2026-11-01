@@ -1,6 +1,8 @@
 import { commandPanelState, mountCommandPanel } from './command-panel.js'
 import { mountSidebarTabs } from './sidebar-tabs.js'
 import { mountWorkbenchShell } from './workbench-shell.js'
+import { mountHistoryPanel } from './history-panel.js'
+import { mountModelSettings } from './model-settings-panel.js'
 
 declare global {
   interface Window {
@@ -27,9 +29,14 @@ export function mountWorkbench(options: { legacyShell?: boolean; onReady?: () =>
   try {
     if (!legacyShell) cleanup.push(mountWorkbenchShell())
     cleanup.push(mountCommandPanel(options.onReady))
+    const history = mountHistoryPanel(), settings = mountModelSettings()
+    cleanup.push(history.dispose, settings.dispose)
     cleanup.push(mountSidebarTabs(() => {
       const cards = document.querySelector<HTMLElement>('#command-cards')!
       cards.scrollTop = commandPanelState().scrollTop
+      const page = document.querySelector<HTMLElement>('#sidebar')!.dataset.activePage
+      if (page === 'history') history.show()
+      if (page === 'settings') settings.show()
     }))
   } catch (error) { dispose(); throw error }
   return dispose
@@ -87,7 +94,7 @@ export async function refreshWorkbench(version: string, signal: AbortSignal): Pr
     const target = focusedId ? document.getElementById(focusedId) : field ? card?.querySelector<HTMLElement>(field) : undefined
     if (!target) return
     target.focus({ preventScroll: true })
-    if (selection && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) target.setSelectionRange(selection[0], selection[1], selection[2] ?? undefined)
+    if (selection && selection[0] !== null && selection[1] !== null && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) target.setSelectionRange(selection[0], selection[1], selection[2] ?? undefined)
     focusRestored = true
   }
 

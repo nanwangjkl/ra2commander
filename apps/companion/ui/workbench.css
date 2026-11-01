@@ -95,3 +95,21 @@ html.sidebar-collapsed .status-bar { position: fixed; right: 0; bottom: 0; z-ind
 .feedback-form textarea { width: 100%; margin: 8px 0; resize: vertical; color: #dbe3ec; background: #101820; border: 1px solid #435363; border-radius: 4px; padding: 7px; font: inherit; }
 .feedback-actions { display: flex; align-items: center; gap: 8px; color: #a9c4b4; }
 button:disabled { opacity: .55; cursor: wait; }
+
+/* 历史与模型设置复用侧栏的独立滚动区域。 */
+.page-content { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 12px; font-size: 12px; }
+.page-actions, .history-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.page-message { color: #9eafbf; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+.page-message:empty { display: none; }
+.history-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.history-card { padding: 11px; background: #1a2431; border: 1px solid #2c3a48; border-radius: 7px; }
+.history-head { align-items: flex-start; color: #c6d1dd; font-size: 11px; }
+.history-head span { flex: none; color: #d3b98a; }
+.history-card > p { color: #91a3b5; margin: 8px 0; }
+.history-card .page-message { margin-bottom: 0; }
+.settings-form { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
+.settings-form label { display: flex; flex-direction: column; gap: 7px; color: #b8c7d6; }
+.settings-form input { width: 100%; min-width: 0; background: #0f161e; color: #dbe3ec; border: 1px solid #33414f; border-radius: 5px; padding: 8px; font: inherit; }
+.settings-form input:focus { outline: 1px solid #98714e; }
+.settings-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+#model-save { background: #6d4f33; border-color: #98714e; }
