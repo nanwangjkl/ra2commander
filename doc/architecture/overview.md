@@ -6,6 +6,8 @@ ra2commander 是通过 ra2web 公开玩家 API 运行的本机指挥伴随程序
 
 历史方案和候选选型保留在 `doc/roadmap/` 与 `doc/decisions/`，本页描述当前实现。产品目标见[需求](../spec/requirements.md)，公开 API 调查见[游戏接入](game-api.md)。
 
+用户于 2026-11-01 将后续工作重排为历史和设置页内容、语音识别、打包客户端三个阶段，详见[新阶段计划](../roadmap/client-development-phases.md)。当前实现和已完成阶段保持不变，客户端技术尚未选定。
+
 ## 运行入口与工作台
 
 `pnpm companion` 启动本机 HTTPS 服务，连接常驻 Chromium 并打开 `/commander/`。游戏在同源 iframe 中运行，右侧为命令与反馈侧栏。启动时构建 UI，重连只更新侧栏模块和样式，不刷新游戏 iframe；收起侧栏后游戏占满工作台。顶部品牌及底部状态栏固定，指挥记录、历史对战、设置横排切换；后两页目前仅占位。规则查询、快照和动作都明确绑定游戏 frame。
