@@ -27,6 +27,7 @@ export function commandPanelState(): CommandPanelState {
 }
 
 const LABEL: Record<string, string> = {
+  recording: '录音中', transcribing: '识别中',
   received: '已收到', understanding: '理解中', queued: '等待前序指令', understood: '已理解', binding: '绑定目标',
   bound: '待生效', skipped: '部分未执行', generating: '生成脚本', merged: '等待合并版本',
   effective: '执行中', pending: '等待就绪', running: '执行中', continuous: '持续执行', completed: '已完成',
@@ -62,6 +63,7 @@ export function mountCommandPanel(onReady: () => void = () => {}): () => void {
     const data = applyCommandEvent({ ...event, seq: ++memory.seq }, cardData.get(event.commandId))
     cardData.set(event.commandId, data)
     render(event.commandId, data)
+    document.dispatchEvent(new CustomEvent('ra2c-command-event', { detail: event }))
   }
   function render(commandId: string, data: CardData) {
     let card = [...cards.children].find(child => (child as HTMLElement).dataset.command === commandId) as HTMLElement | undefined
@@ -96,8 +98,8 @@ export function mountCommandPanel(onReady: () => void = () => {}): () => void {
     const completed = [...data.goals.values()].filter(goal => goal.execution?.state === 'completed').length
     const completion = completed && data.goals.size > 1 ? ` · ${completed}/${data.goals.size} 完成` : ''
     const expanded = card.querySelector<HTMLDetailsElement>('.card-error')?.open ?? false
-    card.querySelector('.card-content')!.innerHTML = `<header class="card-head"><time>${new Date(data.at).toLocaleTimeString('zh-CN', { hour12: false })}</time><span class="card-source">${data.source === 'sidebar' ? '侧栏' : data.source === 'restored' ? '恢复记录' : '终端/TCP'}</span><span class="card-stage stage-${data.stage}">${LABEL[data.stage]}${completion}</span></header>
-      <p class="card-text">“${escape(data.text)}”</p>
+    card.querySelector('.card-content')!.innerHTML = `<header class="card-head"><time>${new Date(data.at).toLocaleTimeString('zh-CN', { hour12: false })}</time><span class="card-source">${data.source === 'voice' ? '语音' : data.source === 'sidebar' ? '侧栏' : data.source === 'restored' ? '恢复记录' : '终端/TCP'}</span><span class="card-stage stage-${data.stage}">${LABEL[data.stage]}${completion}</span></header>
+      ${data.text ? `<p class="card-text">“${escape(data.text)}”</p>` : ''}
       ${data.summary ? `<p class="card-summary">理解：${escape(data.summary)}</p>` : ''}
       ${rows ? `<ul class="card-goals">${rows}</ul>` : ''}
       ${data.skipped.size ? `<ul class="card-skipped">${[...data.skipped].map(error => `<li>${escape(error)}</li>`).join('')}</ul>` : ''}
@@ -150,9 +152,11 @@ export function mountCommandPanel(onReady: () => void = () => {}): () => void {
     try { live(JSON.parse(message.data) as CommandEvent) } catch { showStatus('命令反馈异常，等待后续更新') }
   }
   void refreshCurrent()
+  document.addEventListener('ra2c-voice-event', event => receive((event as CustomEvent<CommandEvent>).detail), { signal: lifetime.signal })
 
   form.addEventListener('submit', async event => {
     event.preventDefault()
+    if (input.disabled) return
     const text = input.value.trim()
     if (!text) return
     const commandId = `cmd-${crypto.randomUUID()}`

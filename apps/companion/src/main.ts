@@ -15,6 +15,8 @@ import { createScriptExecutors } from '@ra2c/js-worker'
 import { ModelSettings } from './model-settings.ts'
 import { BattleDownloads } from './battle-downloads.ts'
 import { restoreBrowserDownloads } from './browser-downloads.ts'
+import { SpeechSettings } from './speech-settings.ts'
+import { TranscriptQueue, type TranscriptTurn } from './transcript-queue.ts'
 import {
   FormationRegistry,
   persistState,
@@ -118,9 +120,18 @@ async function main(): Promise<void> {
   const records = new BattleRecords(ROOT)
   records.importTranscripts(ROOT)
   const commandLog = new CommandLog(records)
-  let submitSay: ((text: string, source: 'sidebar' | 'cli', commandId: string) => Promise<string>) | undefined
-  const api = new WorkbenchApi({ log: commandLog, records, models, downloads: new BattleDownloads(ROOT), ready: () => !!submitSay,
-    submit: (text, commandId) => submitSay!(text, 'sidebar', commandId),
+  let submitSay: ((text: string, source: 'sidebar' | 'voice' | 'cli', commandId: string) => Promise<string>) | undefined
+  const speech = new SpeechSettings(ROOT)
+  const voiceTurns = new Map<string, TranscriptTurn>()
+  void speech.recognizer.start().catch(error => console.log(`[companion] ${String(error)}`))
+  const api = new WorkbenchApi({ log: commandLog, records, models, speech, downloads: new BattleDownloads(ROOT), ready: () => !!submitSay,
+    submit: (text, commandId, source) => submitSay!(text, source, commandId),
+    reserveVoice: id => {
+      if (!commandContext) throw new Error('指挥系统尚未就绪')
+      const turn = (commandContext.transcripts ??= new TranscriptQueue()).register(commandContext.runtime.battleKey)
+      voiceTurns.set(id, turn)
+      return { signal: turn.signal, finish: () => { turn.finish(); voiceTurns.delete(id) } }
+    },
     status: async () => (await bridge?.state())?.apiAlive ? 'ready' : bridge ? 'waiting' : 'loading',
   })
   const server = await startStaticServer({
@@ -280,7 +291,8 @@ async function main(): Promise<void> {
   if (runtime.snapshot) commandLog.restoreCurrent(ROOT, runtime)
   await bindDefaultMap(ctx).catch(error => console.log(`[companion] 默认分区绑定失败：${String(error)}`))
   submitSay = async (text, source, commandId) => {
-    try { return await runTranscript(text, ctx, ROOT, { commandId, source, log: commandLog }) }
+    const turn = source === 'voice' ? voiceTurns.get(commandId) : undefined
+    try { return await runTranscript(text, ctx, ROOT, { commandId, source, log: commandLog, ...(turn ? { turn } : {}) }) }
     finally { markDirty(); saveState(); commandLog.syncRuntime(runtime) }
   }
   controller.setProvider(() => ctx.currentProvider())

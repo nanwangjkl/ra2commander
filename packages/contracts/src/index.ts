@@ -189,6 +189,7 @@ export * from './placement.ts';
 export type { CommandEvent, CommandSource, CommandStage, GoalExecution } from './command-log.ts';
 export type { BattleRecord, BattleRecordInfo, CommandFeedback, FeedbackRating, CurrentCommands } from './battle-record.ts';
 export type { ModelSettingsView, ModelSettingsInput } from './workbench-settings.ts';
+export { SPEECH_KEYS, type SpeechKey, type SpeechSettingsInput, type SpeechSettingsView, type SpeechTiming } from './speech.ts';
 
 /** 任务脚本单次 step 的执行结果。 */
 export interface StepOutcome {

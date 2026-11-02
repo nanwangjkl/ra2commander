@@ -28,7 +28,7 @@ export function applyCommandEvent(event: CommandEvent, previous?: CardData): Car
   data.lastSeq = event.seq
   if (event.text) data.text = event.text
   if (event.summary) data.summary = event.summary
-  if (event.stage === 'received') data.at = event.at
+  if (event.stage === 'received' && event.source !== 'voice') data.at = event.at
   if (event.stage === 'skipped') data.skipped.add(event.error ?? '无法执行')
   else if (event.goalId || event.owner) {
     if (event.goalId && !data.goals.has(event.goalId)) {

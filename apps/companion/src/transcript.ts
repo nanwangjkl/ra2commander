@@ -33,8 +33,8 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     goals: [] as GoalSpec[], choices: [] as string[], effects: [] as string[], skipped: [] as string[], results: [] as string[], error: '',
     terminalStage: undefined as 'completed' | 'failed' | 'cancelled' | undefined, terminalError: '' }
   const save = () => active.log.recordTranscript(record)
-  let signal: AbortSignal | undefined
-  let turn: TranscriptTurn | undefined
+  let signal: AbortSignal | undefined = trace?.turn?.signal
+  let turn: TranscriptTurn | undefined = trace?.turn
   const check = () => { signal?.throwIfAborted(); if (key !== ctx.runtime.battleKey) throw new Error('对局已变化，转写结果作废') }
   emit({ stage: 'received', text })
   try {
@@ -44,7 +44,7 @@ export async function runTranscript(text: string, ctx: CommandContext, root: str
     const snap = ctx.runtime.snapshot
     if (!snap) throw new Error('请先进入对局')
     active?.log.follow(ctx.controller, ctx.runtime)
-    turn = (ctx.transcripts ??= new TranscriptQueue()).register(key)
+    turn ??= (ctx.transcripts ??= new TranscriptQueue()).register(key)
     signal = turn.signal
     emit({ stage: 'understanding' })
     try { await bindDefaultMap(ctx) } catch { check() } // 其他能力可继续；具体地域绑定会报告文件错误。

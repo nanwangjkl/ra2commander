@@ -154,6 +154,9 @@ vite.config.ts.timestamp-*
 # ra2commander 运行时数据（浏览器 profile、截图、日志）
 .runtime/
 
+# 本机语音模型资源：固定清单在 packages/speech/model-manifest.json
+resources/speech/models/
+
 # Offline map tools
 __pycache__/
 *.pyc

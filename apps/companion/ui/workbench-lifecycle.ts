@@ -3,6 +3,7 @@ import { mountSidebarTabs } from './sidebar-tabs.js'
 import { mountWorkbenchShell } from './workbench-shell.js'
 import { mountHistoryPanel } from './history-panel.js'
 import { mountModelSettings } from './model-settings-panel.js'
+import { mountSpeechPanel } from './speech-panel.js'
 
 declare global {
   interface Window {
@@ -29,14 +30,14 @@ export function mountWorkbench(options: { legacyShell?: boolean; onReady?: () =>
   try {
     if (!legacyShell) cleanup.push(mountWorkbenchShell())
     cleanup.push(mountCommandPanel(options.onReady))
-    const history = mountHistoryPanel(), settings = mountModelSettings()
-    cleanup.push(history.dispose, settings.dispose)
+    const history = mountHistoryPanel(), settings = mountModelSettings(), speech = mountSpeechPanel()
+    cleanup.push(history.dispose, settings.dispose, speech.dispose)
     cleanup.push(mountSidebarTabs(() => {
       const cards = document.querySelector<HTMLElement>('#command-cards')!
       cards.scrollTop = commandPanelState().scrollTop
       const page = document.querySelector<HTMLElement>('#sidebar')!.dataset.activePage
       if (page === 'history') history.show()
-      if (page === 'settings') settings.show()
+      if (page === 'settings') { settings.show(); speech.show() }
     }))
   } catch (error) { dispose(); throw error }
   return dispose

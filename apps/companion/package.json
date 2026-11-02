@@ -10,6 +10,7 @@
     "@ra2c/js-worker": "workspace:*",
     "@ra2c/model-providers": "workspace:*",
     "@ra2c/runtime": "workspace:*",
+    "@ra2c/speech": "workspace:*",
     "playwright": "^1.49.0",
     "yauzl": "^3.4.0",
     "yazl": "^3.3.1"

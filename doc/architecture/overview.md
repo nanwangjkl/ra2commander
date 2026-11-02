@@ -1,8 +1,8 @@
 # 当前技术架构
 
-ra2commander 是通过 ra2web 公开玩家 API 运行的本机指挥伴随程序。当前以文本模拟语音，使用 TypeScript / Node.js、Playwright Chromium、独立 QuickJS WASM 子进程和可取消的云模型请求。模型适配与编译流程由项目代码实现，未接入 Pi、LangGraph 或其他 Agent Core。
+ra2commander 是通过 ra2web 公开玩家 API 运行的本机指挥伴随程序。当前支持文本和本地语音输入，使用 TypeScript / Node.js、Playwright Chromium、独立 QuickJS WASM 与 SenseVoice 识别子进程，以及可取消的云模型请求。模型适配与编译流程由项目代码实现，未接入 Pi、LangGraph 或其他 Agent Core。
 
-截至 2026-11-01，工作台、命令侧栏、对局反馈，以及探路、维修车和掩护三个游戏 Skill 已实现。基础攻击、守卫、常规单位部署、探路、维修车，以及有限生产、持续补电和队列控制默认本机执行，保留旧脚本与按能力回退。运行时职责、共享订单事实、页面桥及 UI 生命周期整理已验收提交；真实录音/识别尚未开始。当前约束见 [AGENTS.md](../../AGENTS.md)，各轮批准及验收见[开发记录](../roadmap/development-history.md)和[架构整理计划](../roadmap/architecture-consolidation.md)。
+截至 2026-11-02，工作台、命令侧栏、对局反馈，以及探路、维修车和掩护三个游戏 Skill 已实现。基础攻击、守卫、常规单位部署、探路、维修车，以及有限生产、持续补电和队列控制默认本机执行，保留旧脚本与按能力回退。运行时职责、共享订单事实、页面桥及 UI 生命周期整理已验收提交；本地录音/识别已接入并待用户验收。当前约束见 [AGENTS.md](../../AGENTS.md)，各轮批准及验收见[开发记录](../roadmap/development-history.md)和[架构整理计划](../roadmap/architecture-consolidation.md)。
 
 历史方案和候选选型保留在 `doc/roadmap/` 与 `doc/decisions/`，本页描述当前实现。产品目标见[需求](../spec/requirements.md)，公开 API 调查见[游戏接入](game-api.md)。
 
@@ -16,7 +16,7 @@ ra2commander 是通过 ra2web 公开玩家 API 运行的本机指挥伴随程序
 
 浏览器 profile、资源和当前游戏保持常驻。普通 `quit` 只断连，`quit hard` 才关闭浏览器。新对局/重连自动使用当前单图配置的冰天雪地分区，不根据地图尺寸猜测地图名称。
 
-输入可来自侧栏、终端 `say` 和 TCP 命令通道，使用相同的基础能力分派器。真实音频接入留在[语音计划](../roadmap/browser-workbench-and-voice.md)的后续阶段。详细操作和调试参数见[运行时行为](runtime-control.md)。
+输入可来自工作台麦克风、侧栏文本、终端 `say` 和 TCP 命令通道，使用相同的基础能力分派器。浏览器 AudioWorklet 采集，`packages/speech/` 在独立 Node 子进程中常驻识别，最终转写沿用命令 ID 和现有队列；取消或换局不执行迟到结果。见[语音输入](../spec/speech-input.md)。详细操作和调试参数见[运行时行为](runtime-control.md)。
 
 ## 命令与执行两个循环
 

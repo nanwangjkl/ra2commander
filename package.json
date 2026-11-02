@@ -22,7 +22,9 @@
     "scenario:voice": "node --import tsx apps/companion/tools/run-voice-scenario.mjs",
     "playwright-install": "pnpm --filter @ra2c/companion exec playwright install chromium",
     "game-data:import": "node --import tsx packages/command/src/import-game-data.ts",
-    "game-data:check": "node --import tsx packages/command/src/check-game-data.ts"
+    "game-data:check": "node --import tsx packages/command/src/check-game-data.ts",
+    "speech:install": "node --import tsx apps/companion/tools/install-speech-model.ts",
+    "speech:check": "node --import tsx apps/companion/tools/check-speech-model.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

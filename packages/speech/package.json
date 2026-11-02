@@ -1,0 +1,8 @@
+{
+  "name": "@ra2c/speech",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "sherpa-onnx-node": "2.0.1" }
+}

@@ -17,8 +17,13 @@ interface TestUI {
   timers: Set<number>
   hold: Set<string>
   pending: Array<{ path: string; resolve: (response: Response) => void }>
-  requests: Array<{ path: string; body: string }>
+  requests: Array<{ path: string; body: string; bytes?: number }>
   legacyClicks: number
+  micDenied?: boolean
+  micPermissionPending?: boolean
+  micGrant?: () => void
+  micCalls?: number
+  tracks?: MediaStreamTrack[]
 }
 declare global { interface Window { __uiTest: TestUI } }
 
@@ -61,16 +66,27 @@ test('CDP 重连后下载使用原生文件名与目录，断连后文件保留'
   }
 })
 
-async function fixture(legacy = false) {
+async function fixture(legacy = false, withMicrophone = false) {
   const folder = mkdtempSync(join(tmpdir(), 'ra2c-ui-'))
   cpSync(join(root, 'apps/companion/ui'), join(folder, 'apps/companion/ui'), { recursive: true })
   const files = buildWorkbench(folder), context = await browser.newContext()
+  let assets: ReturnType<typeof createServer> | undefined, origin = 'https://workbench.test'
+  if (withMicrophone) {
+    // AudioWorklet 的模块加载不经过页面 route，使用独立 loopback 静态服务。
+    assets = createServer((req, res) => {
+      const path = new URL(req.url || '/', 'http://localhost').pathname, file = files[path]
+      if (!file) { res.writeHead(404); res.end(); return }
+      res.writeHead(200, { 'content-type': path.endsWith('.js') ? 'application/javascript' : path.endsWith('.css') ? 'text/css' : 'text/html; charset=utf-8' }); res.end(readFileSync(file))
+    })
+    assets.listen(0, '127.0.0.1'); await once(assets, 'listening')
+    origin = `http://127.0.0.1:${(assets.address() as { port: number }).port}`
+  }
   await context.addInitScript({ content: `
     window.__uiTest = { sources: [], timers: new Set(), hold: new Set(), pending: [], requests: [], legacyClicks: 0 };
     const originalFetch = window.fetch.bind(window);
     window.fetch = (input, init) => {
       const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
-      window.__uiTest.requests.push({ path, body: init?.body || '' });
+      window.__uiTest.requests.push({ path, body: typeof init?.body === 'string' ? init.body : '', bytes: init?.body instanceof ArrayBuffer ? init.body.byteLength : 0 });
       if (window.__uiTest.hold.has(path)) return new Promise(resolve => window.__uiTest.pending.push({ path, resolve }));
       return originalFetch(input, init);
     };
@@ -87,6 +103,18 @@ async function fixture(legacy = false) {
     };
     window.clearTimeout = id => { window.__uiTest.timers.delete(id); originalClear(id); };
   ` })
+  if (withMicrophone) await context.addInitScript({ content: `
+    window.__uiTest.micDenied = false; window.__uiTest.micCalls = 0; window.__uiTest.tracks = [];
+    Object.defineProperty(navigator.mediaDevices, 'enumerateDevices', { value: async () => [{ deviceId: 'fixture-mic', kind: 'audioinput', label: '模拟麦克风' }] });
+    Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { value: async () => {
+      window.__uiTest.micCalls++;
+      if (window.__uiTest.micPermissionPending) await new Promise(resolve => { window.__uiTest.micGrant = resolve; });
+      if (window.__uiTest.micDenied) throw new DOMException('fixture denied', 'NotAllowedError');
+      const audio = new AudioContext({ sampleRate: 16000 }), oscillator = audio.createOscillator(), gain = audio.createGain(), destination = audio.createMediaStreamDestination();
+      gain.gain.value = 0.1; oscillator.connect(gain); gain.connect(destination); oscillator.start(); await audio.resume();
+      window.__uiTest.tracks.push(...destination.stream.getTracks()); return destination.stream;
+    } });
+  ` })
   const page = await context.newPage()
   page.setDefaultTimeout(5000)
   const errors: string[] = []
@@ -98,7 +126,7 @@ async function fixture(legacy = false) {
   const holdHtml = () => { model.holdHtml = true; return new Promise<void>(resolve => { htmlHeld = resolve }) }
   await page.route('**/*', async route => {
     const url = new URL(route.request().url()), path = url.pathname
-    if (url.origin !== 'https://workbench.test') { await route.abort(); return }
+    if (url.origin !== origin) { await route.abort(); return }
     if (path === '/') {
       await route.fulfill({ contentType: 'text/html', body: '<body>模拟游戏文档<script>window.__fixtureToken=crypto.randomUUID();window.__nativeRequest=Element.prototype.requestFullscreen;window.__nativeExit=document.exitFullscreen;</script>' }); return
     }
@@ -114,6 +142,8 @@ async function fixture(legacy = false) {
       await route.fulfill({ json: settings }); return
     }
     if (path === '/commander/settings/test') { await route.fulfill({ json: { ok: true } }); return }
+    if (path === '/commander/speech' || path === '/commander/speech/reload') { await route.fulfill({ json: { revision: 0, deviceId: '', key: 'Backquote', modelDir: '/fixture-model', warning: '', engine: { state: 'ready', error: '' } } }); return }
+    if (path.startsWith('/commander/voice/')) { await route.fulfill({ status: 202, json: { commandId: path.split('/')[3] } }); return }
     if (path === '/commander/feedback') {
       const value = route.request().postDataJSON()
       const feedback = { id: crypto.randomUUID(), at: Date.now(), ...value, observed: [] }
@@ -132,14 +162,14 @@ async function fixture(legacy = false) {
     }
     await route.fulfill({ body, contentType: path.endsWith('.js') ? 'application/javascript' : path.endsWith('.css') ? 'text/css' : 'text/html' })
   })
-  await page.goto('https://workbench.test/commander/')
+  await page.goto(`${origin}/commander/`)
   const ready = () => page.waitForFunction(() => document.querySelectorAll('.command-card').length === 24 && window.__uiTest.sources.filter(source => !source.closed).length === 1)
   if (!legacy) await ready()
   const remount = () => page.evaluate(async () => {
     const module = await import('/commander/workbench-lifecycle.js' as string)
     module.mountWorkbench()
   })
-  return { page, model, errors, ready, remount, holdHtml, close: async () => { await context.close(); rmSync(folder, { recursive: true, force: true }) } }
+  return { page, model, errors, ready, remount, holdHtml, close: async () => { await context.close(); assets?.closeAllConnections(); assets?.close(); rmSync(folder, { recursive: true, force: true }) } }
 }
 
 test('反复更新只保留一份订阅与轮询，草稿、焦点、页签和游戏文档保留；卸载恢复全屏入口', { timeout: 20_000 }, async () => {
@@ -179,6 +209,81 @@ test('反复更新只保留一份订阅与轮询，草稿、焦点、页签和�
       const child = (frame as HTMLIFrameElement).contentWindow as Window & typeof globalThis
       return child.Element.prototype.requestFullscreen === Reflect.get(child, '__nativeRequest') && child.document.exitFullscreen === Reflect.get(child, '__nativeExit') && !Object.hasOwn(child.document, 'fullscreenElement')
     }), true)
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+test('游戏内按住说话仅提交一次，权限失败可重试，隐藏和重连取消语音并释放麦克风', { timeout: 25_000 }, async () => {
+  const f = await fixture(false, true), { page } = f
+  try {
+    await page.waitForFunction(() => window.__ra2cSpeech?.view?.engine.state === 'ready')
+    assert.equal(await page.locator('#speech-model-dir').count(), 0)
+    assert.equal(await page.locator('#speech-form select').count(), 2)
+    await page.locator('#say-input').fill('暂存的文字指令')
+    const sendWidth = (await page.locator('#say-submit').boundingBox())!.width
+    assert.equal(await page.locator('#voice-status').isHidden(), true)
+    assert.equal(await page.locator('#voice-enable').getAttribute('aria-pressed'), 'false')
+    const composerHeight = (await page.locator('.composer').boundingBox())!.height
+    await page.evaluate(() => { window.__uiTest.micDenied = true; window.__uiTest.micPermissionPending = true })
+    await page.locator('#voice-enable').click()
+    await page.waitForFunction(() => typeof window.__uiTest.micGrant === 'function')
+    assert.equal(await page.locator('#voice-enable').getAttribute('aria-busy'), 'true')
+    assert.equal(await page.locator('#voice-status').isHidden(), true)
+    assert.equal((await page.locator('.composer').boundingBox())!.height, composerHeight, '等待授权只在开关内显示 loading，不撑高输入区')
+    assert.notEqual(await page.locator('#voice-enable').evaluate(button => getComputedStyle(button, '::after').animationName), 'none')
+    await page.evaluate(() => { window.__uiTest.micPermissionPending = false; window.__uiTest.micGrant!() })
+    await page.waitForFunction(() => document.getElementById('voice-status')!.textContent!.includes('权限被拒绝'))
+    assert.equal(await page.evaluate(() => window.__uiTest.requests.filter(r => r.path.endsWith('/start')).length), 0)
+    await page.evaluate(() => { window.__uiTest.micDenied = false })
+    await page.locator('#voice-enable').click()
+    await page.waitForFunction(() => !(document.getElementById('voice-hold') as HTMLButtonElement).disabled)
+    assert.equal(await page.locator('#voice-enable').getAttribute('aria-pressed'), 'true')
+    assert.equal(await page.locator('#say-input').isHidden(), true)
+    assert.equal(await page.locator('#say-submit').isHidden(), true)
+    assert.equal(await page.locator('#voice-level').isVisible(), true)
+    assert.equal((await page.locator('#voice-hold').boundingBox())!.width, sendWidth)
+    await page.locator('#say-form').evaluate(form => (form as HTMLFormElement).requestSubmit())
+    assert.equal(await page.evaluate(() => window.__uiTest.requests.filter(r => r.path === '/commander/say').length), 0, '语音模式不会误发保留的文字草稿')
+    await page.locator('#voice-enable').click()
+    assert.equal(await page.locator('#say-input').isVisible(), true)
+    assert.equal(await page.locator('#say-input').inputValue(), '暂存的文字指令')
+    assert.equal(await page.locator('#voice-status').isHidden(), true)
+    await page.locator('#voice-enable').click()
+    await page.waitForFunction(() => !(document.getElementById('voice-hold') as HTMLButtonElement).disabled)
+    const game = page.frameLocator('#ra2c-game').locator('body')
+    await game.click()
+    await page.keyboard.down('Backquote'); await page.keyboard.down('Backquote')
+    await page.waitForFunction(() => document.querySelector('.card-stage')!.textContent!.includes('录音中'))
+    await page.waitForTimeout(220)
+    await page.keyboard.up('Backquote'); await page.keyboard.up('Backquote')
+    await page.waitForFunction(() => window.__uiTest.requests.some(r => r.path.endsWith('/audio')))
+    const calls = await page.evaluate(() => window.__uiTest.requests.filter(r => r.path.startsWith('/commander/voice/')))
+    assert.equal(calls.filter(r => r.path.endsWith('/start')).length, 1)
+    assert.equal(calls.filter(r => r.path.endsWith('/audio')).length, 1)
+    assert.ok(calls.find(r => r.path.endsWith('/audio'))!.bytes! > 44)
+    const id = calls.find(r => r.path.endsWith('/start'))!.path.split('/')[3]!
+    await page.evaluate(id => {
+      const source = window.__uiTest.sources.find(s => !s.closed)!
+      source.onmessage!({ data: JSON.stringify({ commandId: id, source: 'voice', seq: 100, at: Date.now(), stage: 'received', text: '展开基地', sessionKey: 'session-a' }) })
+    }, id)
+    assert.match(await page.locator(`[data-command="${id}"] .card-text`).innerText(), /展开基地/)
+    assert.equal(await page.locator(`[data-command="${id}"] .card-source`).innerText(), '语音')
+    await page.keyboard.down('Backquote')
+    await page.waitForFunction(() => window.__uiTest.requests.filter(r => r.path.endsWith('/start')).length === 2)
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')) })
+    await page.keyboard.up('Backquote')
+    await page.waitForFunction(() => window.__uiTest.requests.some(r => r.path.endsWith('/cancel')))
+    assert.equal(await page.evaluate(() => window.__uiTest.requests.filter(r => r.path.endsWith('/audio')).length), 1)
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }) })
+    await game.click(); await page.keyboard.down('Backquote')
+    await page.waitForFunction(() => window.__uiTest.requests.filter(r => r.path.endsWith('/start')).length === 3)
+    await refreshCommandPanel(page); await page.keyboard.up('Backquote')
+    await page.waitForFunction(() => window.__uiTest.tracks!.every(track => track.readyState === 'ended'))
+    assert.equal(await page.locator('#voice-hold').isDisabled(), true)
+    assert.equal(await page.locator('#say-input').isVisible(), true)
+    assert.equal(await page.locator('#say-input').inputValue(), '暂存的文字指令')
+    assert.equal(await page.evaluate(() => window.__uiTest.requests.filter(r => r.path.endsWith('/audio')).length), 1)
+    assert.equal(await page.evaluate(() => window.__uiTest.sources.filter(s => !s.closed).length), 1)
     assert.deepEqual(f.errors, [])
   } finally { await f.close() }
 })

@@ -30,9 +30,15 @@
             <div class="empty-state" id="empty-state"><span class="empty-symbol" aria-hidden="true">≡</span><h2>暂无命令记录</h2><p>在这里查看指令、理解与执行反馈。</p></div>
             <footer class="composer">
               <form id="say-form">
-                <input id="say-input" type="text" autocomplete="off" placeholder="输入指挥命令，回车提交" aria-label="指挥命令" />
-                <button id="say-submit" type="submit">下令</button>
+                <button id="voice-enable" class="composer-icon" type="button" aria-label="启用麦克风" title="启用麦克风" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg></button>
+                <div class="composer-field">
+                  <input id="say-input" type="text" autocomplete="off" placeholder="输入指挥命令，回车提交" aria-label="指挥命令" />
+                  <meter id="voice-level" min="0" max="0.25" value="0" aria-label="麦克风输入音量" hidden></meter>
+                </div>
+                <button id="say-submit" class="composer-icon composer-action" type="submit" aria-label="下令" title="下令"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+                <button id="voice-hold" class="composer-icon composer-action" type="button" aria-label="按住说话" title="按住说话，松开下令" aria-pressed="false" disabled hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4M8 6v12M12 3v18M16 6v12M20 10v4"/></svg></button>
               </form>
+              <p id="voice-status" class="voice-status" role="status" hidden></p>
               <p class="composer-hint" hidden><span class="dot muted"></span><span id="events-status" role="status"></span></p>
             </footer>
           </section>
@@ -52,6 +58,13 @@
                 <div class="settings-actions"><button id="model-save" type="submit">保存</button><button id="model-test" type="button">测试连接</button></div>
               </form>
               <p id="model-status" class="page-message" role="status"></p>
+              <h2 class="settings-section-title">语音输入</h2>
+              <form id="speech-form" class="settings-form">
+                <label>麦克风<select id="speech-device"><option value="">系统默认麦克风</option></select></label>
+                <label>录音按键<select id="speech-key"><option value="Backquote">反引号 `</option><option value="ControlRight">右 Ctrl</option><option value="AltRight">右 Alt</option><option value="F8">F8</option><option value="F9">F9</option></select></label>
+                <div class="settings-actions"><button type="submit">保存语音设置</button><button id="speech-reload" type="button">重新加载识别器</button></div>
+              </form>
+              <p id="speech-settings-status" class="page-message" role="status"></p>
             </div>
           </section>
         </aside>

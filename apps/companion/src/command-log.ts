@@ -155,6 +155,8 @@ export interface TraceOptions {
   commandId: string
   source: CommandSource
   log: CommandLog
+  /** 语音松开时即预留同一队列位置，识别完成继续原次序与取消范围。 */
+  turn?: import('./transcript-queue.ts').TranscriptTurn
 }
 
 export function newCommandId(): string {

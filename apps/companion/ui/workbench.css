@@ -78,12 +78,30 @@ html.sidebar-collapsed .status-bar { position: fixed; right: 0; bottom: 0; z-ind
 .card-skipped { list-style: none; margin: 6px 0 0; padding: 6px 8px; border-left: 2px solid #b28c4e; background: #211d16; color: #c9ad7d; }
 .card-error { margin: 8px 0 0; padding: 6px 8px; border-left: 2px solid #a35b56; background: #241a1b; color: #d99a94; white-space: pre-wrap; word-break: break-all; }
 .composer { border-top: 1px solid #293541; padding: 12px 16px 14px; background: #141b23; }
-.composer form { display: flex; gap: 8px; }
-.composer input { flex: 1; min-width: 0; background: #0f161e; border: 1px solid #33414f; border-radius: 6px; color: #dbe3ec; padding: 8px 10px; font-size: 13px; }
-.composer input:focus { outline: 1px solid #98714e; }
-.composer button { background: #6d4f33; color: #f2e3cd; border: 0; border-radius: 6px; padding: 8px 14px; font-size: 13px; cursor: pointer; }
-.composer button:hover { background: #7d5b3b; }
+.composer form { display: grid; grid-template-columns: 36px minmax(0, 1fr) 36px; align-items: center; gap: 8px; }
+.composer-field { grid-column: 2; grid-row: 1; display: flex; align-items: center; min-width: 0; height: 36px; padding: 0 10px; background: #0f161e; border: 1px solid #33414f; border-radius: 6px; }
+.composer-field:focus-within { border-color: #98714e; }
+.composer input { width: 100%; min-width: 0; padding: 0; background: transparent; border: 0; color: #dbe3ec; font-size: 13px; }
+.composer input:focus { outline: none; }
+.composer .composer-icon { display: grid; place-items: center; width: 36px; height: 36px; padding: 8px; border: 1px solid #344859; border-radius: 6px; background: #1b2835; color: #91a2b4; }
+.composer .composer-icon:hover { background: #28394a; color: #dbe3ec; }
+.composer-icon svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+#voice-enable { position: relative; grid-column: 1; grid-row: 1; }
+#voice-enable[aria-pressed="true"] { background: #1b3e31; color: #9bd6b1; border-color: #47795d; }
+#voice-enable[aria-busy="true"] { color: #d3b98a; opacity: 1; }
+#voice-enable[aria-busy="true"] svg { visibility: hidden; }
+#voice-enable[aria-busy="true"]::after { content: ''; position: absolute; inset: 0; margin: auto; box-sizing: border-box; width: 18px; height: 18px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: microphone-loading .8s linear infinite; }
+@keyframes microphone-loading { to { transform: rotate(360deg); } }
+.composer-action { grid-column: 3; grid-row: 1; }
+.composer #say-submit { background: #6d4f33; color: #f2e3cd; border-color: #98714e; }
+.composer #say-submit:hover { background: #7d5b3b; }
 .composer-hint { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; font-size: 11px; color: #75859a; }
+.composer #voice-hold.recording { background: #713e37; color: #ffe0d8; border-color: #bd7469; }
+#voice-hold { touch-action: none; user-select: none; }
+#voice-level { width: 100%; height: 12px; }
+#voice-level::-webkit-meter-bar { background: #182634; border: 0; border-radius: 4px; }
+#voice-level::-webkit-meter-optimum-value { background: #7cbf9a; border-radius: 4px; }
+.voice-status { margin: 5px 0 0; color: #8292a3; font-size: 11px; overflow-wrap: anywhere; }
 
 /* 命令反馈；表单保持独立，状态推送不替换正在编辑的字段。 */
 .card-feedback { margin-top: 9px; border-top: 1px solid #34414b; padding-top: 8px; }
@@ -109,7 +127,8 @@ button:disabled { opacity: .55; cursor: wait; }
 .history-card .page-message { margin-bottom: 0; }
 .settings-form { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
 .settings-form label { display: flex; flex-direction: column; gap: 7px; color: #b8c7d6; }
-.settings-form input { width: 100%; min-width: 0; background: #0f161e; color: #dbe3ec; border: 1px solid #33414f; border-radius: 5px; padding: 8px; font: inherit; }
-.settings-form input:focus { outline: 1px solid #98714e; }
+.settings-form input, .settings-form select { width: 100%; min-width: 0; background: #0f161e; color: #dbe3ec; border: 1px solid #33414f; border-radius: 5px; padding: 8px; font: inherit; }
+.settings-form input:focus, .settings-form select:focus { outline: 1px solid #98714e; }
+.settings-section-title { margin-top: 23px; padding-top: 16px; border-top: 1px solid #2c3a48; }
 .settings-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 #model-save { background: #6d4f33; border-color: #98714e; }

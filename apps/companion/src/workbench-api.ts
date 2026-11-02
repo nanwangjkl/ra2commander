@@ -6,31 +6,79 @@ import type { BattleRecords } from './battle-records.ts'
 import type { FeedbackRating, ModelSettingsInput } from '@ra2c/contracts'
 import type { ModelSettings } from './model-settings.ts'
 import type { BattleDownloads } from './battle-downloads.ts'
+import type { SpeechSettings } from './speech-settings.ts'
+import { VoiceCommands } from './voice-commands.ts'
+import type { SpeechSettingsInput } from '@ra2c/contracts'
 
 interface ApiOptions {
   log: CommandLog
   ready: () => boolean
-  submit: (text: string, commandId: string) => Promise<unknown>
+  submit: (text: string, commandId: string, source: 'sidebar' | 'voice') => Promise<unknown>
   status: () => Promise<string>
   records?: BattleRecords
   models?: ModelSettings
   downloads?: BattleDownloads
+  speech?: SpeechSettings
+  reserveVoice?: (id: string) => { signal: AbortSignal; finish: () => void }
 }
 
 /** 工作台接口及其长连接的生命周期；退出时不能让 SSE 心跳残留进程。 */
 export class WorkbenchApi {
   private readonly clients = new Set<() => void>()
   private closing = false
-  constructor(private readonly options: ApiOptions) {}
+  private readonly voice?: VoiceCommands
+  constructor(private readonly options: ApiOptions) {
+    if (options.speech) this.voice = new VoiceCommands({ log: options.log, sessionKey: () => options.records?.currentCommands().sessionKey ?? null,
+      recognizer: () => options.speech!.recognizer, submit: options.submit, reserve: options.reserveVoice })
+  }
 
   async handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     const path = new URL(req.url ?? '/', 'https://127.0.0.1').pathname
-    if (!['/commander/say', '/commander/events', '/commander/status', '/commander/commands', '/commander/feedback', '/commander/records', '/commander/history', '/commander/settings', '/commander/settings/test'].includes(path) && !path.startsWith('/commander/records/') && !path.startsWith('/commander/exports/')) return false
+    if (!['/commander/say', '/commander/events', '/commander/status', '/commander/commands', '/commander/feedback', '/commander/records', '/commander/history', '/commander/settings', '/commander/settings/test', '/commander/speech', '/commander/speech/reload'].includes(path) && !path.startsWith('/commander/records/') && !path.startsWith('/commander/exports/') && !path.startsWith('/commander/voice/')) return false
     const json = (status: number, data: unknown) => { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(data)) }
     if (this.closing) { json(503, { error: '伴随程序正在退出' }); return true }
     if (req.method === 'POST' && req.headers.origin) {
       try { if (req.headers.origin === 'null' || new URL(req.headers.origin).host !== req.headers.host) throw new Error('origin') }
       catch { json(403, { error: '请从当前工作台提交' }); return true }
+    }
+    if (path === '/commander/speech' || path === '/commander/speech/reload') {
+      const speech = this.options.speech
+      if (!speech) { json(503, { error: '语音模块尚未就绪' }); return true }
+      if (req.method === 'GET' && path === '/commander/speech') { json(200, speech.view()); return true }
+      if (req.method !== 'POST') { json(405, { error: '请使用 POST' }); return true }
+      try {
+        if (path.endsWith('/reload')) { this.voice?.cancelAll('识别器重新加载，已取消未提交语音'); speech.reload(); json(200, speech.view()) }
+        else { const input = await readJson(req) as SpeechSettingsInput; const view = speech.save(input); this.voice?.cancelAll('语音设置已更新，已取消未提交语音'); json(200, view) }
+      } catch (error) { json(400, { error: String(error) }) }
+      return true
+    }
+    if (path.startsWith('/commander/voice/')) {
+      if (req.method !== 'POST') { json(405, { error: '请使用 POST' }); return true }
+      const match = /^\/commander\/voice\/(cmd-[a-f0-9-]{8,36})\/(start|audio|cancel)$/.exec(path), voice = this.voice
+      if (!match || !voice) { json(404, { error: '语音入口不可用' }); return true }
+      try {
+        const [, id, action] = match
+        if (action === 'cancel') {
+          const input = await readJson(req) as { reason?: unknown }
+          voice.cancel(id!, typeof input?.reason === 'string' ? input.reason : undefined)
+        } else {
+          if (!this.options.ready()) throw new Error('伴随程序尚未就绪')
+          if (action === 'start') voice.start(id!)
+          else {
+            const chunks: Buffer[] = []; let bytes = 0
+            try {
+              for await (const chunk of req) {
+                bytes += Buffer.byteLength(chunk)
+                if (bytes > 960_128) throw new Error('录音过长，请分句下令')
+                chunks.push(Buffer.from(chunk))
+              }
+              voice.audio(id!, Buffer.concat(chunks))
+            } catch (error) { voice.cancel(id!, '录音上传失败，已取消'); throw error }
+          }
+        }
+        json(202, { commandId: id })
+      } catch (error) { json(400, { error: String(error) }) }
+      return true
     }
     if (path === '/commander/settings' || path === '/commander/settings/test') {
       const models = this.options.models
@@ -146,7 +194,7 @@ export class WorkbenchApi {
       this.options.log.emit({ commandId, text: parsed.text, source: 'sidebar', stage: 'received' })
       json(202, { commandId })
       const text = parsed.text
-      void Promise.resolve().then(() => this.options.submit(text, commandId)).catch(error => {
+      void Promise.resolve().then(() => this.options.submit(text, commandId, 'sidebar')).catch(error => {
         const last = this.options.log.since(0).filter(event => event.commandId === commandId).at(-1)
         if (!last || !['failed', 'cancelled'].includes(last.stage)) this.options.log.emit({ commandId, source: 'sidebar', stage: 'failed', error: String(error) })
       })
@@ -183,6 +231,8 @@ export class WorkbenchApi {
 
   close(): void {
     this.closing = true
+    this.voice?.close()
+    this.options.speech?.close()
     for (const close of this.clients) close()
     this.options.downloads?.close()
   }
