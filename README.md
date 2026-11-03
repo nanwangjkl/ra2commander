@@ -54,7 +54,7 @@ pnpm desktop
 | --- | --- | --- |
 | SteamOS / Linux x64 | AppImage、tar.gz | Steam Deck 实机已验收，Deck 窗口为 1280×800 |
 | macOS | ZIP，解压运行 `.app` | Apple Silicon 已构建检查；尚未提供开发者签名与公证 |
-| Windows | ZIP，解压运行 `ra2commander.exe` | 已提供构建入口，尚未完成目标系统构建与实机验证 |
+| Windows | ZIP，解压运行 `ra2commander.exe` | 已在 Windows 构建成功，实机对局体验待验收 |
 
 macOS、Windows 采用普通桌面窗口尺寸。程序与用户数据分开保存，升级替换程序会保留设置和对局；安装方式见 [Linux 分发](doc/spec/linux-distribution.md)及[桌面分发](doc/spec/desktop-distribution.md)。
 

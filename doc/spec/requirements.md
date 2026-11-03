@@ -19,6 +19,6 @@ Skill 复用定义，运行状态按对局隔离。默认不自动补充战损�
 
 ## 当前交付范围
 
-当前适配 ra2web 共和国之辉、冰天雪地分区，提供 Electron 客户端、浏览器开发工作台、本地语音、反馈和对局 ZIP。个人 Steam Deck 主线已验收，未做专用手柄层；macOS Apple Silicon 已构建检查，Windows 尚未完成目标平台验证。其他地图、MOD、全资源离线和通用条件语言不视为已支持。
+当前适配 ra2web 共和国之辉、冰天雪地分区，提供 Electron 客户端、浏览器开发工作台、本地语音、反馈和对局 ZIP。个人 Steam Deck 主线已验收，未做专用手柄层；macOS Apple Silicon 已构建检查，Windows 已构建成功，实机对局体验待验收。其他地图、MOD、全资源离线和通用条件语言不视为已支持。
 
 设计理由见[架构决策](../decisions/README.md)，现行专题入口见[开发文档](../README.md)，交付经过见[开发里程碑](../roadmap/development-history.md)。

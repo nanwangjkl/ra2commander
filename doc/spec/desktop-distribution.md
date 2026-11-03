@@ -8,6 +8,8 @@
 
 发行依赖须是自包含文件，不含指向工程的目录链接；资源、原生库和 worker 可在包外工作。构建在移出工程的临时目录检查依赖、识别、QuickJS、ZIP worker、首启、设置与退出，再生成 ZIP 和校验和，不自动上传。
 
-macOS Apple Silicon 已完成实际构建检查，使用 ad-hoc 签名，未提供 Developer ID 或公证；Windows 未签名，目标系统上的实际构建和运行尚未验证。其他架构不因入口存在就视为已验收。
+Windows 在启动自检前将当前应用目录与隔离副本的完整性级别设为 Medium，生成 ZIP 后只处理本次归档，不递归修改整个 `dist`。完整性处理失败即停止并保留工具输出，避免带问题标签的程序先执行自检。
+
+macOS Apple Silicon 已完成实际构建检查，使用 ad-hoc 签名，未提供 Developer ID 或公证；Windows 未签名，用户已确认目标系统构建成功，实机对局体验仍待验收。其他架构不因入口存在就视为已验收。
 
 实现：[native-build.mjs](../../apps/desktop/tools/native-build.mjs)、[electron-builder.cjs](../../apps/desktop/electron-builder.cjs)、[window-options.mjs](../../apps/desktop/src/window-options.mjs)。Linux 安装与入口区别见[Linux 分发](linux-distribution.md)。

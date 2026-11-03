@@ -4,7 +4,7 @@
 
 ## 范围与文档
 
-项目用途和上手方式见 [README.md](README.md)，技术文档入口为 [doc/README.md](doc/README.md)，术语见 [CONTEXT.md](doc/spec/CONTEXT.md)。个人 Steam Deck 主线已于 2026-11-03 获用户验收；专用手柄开发按用户要求取消，沿用个人键盘映射。Windows 入口存在但实际构建与运行未验证。交付历史只记在[开发里程碑](doc/roadmap/development-history.md)。
+项目用途和上手方式见 [README.md](README.md)，技术文档入口为 [doc/README.md](doc/README.md)，术语见 [CONTEXT.md](doc/spec/CONTEXT.md)。个人 Steam Deck 主线已于 2026-11-03 获用户验收；专用手柄开发按用户要求取消，沿用个人键盘映射。Windows 已由用户确认构建成功，实机对局体验仍待验收。交付历史只记在[开发里程碑](doc/roadmap/development-history.md)。
 
 - 分阶段工作交付后等用户明确验收，再按授权继续；自动检查不能替代用户验收，不同计划的授权独立。
 - README 面向使用者，不放开发流水或全量文档目录。环境、构建、工具命令集中在本文件。
@@ -65,7 +65,7 @@ pnpm dist:mac    # macOS 本机当前架构 ZIP
 pnpm dist:win    # Windows 本机当前架构 ZIP
 ```
 
-原生依赖按目标系统和架构安装，macOS/Windows 不交叉打包；产物与 SHA256SUMS 在 `dist/`，不自动上传。Windows 构建收尾会把 `dist` 的完整性级别重置为 Medium；在受限沙箱中生成的产物可能继承低完整性，Electron 从这种目录启动会崩溃。基础游戏资源、冰天雪地和语音模型随包，但不等于全地图、全 MOD 离线。资源来源与许可分别见[游戏资源](doc/assets/game-resources.md)、[语音模型](doc/assets/speech-model.md)。
+原生依赖按目标系统和架构安装，macOS/Windows 不交叉打包；产物与 SHA256SUMS 在 `dist/`，不自动上传。Windows 构建在自检前将当前应用目录及隔离副本的完整性级别设为 Medium，生成 ZIP 后处理本次归档；不递归修改整个 `dist`，失败保留工具输出并停止。此步骤处理受限环境可能留下的低完整性标签。基础游戏资源、冰天雪地和语音模型随包，但不等于全地图、全 MOD 离线。资源来源与许可分别见[游戏资源](doc/assets/game-resources.md)、[语音模型](doc/assets/speech-model.md)。
 
 Deck 默认窗口 1280×800，普通桌面默认 1480×960 并适应工作区；`RA2C_STEAM_DECK=1/0` 可覆盖 Deck 判定。Linux 使用稳定用户级安装路径，macOS/Windows 仅 ZIP；安装和签名边界见对应分发规范。发布新内容时更新版本，不覆盖已交付版本的产物。
 
