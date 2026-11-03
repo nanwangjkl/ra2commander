@@ -130,6 +130,9 @@ button:disabled { opacity: .55; cursor: wait; }
 .settings-form label { display: flex; flex-direction: column; gap: 7px; color: #b8c7d6; }
 .settings-form input, .settings-form select { width: 100%; min-width: 0; background: #0f161e; color: #dbe3ec; border: 1px solid #33414f; border-radius: 5px; padding: 8px; font: inherit; }
 .settings-form input:focus, .settings-form select:focus { outline: 1px solid #98714e; }
-.settings-section-title { margin-top: 23px; padding-top: 16px; border-top: 1px solid #2c3a48; }
+.settings-section-title { margin: 0; font-size: 14px; font-weight: 600; }
+.settings-divider { margin: 22px 0; border: 0; border-top: 1px solid #2c3a48; }
 .settings-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+#exit-game { width: 100%; margin-top: 14px; color: #f0b2b2; background: #2a1c24; border-color: #70404a; }
+#exit-game:hover { background: #3b242e; }
 #model-save { background: #6d4f33; border-color: #98714e; }

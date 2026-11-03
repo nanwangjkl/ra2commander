@@ -140,6 +140,10 @@ async function main(): Promise<void> {
   const voiceTurns = new Map<string, TranscriptTurn>()
   void speech.recognizer.start().catch(error => console.log(`[companion] ${String(error)}`))
   const api = new WorkbenchApi({ log: commandLog, records, models, speech, downloads: new BattleDownloads(DATA_ROOT), ready: () => running && !!submitSay,
+    quit: () => {
+      if (ELECTRON && process.connected) process.send?.({ type: 'ra2c-quit' })
+      else { hardQuit = !ELECTRON; quit() }
+    },
     submit: (text, commandId, source) => submitSay!(text, source, commandId),
     reserveVoice: id => {
       if (!commandContext) throw new Error('指挥系统尚未就绪')
@@ -380,6 +384,8 @@ async function main(): Promise<void> {
   // 本地终端入口（后台运行无 TTY 时跳过）。
   if (process.stdin.isTTY) {
     const rl = createInterface({ input, output })
+    const closeInput = () => rl.close()
+    lifetime.signal.addEventListener('abort', closeInput, { once: true })
     rl.setPrompt('ra2c> ')
     rl.prompt()
     await new Promise<void>(resolve => {
@@ -391,7 +397,9 @@ async function main(): Promise<void> {
         }).catch(err => { console.error(`错误: ${String(err)}`); rl.prompt() })
       })
       rl.on('close', resolve)
+      if (!running) rl.close()
     })
+    lifetime.signal.removeEventListener('abort', closeInput)
     rl.close()
   } else {
     await new Promise<void>((res) => {

@@ -121,6 +121,7 @@ function startHost() {
   child.stderr.on('data', bytes => { diagnostic = (diagnostic + bytes.toString()).slice(-2400); process.stderr.write(bytes) })
   child.on('message', message => {
     if (host !== child || quitting) return
+    if (message?.type === 'ra2c-quit') { app.quit(); return }
     if (message?.type === 'ra2c-listening') {
       const url = new URL(message.url)
       if (url.protocol === 'https:' && url.hostname === '127.0.0.1') origin = url.origin

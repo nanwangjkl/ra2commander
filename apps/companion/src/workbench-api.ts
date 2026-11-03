@@ -19,6 +19,7 @@ interface ApiOptions {
   models?: ModelSettings
   downloads?: BattleDownloads
   speech?: SpeechSettings
+  quit?: () => void
   reserveVoice?: (id: string) => { signal: AbortSignal; finish: () => void }
 }
 
@@ -34,12 +35,20 @@ export class WorkbenchApi {
 
   async handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     const path = new URL(req.url ?? '/', 'https://127.0.0.1').pathname
-    if (!['/commander/say', '/commander/events', '/commander/status', '/commander/commands', '/commander/feedback', '/commander/records', '/commander/history', '/commander/settings', '/commander/settings/test', '/commander/speech', '/commander/speech/reload'].includes(path) && !path.startsWith('/commander/records/') && !path.startsWith('/commander/exports/') && !path.startsWith('/commander/voice/')) return false
+    if (!['/commander/say', '/commander/events', '/commander/status', '/commander/commands', '/commander/feedback', '/commander/records', '/commander/history', '/commander/settings', '/commander/settings/test', '/commander/speech', '/commander/speech/reload', '/commander/quit'].includes(path) && !path.startsWith('/commander/records/') && !path.startsWith('/commander/exports/') && !path.startsWith('/commander/voice/')) return false
     const json = (status: number, data: unknown) => { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(data)) }
     if (this.closing) { json(503, { error: '伴随程序正在退出' }); return true }
     if (req.method === 'POST' && req.headers.origin) {
       try { if (req.headers.origin === 'null' || new URL(req.headers.origin).host !== req.headers.host) throw new Error('origin') }
       catch { json(403, { error: '请从当前工作台提交' }); return true }
+    }
+    if (path === '/commander/quit') {
+      if (req.method !== 'POST') { json(405, { error: '请使用 POST' }); return true }
+      if (!this.options.quit) { json(503, { error: '退出入口尚未就绪' }); return true }
+      this.closing = true
+      // 先回送请求结果，再进入保存、断连和关闭窗口流程。
+      res.once('finish', () => this.options.quit!())
+      json(202, { ok: true }); return true
     }
     if (path === '/commander/speech' || path === '/commander/speech/reload') {
       const speech = this.options.speech

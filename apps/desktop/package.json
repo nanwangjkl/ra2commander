@@ -1,6 +1,6 @@
 {
   "name": "@ra2c/desktop",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "type": "module",
   "main": "src/main.mjs",

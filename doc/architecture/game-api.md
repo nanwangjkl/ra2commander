@@ -8,12 +8,12 @@
 
 上游项目：[ra2web](https://github.com/ra2web/ra2web.github.io)。
 
-本次接口调查的固定参考快照为[调查副本](https://github.com/nanwangjkl/ra2commander.github.io)，提交为 `7f6858ac8c1d1b7e6c9c5d84dcc1e9af1df3a06c`。以下源码链接对应该快照，用于复查原始调查结论；ra2web 的实际接入版本仍须在原型中验证。
+本次接口调查的固定参考快照为[原项目](https://github.com/ra2web/ra2web.github.io)，提交为 `7f6858ac8c1d1b7e6c9c5d84dcc1e9af1df3a06c`。以下源码链接对应该快照，用于复查原始调查结论；ra2web 的实际接入版本仍须在原型中验证。
 
-- [公共类型声明](https://github.com/nanwangjkl/ra2commander.github.io/blob/7f6858ac8c1d1b7e6c9c5d84dcc1e9af1df3a06c/werhd-player-api.d.ts)
-- [玩家 API 文档](https://github.com/nanwangjkl/ra2commander.github.io/blob/7f6858ac8c1d1b7e6c9c5d84dcc1e9af1df3a06c/docs/player-console-api.md)
-- [Jev 使用示例](https://github.com/nanwangjkl/ra2commander.github.io/blob/7f6858ac8c1d1b7e6c9c5d84dcc1e9af1df3a06c/docs/examples/jev/werhd-jev-player.mjs)
-- [发布版游戏实现](https://github.com/nanwangjkl/ra2commander.github.io/blob/7f6858ac8c1d1b7e6c9c5d84dcc1e9af1df3a06c/js/app.js)与[配置](https://github.com/nanwangjkl/ra2commander.github.io/blob/7f6858ac8c1d1b7e6c9c5d84dcc1e9af1df3a06c/config.json)
+- [公共类型声明](https://github.com/ra2web/ra2web.github.io/blob/7f6858ac8c1d1b7e6c9c5d84dcc1e9af1df3a06c/werhd-player-api.d.ts)
+- [玩家 API 文档](https://github.com/ra2web/ra2web.github.io/blob/7f6858ac8c1d1b7e6c9c5d84dcc1e9af1df3a06c/docs/player-console-api.md)
+- [Jev 使用示例](https://github.com/ra2web/ra2web.github.io/blob/7f6858ac8c1d1b7e6c9c5d84dcc1e9af1df3a06c/docs/examples/jev/werhd-jev-player.mjs)
+- [发布版游戏实现](https://github.com/ra2web/ra2web.github.io/blob/7f6858ac8c1d1b7e6c9c5d84dcc1e9af1df3a06c/js/app.js)与[配置](https://github.com/ra2web/ra2web.github.io/blob/7f6858ac8c1d1b7e6c9c5d84dcc1e9af1df3a06c/config.json)
 
 发布实现用于理解接口实际效果；伴随程序运行时仅使用公共 API。升级兼容时记录新的参考提交，不依赖另一份本机检出目录。
 
@@ -87,7 +87,7 @@
 
 ## 资金与生产优先级
 
-游戏生产并非严格平分资金。[生产系统](https://github.com/nanwangjkl/ra2commander.github.io/blob/7f6858ac8c1d1b7e6c9c5d84dcc1e9af1df3a06c/js/app.js#L3145)逐队列推进队首项目，从当前余额扣除各队列本拍需求；先扣款的队列影响后续可用余额。产品默认尊重这一机制，不额外制定资金策略。
+游戏生产并非严格平分资金。[生产系统](https://github.com/ra2web/ra2web.github.io/blob/7f6858ac8c1d1b7e6c9c5d84dcc1e9af1df3a06c/js/app.js#L3145)逐队列推进队首项目，从当前余额扣除各队列本拍需求；先扣款的队列影响后续可用余额。产品默认尊重这一机制，不额外制定资金策略。
 
 `pause/resume` 按 `QueueType` 操作整个类别，没有公开单项暂停、重排或插队接口。不同类别可暂停竞争队列，同类只能安排未提交请求顺序；已入队项目不能承诺无损插队。
 

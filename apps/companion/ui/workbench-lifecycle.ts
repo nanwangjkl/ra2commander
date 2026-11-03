@@ -32,6 +32,7 @@ export function mountWorkbench(options: { legacyShell?: boolean; onReady?: () =>
     cleanup.push(mountCommandPanel(options.onReady))
     const history = mountHistoryPanel(), settings = mountModelSettings(), speech = mountSpeechPanel()
     cleanup.push(history.dispose, settings.dispose, speech.dispose)
+    cleanup.push(mountExitGame())
     cleanup.push(mountSidebarTabs(() => {
       const cards = document.querySelector<HTMLElement>('#command-cards')!
       cards.scrollTop = commandPanelState().scrollTop
@@ -41,6 +42,25 @@ export function mountWorkbench(options: { legacyShell?: boolean; onReady?: () =>
     }))
   } catch (error) { dispose(); throw error }
   return dispose
+}
+
+function mountExitGame(): () => void {
+  const lifetime = new AbortController(), signal = lifetime.signal
+  const button = document.querySelector<HTMLButtonElement>('#exit-game')!, status = document.querySelector<HTMLElement>('#exit-status')!
+  button.addEventListener('click', () => {
+    if (button.disabled) return
+    button.disabled = true; button.textContent = '正在退出…'; status.textContent = ''
+    void (async () => {
+      try {
+        const response = await fetch('/commander/quit', { method: 'POST', signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]) })
+        if (!response.ok) { const data = await response.json(); throw new Error(data.error || '退出请求失败') }
+      } catch (error) {
+        if (signal.aborted) return
+        button.disabled = false; button.textContent = '退出游戏'; status.textContent = `退出失败：${String(error)}`
+      }
+    })()
+  }, { signal })
+  return () => lifetime.abort()
 }
 
 /** 样式也先加载成功，失败或取消时保留旧样式与界面。 */

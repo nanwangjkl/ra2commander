@@ -388,6 +388,23 @@ test('旧页面只换命令及页签，不叠加无法卸载的旧外壳监听�
   } finally { await f.close() }
 })
 
+test('设置页退出失败可重试，侧栏重连不重复提交退出请求', { timeout: 20_000 }, async () => {
+  const f = await fixture(), { page } = f
+  let requests = 0
+  await page.route('**/commander/quit', route => route.fulfill({ status: ++requests === 1 ? 503 : 202, json: requests === 1 ? { error: '模拟退出失败' } : { ok: true } }))
+  try {
+    await page.locator('#tab-settings').click()
+    await page.getByRole('button', { name: '退出游戏', exact: true }).click()
+    await page.getByText('退出失败：Error: 模拟退出失败', { exact: true }).waitFor()
+    assert.equal(await page.locator('#exit-game').isEnabled(), true)
+    await refreshCommandPanel(page); await refreshCommandPanel(page)
+    await page.getByRole('button', { name: '退出游戏', exact: true }).click()
+    await page.waitForFunction(() => (document.getElementById('exit-game') as HTMLButtonElement).disabled)
+    assert.equal(requests, 2)
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
 test('历史页按需读取，模型草稿跨切页与重连保留；保存不回显 Key，迟到旧回调不能覆盖新状态', { timeout: 20_000 }, async () => {
   const f = await fixture(), { page } = f
   try {

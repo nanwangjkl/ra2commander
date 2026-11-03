@@ -90,8 +90,8 @@ Companion 启动本地 HTTPS 服务和常驻 Chromium，提供游戏资源、注
 Linux 构建需先运行 Docker，`pnpm dist:linux` 自动使用隔离的 Linux x64 环境与构建缓存，产物在 `dist/`，不上传。正式运行不需要 Node、pnpm、开发目录或外部浏览器；基础资源和中文模型已在包内。构建与安装行为见[Linux 分发](doc/spec/linux-distribution.md)。在 Deck 桌面模式安装 AppImage：
 
 ```sh
-chmod +x RA2Commander-0.1.2-linux-x86_64.AppImage
-./RA2Commander-0.1.2-linux-x86_64.AppImage --install
+chmod +x RA2Commander-0.1.4-linux-x86_64.AppImage
+./RA2Commander-0.1.4-linux-x86_64.AppImage --install
 ```
 
 安装后从应用菜单打开，或将 `~/Applications/RA2Commander/RA2Commander.AppImage` 添加为非 Steam 游戏。tar.gz 解压版运行其 `install.sh`，直接启动入口为 `ra2commander`。升级关闭旧程序后重新安装，卸载运行程序的 `--uninstall` 或解压版 `uninstall.sh`，用户数据保留。下载文件名随版本变化，校验清单为同目录 `SHA256SUMS`。Deck 实机与手柄验收仍须由用户完成。
