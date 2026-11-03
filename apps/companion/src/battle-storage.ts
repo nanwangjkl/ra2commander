@@ -7,6 +7,8 @@ type Reference = { $ra2cArchive: { hash: string; format: 'text' | 'json' | 'json
 const digest = (kind: string, text: string) => createHash('sha256').update(`${kind}\0${text}`).digest('hex')
 export const jsonValue = (value: unknown): unknown => value === undefined ? undefined : JSON.parse(JSON.stringify(value))
 export function syncDirectory(path: string): void { if (process.platform === 'win32') return; const fd = openSync(path, 'r'); try { fsyncSync(fd) } finally { closeSync(fd) } }
+/** Windows 的只读句柄不允许 fsync；已关闭的归档文件需以读写方式重新打开。 */
+function syncFile(path: string): void { const fd = openSync(path, process.platform === 'win32' ? 'r+' : 'r'); try { fsyncSync(fd) } finally { closeSync(fd) } }
 export function atomicWrite(path: string, text: string, durable = false): void {
   const temp = `${path}.${randomUUID()}.tmp`
   try {
@@ -111,7 +113,7 @@ export class BattleObjects {
     return existsSync(this.file(hash, 'text')) ? `objects/${hash}.txt` : undefined
   }
   sync(): void {
-    for (const path of this.dirty) { const fd = openSync(path, 'r'); try { fsyncSync(fd) } finally { closeSync(fd) } }
+    for (const path of this.dirty) syncFile(path)
     if (this.dirty.size) syncDirectory(this.folder)
     this.dirty.clear()
   }
@@ -181,7 +183,7 @@ export class BattleJournal {
     if (durable) {
       this.objects.sync()
       const meta = join(this.folder, 'meta.json')
-      if (existsSync(meta)) { const fd = openSync(meta, 'r'); try { fsyncSync(fd) } finally { closeSync(fd) } }
+      if (existsSync(meta)) syncFile(meta)
     }
     const fd = openSync(this.path, 'a', 0o600)
     try {
