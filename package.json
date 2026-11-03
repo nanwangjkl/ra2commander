@@ -1,6 +1,6 @@
 {
   "name": "ra2commander",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "基于 ra2web 公共玩家 API 的本机语音指挥伴随程序",
   "license": "MIT",
@@ -32,6 +32,8 @@
     "game:site:install": "node --import tsx apps/companion/tools/install-game-site.ts",
     "build": "node --import tsx apps/desktop/tools/build.ts",
     "dist:linux": "node apps/desktop/tools/linux-build.mjs",
+    "dist:mac": "node apps/desktop/tools/native-build.mjs mac",
+    "dist:win": "node apps/desktop/tools/native-build.mjs win",
     "dist:check": "node apps/desktop/tools/verify-linux.mjs"
   },
   "devDependencies": {

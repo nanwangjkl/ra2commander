@@ -6,10 +6,12 @@ import { join, resolve } from 'node:path'
 import { createServer } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { installLinux, uninstallLinux } from './install.mjs'
+import { windowSize } from './window-options.mjs'
 
 const root = fileURLToPath(new URL('../../../', import.meta.url))
 const packaged = app.isPackaged || process.env.RA2C_PACKAGED === '1'
-const dataRoot = resolve(process.env.RA2C_DATA_ROOT || (packaged ? join(process.env.XDG_DATA_HOME || join(app.getPath('home'), '.local/share'), 'ra2commander') : root))
+const dataHome = process.platform === 'linux' ? process.env.XDG_DATA_HOME || join(app.getPath('home'), '.local/share') : app.getPath('appData')
+const dataRoot = resolve(process.env.RA2C_DATA_ROOT || (packaged ? join(dataHome, 'ra2commander') : root))
 const profile = join(dataRoot, '.runtime/desktop-profile')
 const debugPort = Number(process.env.RA2C_CDP_PORT || await new Promise((resolve, reject) => {
   const server = createServer(); server.once('error', reject)
@@ -64,8 +66,9 @@ else {
       { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
     ]) : null)
     const area = screen.getPrimaryDisplay().workAreaSize
+    const dmi = name => { try { return process.platform === 'linux' ? readFileSync(`/sys/class/dmi/id/${name}`, 'utf8') : '' } catch { return '' } }
     window = new BrowserWindow({
-      title: 'RA2Commander', width: Math.min(1480, area.width), height: Math.min(960, area.height),
+      title: 'RA2Commander', ...windowSize({ platform: process.platform, env: process.env, workArea: area, productName: dmi('product_name'), vendor: dmi('sys_vendor') }),
       minWidth: 960, minHeight: 600, show: false, backgroundColor: '#0c1015', autoHideMenuBar: true,
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false },
     })

@@ -10,7 +10,7 @@
 
 浏览器工作台第一阶段已由用户验收通过：游戏位于左侧 iframe，右侧侧栏可调宽、折叠，全屏保留整个工作台，Companion 重启沿用当前对局。侧栏已接入文本下令、原话、理解、实际选择、执行/完成状态与错误；追加的逐命令反馈、本机归档及侧栏精简已由用户验收通过，当前默认自动绑定冰天雪地分区。新阶段 1 的历史最近十局与完整 ZIP 下载、模型 URL/Key/模型名设置已于 2026-11-02 获用户验收；本地录音识别随后获用户确认并提交，安装及按键说明见[语音输入](doc/spec/speech-input.md)。
 
-当前[客户端阶段](doc/roadmap/electron-client.md)提供 Electron 独立窗口，复用现有工作台和指挥宿主。Linux x64 AppImage/tar.gz 的[分发流程](doc/spec/linux-distribution.md)已按用户授权接入，内置游戏基础资源、冰天雪地和中文语音模型；由用户在 Steam Deck 实机验收。手柄录音键与休眠适配仍单独实施；环境、构建和安装说明见 [AGENTS.md](AGENTS.md)。
+当前[客户端阶段](doc/roadmap/electron-client.md)提供 Electron 独立窗口，复用现有工作台和指挥宿主。提供 Linux x64 的 [AppImage/tar.gz](doc/spec/linux-distribution.md) 及 macOS、Windows 的[本机构建入口](doc/spec/desktop-distribution.md)，内置游戏基础资源、冰天雪地和中文语音模型。普通桌面使用默认窗口，Steam Deck 使用 1280×800；手柄录音键与休眠适配仍单独实施。环境、构建和安装说明见 [AGENTS.md](AGENTS.md)。
 
 M1（公共 API 桥）与 M2 单队循环已实测：文本命令经云模型（DeepSeek/GLM 可切换）编译为独立任务脚本，经快照驱动持续执行——26 坦克守区、战损六成边界回撤、改令/撤权、故障隔离均通过真实对局与合成回放验证。当前已改为编队/全局脚本统一替换，支持多目标生产、转编与持续补员、v4 持久化（兼容 v3）；本轮自动化验证与实机记录见[改造方案](doc/roadmap/script-ownership-refactor.md)。宿主保留请求失效检查及 QuickJS 子进程隔离。运行方式与显式授权参数见 [AGENTS.md](AGENTS.md)；首版范围与验证安排见[实施与验证计划](doc/roadmap/implementation-plan.md)。
 
@@ -36,6 +36,7 @@ M1（公共 API 桥）与 M2 单队循环已实测：文本命令经云模型（
 | [游戏资源](doc/assets/game-resources.md) | 如何准备固定基础资源、首次从本机自动加载，并为随包交付做准备？ |
 | [游戏预置设置](doc/spec/game-preferences.md) | 默认音量与虚拟摇杆如何初始化、保存并保留玩家修改？ |
 | [Linux 分发](doc/spec/linux-distribution.md) | AppImage 和解压版如何构建、安装、保存用户数据与卸载？ |
+| [macOS 与 Windows 分发](doc/spec/desktop-distribution.md) | ZIP 解压版如何按本机架构构建，如何区分桌面与 Deck 尺寸？ |
 | [本机模型设置](doc/spec/model-settings.md) | 如何保存模型 URL、Key 与模型名，覆盖保存唯一配置，兼容环境配置、测试连接并切换后续请求？ |
 | [生产协调本机化计划](doc/roadmap/production-native-execution.md) | 如何分两阶段迁移有限生产、持续补电与显式队列控制，并保留共享前置、出厂交接和恢复？（两阶段均已验收） |
 | [生产执行方式](doc/spec/production-execution.md) | 哪些生产由本机执行，如何准备科技树、共享台账及耗电，如何取消、恢复和回退？ |

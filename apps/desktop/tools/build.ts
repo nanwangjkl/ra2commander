@@ -5,6 +5,8 @@ import { ModuleKind, ScriptTarget, transpileModule } from 'typescript'
 import { buildWorkbench, workbenchBuildVersion } from '../../companion/src/workbench.ts'
 import { prepareGameResources, prepareGameSite } from '../../../packages/game-werhd/src/index.ts'
 import { prepareSpeechModel } from '../../../packages/speech/src/index.ts'
+// @ts-expect-error 构建工具共用原生 ESM 入口。
+import { portableDependencies } from './portable-dependencies.mjs'
 
 const root = resolve(import.meta.dirname, '../../..'), stage = join(root, 'dist/stage'), runtime = join(stage, 'runtime')
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
@@ -16,7 +18,14 @@ rmSync(stage, { recursive: true, force: true }); mkdirSync(runtime, { recursive:
 // pnpm 按现有 lockfile 部署生产闭包，所有链接最终留在安装资源内部。
 const deploy = join(root, 'dist/dependencies')
 rmSync(deploy, { recursive: true, force: true })
-execFileSync('pnpm', ['--filter', '@ra2c/companion', 'deploy', '--prod', '--frozen-lockfile', '--prefer-offline', deploy], { cwd: root, stdio: 'inherit' })
+function pnpm(args: string[], cwd = root) {
+  const cli = process.env.npm_execpath
+  if (cli) execFileSync(process.execPath, [cli, ...args], { cwd, stdio: 'inherit' })
+  else if (process.platform !== 'win32') execFileSync('pnpm', args, { cwd, stdio: 'inherit' })
+  else throw new Error('Windows 请通过 pnpm build 或 pnpm dist:win 启动构建')
+}
+if (process.platform !== 'linux') portableDependencies(root, deploy, runtime, pnpm)
+else pnpm(['--filter', '@ra2c/companion', 'deploy', '--prod', '--frozen-lockfile', '--prefer-offline', deploy])
 // pnpm 9 deploy 对本地工作区包仍会查询范围元数据；拒绝引入锁定安装之外的新版本。
 function dependencyVersions(store: string): Set<string> {
   const versions = new Set<string>()
@@ -36,11 +45,13 @@ function dependencyVersions(store: string): Set<string> {
   }
   return versions
 }
-const locked = dependencyVersions(join(root, 'node_modules/.pnpm'))
-for (const version of dependencyVersions(join(deploy, 'node_modules/.pnpm'))) {
-  if (!locked.has(version)) throw new Error(`生产部署引入未锁定版本：${version}；请先核对 lockfile`)
+if (process.platform === 'linux') {
+  const locked = dependencyVersions(join(root, 'node_modules/.pnpm'))
+  for (const version of dependencyVersions(join(deploy, 'node_modules/.pnpm'))) {
+    if (!locked.has(version)) throw new Error(`生产部署引入未锁定版本：${version}；请先核对 lockfile`)
+  }
+  cpSync(join(deploy, 'node_modules'), join(runtime, 'node_modules'), { recursive: true, verbatimSymlinks: true })
 }
-cpSync(join(deploy, 'node_modules'), join(runtime, 'node_modules'), { recursive: true, verbatimSymlinks: true })
 
 function compileTree(source: string, target: string) {
   mkdirSync(target, { recursive: true })
@@ -64,13 +75,20 @@ for (const name of packages) {
     const data = readFileSync(join(source, file), 'utf8')
     writeFileSync(join(target, file), file === 'package.json' ? data.replace(/\.ts"/g, '.js"') : data)
   }
+  if (process.platform !== 'linux') {
+    const alias = join(runtime, 'node_modules/@ra2c', name); mkdirSync(alias, { recursive: true })
+    writeFileSync(join(alias, 'package.json'), JSON.stringify({ name: `@ra2c/${name}`, type: 'module', exports: './index.js' }))
+    // 转发到唯一实现，避免复制工作区包造成两份模块状态，也不要求 Windows 开发者模式。
+    writeFileSync(join(alias, 'index.js'), `export * from '../../../packages/${name}/src/index.js';\n`)
+    continue
+  }
   symlinkSync('../../node_modules/.pnpm/node_modules', join(target, 'node_modules'), 'dir')
   for (const base of [join(runtime, 'node_modules/@ra2c'), join(runtime, 'node_modules/.pnpm/node_modules/@ra2c')]) {
     mkdirSync(base, { recursive: true }); const link = join(base, name)
     rmSync(link, { force: true, recursive: true }); symlinkSync(relative(base, target), link, 'dir')
   }
 }
-for (const name of readdirSync(join(runtime, 'node_modules/.pnpm')).filter(name => name.startsWith('@ra2c+'))) rmSync(join(runtime, 'node_modules/.pnpm', name), { recursive: true, force: true })
+if (process.platform === 'linux') for (const name of readdirSync(join(runtime, 'node_modules/.pnpm')).filter(name => name.startsWith('@ra2c+'))) rmSync(join(runtime, 'node_modules/.pnpm', name), { recursive: true, force: true })
 // deploy 的根包自引用不是运行时依赖，入口直接位于 apps/companion/src。
 rmSync(join(runtime, 'node_modules/.pnpm/node_modules/@ra2c/companion'), { force: true })
 for (const name of ['prompts', 'skills', 'maps']) cpSync(join(root, name), join(runtime, name), {

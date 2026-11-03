@@ -8,6 +8,12 @@
 | 3B Deck 录音按键与适配 | 验证游戏原生手柄；独立背键接录音，检查小屏、失焦、休眠和设备断连 | 未启动 |
 | 3C 构建与分发 | Linux x64 AppImage/tar.gz，随包模型、运行库和所需游戏资源；用户级安装 | 2026-11-02 构建及 Linux 容器检查完成，待 Deck 实机验收 |
 
+2026-11-02 用户追加 macOS 与 Windows 构建入口，普通桌面沿用默认窗口，Steam Deck 使用 1280×800；此项按[桌面分发](../spec/desktop-distribution.md)实现，不启动 3B 的手柄映射与休眠适配。
+
+0.1.3 已在 macOS arm64 实际生成 DMG/ZIP。工程外的应用副本通过本地识别、QuickJS、ZIP 工作进程、游戏首启与设置保存重开检查；两个实际归档核对通过。离线测试 344 项、桌面检查 3 项及类型检查通过。Windows 已提供本机构建入口，尚未在 Windows 打包和实机验收；本轮未重新生成 Linux 安装包，Deck 尺寸策略随下一次 Linux 构建交付。新增构建与窗口行为待用户验收。
+
+用户随后明确 macOS 和 Windows 当前只提供 ZIP 解压版，已移除 DMG、NSIS 及相应检查分支；Linux 分发格式保持原约定。用户已确认上述调整并要求提交，Windows 打包与实机验收仍待对应设备完成。
+
 ## 3A 当前交付
 
 `apps/desktop/` 创建一个 Electron `BrowserWindow`，直接承载现有游戏 iframe 与侧栏。窗口建立初始文档后才启动宿主；宿主以 Electron 内置 Node 执行原 Companion，使用当前窗口的本机 CDP 连接，不启动另一份 Chromium，不增加第二套理解或执行链路。开发模式使用 TypeScript 入口，正式包执行预编译 JavaScript。

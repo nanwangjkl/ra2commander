@@ -26,4 +26,8 @@ rm -rf "$task_archive_dir"
 for item in dist/*.AppImage dist/*.tar.gz; do
   cp "$item" /output/
 done
-(cd /output && sha256sum ./*.AppImage ./*.tar.gz > SHA256SUMS)
+(
+  cd /output
+  shopt -s nullglob
+  sha256sum ./*.AppImage ./*.tar.gz ./*.zip > SHA256SUMS
+)

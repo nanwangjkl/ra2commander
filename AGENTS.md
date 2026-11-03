@@ -78,6 +78,8 @@ pnpm companion
 pnpm desktop             # Electron 独立窗口，当前为开发入口
 pnpm build               # 正式运行目录，准备并校验资源，编译宿主和侧栏
 pnpm dist:linux          # Docker Linux x64 构建、分发相关检查及 AppImage/tar.gz
+pnpm dist:mac            # 在 macOS 本机生成当前架构的 ZIP 解压版，内含原生语音库
+pnpm dist:win            # 在 Windows 本机生成当前架构的 ZIP 解压版
 pnpm dist:check          # 在干净 Linux 容器中解包并检查 dist 中的实际两个包
 ```
 
@@ -93,6 +95,8 @@ chmod +x RA2Commander-0.1.2-linux-x86_64.AppImage
 ```
 
 安装后从应用菜单打开，或将 `~/Applications/RA2Commander/RA2Commander.AppImage` 添加为非 Steam 游戏。tar.gz 解压版运行其 `install.sh`，直接启动入口为 `ra2commander`。升级关闭旧程序后重新安装，卸载运行程序的 `--uninstall` 或解压版 `uninstall.sh`，用户数据保留。下载文件名随版本变化，校验清单为同目录 `SHA256SUMS`。Deck 实机与手柄验收仍须由用户完成。
+
+macOS 和 Windows 分别在对应系统运行 `pnpm install --frozen-lockfile`、`pnpm dist:mac` / `pnpm dist:win`，仅提供 ZIP 解压版，支持当前 Node 的 x64 或 arm64 架构；不跨系统或跨架构混装原生库。两者同样内置资源与模型，产物及校验和放在 `dist/`。macOS 解压后直接运行 `.app`，使用本地 ad-hoc 签名，尚未提供开发者签名或公证；Windows 解压后运行 `ra2commander.exe`，未签名。正式用户数据分别位于 `~/Library/Application Support/ra2commander/.runtime/` 和 `%APPDATA%/ra2commander/.runtime/`，升级保留。macOS/Windows 默认窗口为 1480×960，并按当前显示器工作区缩小；Steam Deck 通过 Linux 的 `SteamDeck=1` 或 Valve Jupiter/Galileo 硬件标识使用 1280×800，不按任务栏工作区缩小。`RA2C_STEAM_DECK=1/0` 可显式启用/关闭 Deck 尺寸。详见[桌面分发](doc/spec/desktop-distribution.md)。
 
 Linux 0.1.1 的入口静态启动器在执行 Electron 前排除 Steam 覆盖层的两个预加载库文件名，保留其他环境与参数，用于修复 Deck 反馈的 zygote 在 `gameoverlayrenderer.so` 中崩溃。真实 Electron 程序为同目录 `ra2commander.bin`，常规启动与 Steam 快捷方式继续指向 `ra2commander` 或 AppImage，详见[分发规范](doc/spec/linux-distribution.md)。
 
