@@ -42,4 +42,12 @@ for (const file of artifacts) {
   lines.push(`${hash.digest('hex')}  ${file}`)
 }
 writeFileSync(checksumFile, lines.sort().join('\n') + '\n')
+// 受限沙箱可能把构建产物标成低完整性，Electron 从这种目录启动会崩溃；校验和不受标签影响。
+if (target === 'win') {
+  const icacls = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'icacls.exe')
+  const result = spawnSync(icacls, [join(root, 'dist'), '/setintegritylevel', 'Medium', '/T'], { stdio: 'ignore' })
+  if (result.error) throw result.error
+  if (result.status !== 0) throw new Error(`构建产物完整性级别重置失败，退出码 ${result.status}`)
+  console.log('已将 dist 的完整性级别重置为 Medium')
+}
 console.log(`构建完成：${artifacts.join('、')}（dist/）`)
