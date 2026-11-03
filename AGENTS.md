@@ -1,160 +1,119 @@
-# ra2commander - Agent 指南
+# ra2commander - 开发指南
 
-本项目基于 [ra2web](https://github.com/ra2web/ra2web.github.io) 设计独立的本机语音指挥伴随程序。
+每次开始工作先读本文件，面向用户用中文简洁沟通。修改前检查相关实现与规范，修改后运行相应检查。本项目不使用 `reverse-engineer-anything`（REA）Skill。
 
-本项目不使用 `reverse-engineer-anything`（REA）Skill。
+## 范围与文档
 
-## 文档结构
+项目用途和上手方式见 [README.md](README.md)，技术文档入口为 [doc/README.md](doc/README.md)，术语见 [CONTEXT.md](doc/spec/CONTEXT.md)。个人 Steam Deck 主线已于 2026-11-03 获用户验收；专用手柄开发按用户要求取消，沿用个人键盘映射。Windows 入口存在但实际构建与运行未验证。交付历史只记在[开发里程碑](doc/roadmap/development-history.md)。
 
-项目 README 放在仓库根目录，作为项目介绍与文档入口；其余项目文档统一放在 `doc/` 下，按类型分目录。当前约定的结构：
+- 分阶段工作交付后等用户明确验收，再按授权继续；自动检查不能替代用户验收，不同计划的授权独立。
+- README 面向使用者，不放开发流水或全量文档目录。环境、构建、工具命令集中在本文件。
+- `doc/spec/` 只保留行为契约和边界；字段、参数、默认值和算法细节链接到代码或运行时定义，不重复抄写。
+- `doc/architecture/` 说明职责与接入限制；`doc/decisions/` 保留取舍和替代关系，ADR 按编号命名。
+- `doc/assets/` 保存来源、许可与资源管理约定；`doc/roadmap/` 放待交付计划及精简里程碑，已完成的实施过程通过 Git 历史查阅。
+- 修改行为同步修改对应规范。`prompts/`、`skills/` 的 Markdown 是运行时资产，不能当作普通文档精简。
 
-| 目录 | 用途 | 说明 |
-|------|------|------|
-| `doc/spec/` | 设计规范 | 做什么、怎么设计 |
-| `doc/decisions/` | 决策记录（ADR） | 为什么这么定，考虑过哪些被否的方案 |
-| `doc/architecture/` | 技术架构 | 模块划分、技术选型、代码地图 |
-| `doc/assets/` | 资产规范 | 美术/音频/字体的命名、规格、授权来源 |
-| `doc/roadmap/` | 路线图 | 开发阶段规划、首版范围 |
+## 必须保留的行为
 
-约定：
+RTS 优先及时行动：存在合理解释就结合当前战况选择并执行，简短反馈，不因阵营或同类候选不唯一要求确认。部分受阻先执行其余部分；不擅自扩大战略目标。见[产品边界](doc/spec/requirements.md)。修改相应模块前阅读专题规范：
 
-- 新增文档时，按类型放入对应目录，不要散落到项目其他位置。目录暂未创建时，需要用到再建，不必提前建空目录。
-- 修改既有设计时，同步更新对应文档，保持文档与实现一致。
-- 决策记录以编号开头命名，如 `001-选择引擎.md`，每条决策一个文件。
-- 环境搭建、构建运行等说明直接写在本文件（AGENTS.md）中，不单独建目录。
-- 路线图放 `doc/roadmap/`。
+- [命令并发](doc/spec/command-concurrency.md)：独立并行理解、按序绑定，生成不阻塞控制；停止、暂停、取消和换局使相关迟到结果失效。
+- [生产](doc/spec/production-execution.md)与[取消](doc/spec/production-cancellation.md)：本局规则优先，复用必要前置，台账和实际产物不因重编或恢复重置；未知回执不盲目重发，只恢复确认属于自己的队列暂停。
+- [集结](doc/spec/factory-rally.md)与[建筑选址](doc/spec/building-placement.md)：先脱离出口、抵达有效集结点并停车交接再指挥，矿车保留采矿；逐次入队复查开阔地，保留已批准的树石避让、到达容差和建筑间距。
+- [掩护](doc/spec/cover-skill.md)：按真实规则速度预测跟随，最慢主体持续领行，补员独立追赶，严重脱队有限重聚；单侧耗尽转普通编队继续原任务，全灭结束保留队名，不补兵或复活旧任务。
+- [攻击与战损](doc/spec/selected-attacks-and-sorties.md)、[防守基地](doc/spec/base-defense.md)：保留成员、敌人类别和地域，普通攻击不加射程门禁；基地无敌原地待命，蜘蛛离场不按超时判死亡，对局终态先于战损结算。
+- [部署](doc/spec/unit-deployment.md)、[碾压](doc/spec/crushing.md)、[探路](doc/spec/scouting-skills.md)、[维修车](doc/spec/repair-vehicle-skill.md)：保留各自适用范围与完成条件，不能用通用重试扩大生产或攻击范围。
 
-## 文档入口
+## 环境与启动
 
-项目文档入口为 [README.md](README.md)。领域术语统一维护在 [doc/spec/CONTEXT.md](doc/spec/CONTEXT.md)，架构决策索引见 [doc/decisions/README.md](doc/decisions/README.md)。
-
-## 当前原则与范围
-
-RTS 优先快速反应。能理解行动目标时，Agent 应结合当前战况选一个合理解释并执行，接受误选和次优结果，由玩家后续命令纠正。阵营、同类生产项目或执行细节存在多个候选，不应成为拒绝执行或等待确认的理由。选择应简短反馈；一部分暂时做不了时，先推进其余可执行部分。详见[命令解释决策](doc/decisions/007-action-first-command-interpretation.md)。
-
-每阶段交付后等待用户明确验收，再按其授权继续；自动检查、实机自查和功能已实现均不能代替用户验收。不同路线图的授权独立，完成当前阶段不自动启动其他计划。历史批准、验收与提交见[开发记录索引](doc/roadmap/development-history.md)，各计划开头记录现状，带日期或版本的交付记录保留当时口径。
-
-[里程碑后的架构整理](doc/roadmap/architecture-consolidation.md)已完成运行时职责收拢、探路与维修车本机化、生产协调、页面桥和 UI 生命周期整理，并经用户验收提交。最后的文档精简已于 2026-11-01 获用户确认并要求提交，本轮整理收尾，新功能另定范围。早前[运行时整理](doc/roadmap/runtime-simplification.md)阶段 1～5 已全部验收，没有阶段 6。
-
-用户于 2026-11-01 将尚未完成的开发按[新阶段计划](doc/roadmap/client-development-phases.md)重排为：1 历史和设置页内容 → 2 语音识别模块 → 3 Electron 或其他打包客户端方案。已完成部分及验收记录不变，原工作台计划保留作历史参考，各阶段单独实施和验收。阶段 1 已验收提交 `fc1a5f3`；阶段 2 语音及模型资源准备经用户确认后提交 `52d8841`，保留手动重新加载识别器。阶段 3A 独立窗口后，当前按用户追加授权交付 3C 的 Linux x64 分发，待用户在 Deck 验收；指挥记录保持当前局命令与反馈。
-
-阶段 1 的最近 10 局列表、完整 ZIP 下载、模型 URL/Key/模型名设置已于 2026-11-02 完成开发检查并获用户验收。沿用文件归档，以 `.runtime/settings.json` 保存模型配置，不引入 SQLite；独立复盘页面和其他设置项暂不实施。行为见[模型设置](doc/spec/model-settings.md)、[对局记录](doc/spec/battle-records.md)，范围见[详细方案](doc/roadmap/history-download-and-model-settings.md)。
-
-客户端目标已于 2026-11-02 明确为 Steam Deck 独立窗口，采用 Electron，目标 SteamOS/Linux x64。手柄只补充语音录音按键，其余输入交给游戏现有原生支持；先验证原生输入，再优先以独立背键映射现有录音键，不另建游戏操控映射或输入转发层。3A 后追加了基础游戏资源首启与默认设置。用户随后批准提前实施 3C 的 Linux x64 AppImage、tar.gz 和用户级安装，本轮交付后待 Deck 验收；3B 录音按键与适配仍未启动，见[客户端计划](doc/roadmap/electron-client.md)。
-
-## 游戏行为约束
-
-修改相应模块前阅读下列规范，保留已批准的行为：
-
-- 命令独立并行理解，普通绑定按收到顺序，脚本生成不占绑定队列；停止、暂停与取消优先处理，按范围使旧操作失效，迟到结果不能恢复旧任务。见[命令并发](doc/spec/command-concurrency.md)。
-- 科技树以当前对局公开规则为准，复用必要前置。生产台账、产物和交接不因重编或恢复重置；只认领正回执确认的自身队列暂停，未知回执不盲目重发。见[生产执行](doc/spec/production-execution.md)与[生产取消](doc/spec/production-cancellation.md)。
-- 坦克、步兵到出生时的有效集结点并完成停车交接后，才允许编队和后续操作；矿车保留原生采矿。集结点逐次入队前复查，周围 3×3 排除静态障碍，到达容差四格但仍须脱离建筑和出口；已就绪成员不召回。建筑完整占地至少隔一格，防御建筑之间可紧贴，围墙豁免间距。见[生产集结点](doc/spec/factory-rally.md)与[建筑选址](doc/spec/building-placement.md)。
-- 掩护快慢以真实规则速度判断：最慢成员持续领行，其余预测跟随，普通拉长只纠正相关成员，严重脱队才有限重聚；累计等待不因短暂会合或轮换成员重置。补员独立追赶主体。掩护或受护一侧耗尽且无该侧待准备成员时，剩余成员转普通编队继续原任务；全队耗尽且准备结束才结束任务并保留队名，不自动补兵、撤退或复活旧任务。见[掩护 Skill](doc/spec/cover-skill.md)。
-- 攻击保留成员、敌人类别与地域，已有目标直接攻击；普通攻击不加射程前置，掩护支援保留近身和当前射程限制。基地防守以基地所在分区为边界，无敌原地待命。蜘蛛离场只表示暂时不可观测，保留同 ID 等待，不超时猜测阵亡；对局结束先于战损结算。见[攻击与离场状态](doc/spec/selected-attacks-and-sorties.md)与[基地防守](doc/spec/base-defense.md)。
-- 常规部署支持美国大兵等，排除灰熊变建筑的 Mod 能力。自动碾压仅启用 MTNK、HTNK、HTK，主动目标排除两类狗，受原攻击范围、掩护及有限受阻回退约束。见[单位部署](doc/spec/unit-deployment.md)与[自动碾压](doc/spec/crushing.md)。
-
-探路逐区 60%、中心优先和并行分工见[探路 Skill](doc/spec/scouting-skills.md)；维修车的组件生产、组装及并行维修见[维修车 Skill](doc/spec/repair-vehicle-skill.md)。[基础能力与三层提示词改造](doc/roadmap/capabilities-prompts-and-skills.md)的 A～C 与探路流程已获用户认可，后续 Skill 和执行迁移按各自计划记录。
-
-## 开发环境
-
-- Node >= 22.12、pnpm >= 9。
-- 本地游戏静态站点默认 `~/my/code/ra2web.github.io`（参考快照 `7f6858a`）。
-- 基础游戏资源通过准备命令放入 `resources/game/`，不提交 Git。Electron 必需，浏览器 Companion 准备后也自动使用；未准备时兼容旧远端路径。原版 `~/Downloads/full-pack.7z` 仅保留旧手动导入入口。
-- 环境覆盖：`RA2C_GAME_DIR`、`RA2C_GAME_RESOURCES_DIR`、`RA2C_PACK`、`RA2C_PORT`、`RA2C_PROFILE`。
-- 建筑操作、采矿、搬迁默认本机执行；分别设置 `RA2C_BUILDING_EXECUTOR=script`、`RA2C_MINING_EXECUTOR=script`、`RA2C_RELOCATION_EXECUTOR=script` 后运行 `pnpm companion` 可回退对应能力，保留目标 ID 和实际进度并生成脚本接管。默认模式不迁移无标记的旧脚本目标。
-- 探路 `scout@1.5.0` 默认本机完成现有犬编队、新造犬有限生产和并行探索。`RA2C_SCOUT_EXECUTOR=script pnpm companion` 独立回退探索；无标记旧探索不自动迁移。
-- `repair-vehicle@1.2.0` 默认本机完成现有组件编队、新造组件有限生产、组装、维修与跟随。`RA2C_REPAIR_EXECUTOR=script pnpm companion` 独立回退组装维修；无标记旧维修不自动迁移。
-- 新有限生产、持续补电和显式队列控制默认本机执行，共用真实规则准备、队列与台账。`RA2C_PRODUCTION_EXECUTOR=script pnpm companion` 回退生产，保留目标 ID、产物和实际进度，无标记旧目标保持脚本。各能力回退彼此独立，生产部分仍由生产开关控制。
+需要 Node ≥ 22.12、pnpm 9（具体锁定版本见 package.json）。游戏参考固定版本来自 [ra2web](https://github.com/ra2web/ra2web.github.io)，资源和模型正文不提交 Git。
 
 ```sh
-pnpm install
-pnpm playwright-install   # 首次下载 Chromium
-pnpm speech:install       # 首次安装本地中文语音模型
-pnpm speech:check         # 离线检查固定模型资源
-pnpm game:resources:install # 开发时准备固定游戏资源，未来构建时随包交付
-pnpm game:resources:check   # 离线校验游戏资源
-pnpm game:site:install     # 准备固定站点与冰天雪地，可复用本机 RA2C_GAME_DIR
+pnpm install --frozen-lockfile
+pnpm game:resources:install # 准备固定基础资源
+pnpm game:site:install      # 准备固定站点与冰天雪地
+pnpm speech:install         # 准备固定本地语音模型
+pnpm game:resources:check   # 离线校验
+pnpm speech:check
+pnpm desktop               # Electron 开发入口
+```
+
+浏览器开发入口另需安装 Chromium：
+
+```sh
+pnpm playwright-install
 pnpm companion
-pnpm desktop             # Electron 独立窗口，当前为开发入口
-pnpm build               # 正式运行目录，准备并校验资源，编译宿主和侧栏
-pnpm dist:linux          # Docker Linux x64 构建、分发相关检查及 AppImage/tar.gz
-pnpm dist:mac            # 在 macOS 本机生成当前架构的 ZIP 解压版，内含原生语音库
-pnpm dist:win            # 在 Windows 本机生成当前架构的 ZIP 解压版
-pnpm dist:check          # 在干净 Linux 容器中解包并检查 dist 中的实际两个包
 ```
 
-Companion 启动本地 HTTPS 服务和常驻 Chromium，提供游戏资源、注入页面桥并打开 `https://127.0.0.1:8787/commander/`。左侧为游戏 iframe，右侧为命令侧栏。玩家手动进入单机 → 遭遇战；当前单图配置自动绑定冰天雪地分区。重启复用工作台和对局，不自动刷新 iframe；`quit` 只断连，`quit hard` 才关闭浏览器。
+工作台为 `https://127.0.0.1:8787/commander/`，TCP 命令通道为 `127.0.0.1:8790`，终端 `help` 查看完整语法，`say <原话>` 模拟语音。玩家手动进入“单机 → 遭遇战”；当前单图配置自动绑定冰天雪地分区，无需 `map use ice`。
 
-`pnpm desktop` 由 Electron 直接承载同一工作台，宿主使用其内置 Node 运行，通过本机 CDP 连接现有窗口，不启动外部 Chromium。首次开发启动自动准备 Electron 运行文件；关闭窗口先保存并停止宿主，再退出整个客户端。默认与 Companion 共用 8787/8790 服务端口，两个入口不要同时运行。开发模式的设置和归档沿用项目 `.runtime/`，Electron 浏览器资料独立在 `.runtime/desktop-profile/`；新 profile 自动从本机加载基础资源，无需手动选择或导入，不迁移已有浏览器中的对局。正式包默认把用户数据放在 `${XDG_DATA_HOME:-~/.local/share}/ra2commander/.runtime/`，模型、游戏资源和预编译侧栏读取安装资源，不写程序目录。`RA2C_DATA_ROOT` 可覆盖用户数据根。终端 `quit` 在桌面模式退出整个客户端。
+两个入口共用端口，不同时运行。Companion 重连保留浏览器与游戏，不刷新 iframe；`quit` 断连，`quit hard` 关闭浏览器。Electron 直接承载工作台，不启动外部 Chromium；关闭窗口或 `quit` 会保存、停止宿主并退出客户端。
 
-Linux 构建需先运行 Docker，`pnpm dist:linux` 自动使用隔离的 Linux x64 环境与构建缓存，产物在 `dist/`，不上传。正式运行不需要 Node、pnpm、开发目录或外部浏览器；基础资源和中文模型已在包内。构建与安装行为见[Linux 分发](doc/spec/linux-distribution.md)。在 Deck 桌面模式安装 AppImage：
+开发数据在项目 `.runtime/`，Electron profile 为 `.runtime/desktop-profile/`，浏览器 profile 为 `.runtime/profile/`。正式包使用平台用户数据根，设置、归档和浏览器资料与安装资源分开，路径见 [Linux](doc/spec/linux-distribution.md)和[macOS / Windows](doc/spec/desktop-distribution.md)。
+
+可用覆盖项：`RA2C_GAME_DIR`（开发站点，默认 `~/my/code/ra2web.github.io`）、`RA2C_GAME_RESOURCES_DIR`、`RA2C_SPEECH_MODEL_DIR`、`RA2C_PORT`、`RA2C_PROFILE`、`RA2C_DATA_ROOT`。`RA2C_PACK` 保留旧手动导入入口。正式包不要求本机存在相邻游戏检出目录。
+
+模型 URL、Key、模型名在设置页编辑，保存只影响新请求，空 Key 保留原值；`.env` 兼容读取，本机 `.runtime/settings.json` 优先，不进入 Git 或调试包。具体见[模型设置](doc/spec/model-settings.md)。
+
+## 构建与分发
 
 ```sh
-chmod +x RA2Commander-0.1.4-linux-x86_64.AppImage
-./RA2Commander-0.1.4-linux-x86_64.AppImage --install
+pnpm build       # 准备/校验资源并编译正式运行目录
+pnpm dist:linux  # 需 Docker；隔离 Linux x64 构建 AppImage、tar.gz
+pnpm dist:check  # 干净 Linux 容器复查实际两种发行档
+pnpm dist:mac    # macOS 本机当前架构 ZIP
+pnpm dist:win    # Windows 本机当前架构 ZIP
 ```
 
-安装后从应用菜单打开，或将 `~/Applications/RA2Commander/RA2Commander.AppImage` 添加为非 Steam 游戏。tar.gz 解压版运行其 `install.sh`，直接启动入口为 `ra2commander`。升级关闭旧程序后重新安装，卸载运行程序的 `--uninstall` 或解压版 `uninstall.sh`，用户数据保留。下载文件名随版本变化，校验清单为同目录 `SHA256SUMS`。Deck 实机与手柄验收仍须由用户完成。
+原生依赖按目标系统和架构安装，macOS/Windows 不交叉打包；产物与 SHA256SUMS 在 `dist/`，不自动上传。基础游戏资源、冰天雪地和语音模型随包，但不等于全地图、全 MOD 离线。资源来源与许可分别见[游戏资源](doc/assets/game-resources.md)、[语音模型](doc/assets/speech-model.md)。
 
-macOS 和 Windows 分别在对应系统运行 `pnpm install --frozen-lockfile`、`pnpm dist:mac` / `pnpm dist:win`，仅提供 ZIP 解压版，支持当前 Node 的 x64 或 arm64 架构；不跨系统或跨架构混装原生库。两者同样内置资源与模型，产物及校验和放在 `dist/`。macOS 解压后直接运行 `.app`，使用本地 ad-hoc 签名，尚未提供开发者签名或公证；Windows 解压后运行 `ra2commander.exe`，未签名。正式用户数据分别位于 `~/Library/Application Support/ra2commander/.runtime/` 和 `%APPDATA%/ra2commander/.runtime/`，升级保留。macOS/Windows 默认窗口为 1480×960，并按当前显示器工作区缩小；Steam Deck 通过 Linux 的 `SteamDeck=1` 或 Valve Jupiter/Galileo 硬件标识使用 1280×800，不按任务栏工作区缩小。`RA2C_STEAM_DECK=1/0` 可显式启用/关闭 Deck 尺寸。详见[桌面分发](doc/spec/desktop-distribution.md)。
-
-Linux 0.1.1 的入口静态启动器在执行 Electron 前排除 Steam 覆盖层的两个预加载库文件名，保留其他环境与参数，用于修复 Deck 反馈的 zygote 在 `gameoverlayrenderer.so` 中崩溃。真实 Electron 程序为同目录 `ra2commander.bin`，常规启动与 Steam 快捷方式继续指向 `ra2commander` 或 AppImage，详见[分发规范](doc/spec/linux-distribution.md)。
-
-游戏资源固定清单在 `packages/game-werhd/game-resources.json`。启动时校验已准备资源，通过同源地址供游戏正常缓存；仅改写返回浏览器的资源配置，不改外部站点文件或伪造缓存标志。音乐、地图、MOD 和战役仍沿用原配置，完整离线分发尚未完成，详见[游戏资源](doc/assets/game-resources.md)。
-
-首次使用的游戏默认设置为音乐音量 0、主音量 2/10、屏幕虚拟摇杆关闭、卷动速率第 5 格；遭遇战默认冰天雪地，我方利比亚，对手为一个法国 AI-简单。仅在对应 localStorage 键缺失时初始化，保留玩家后续修改；浏览器与 Electron 共用同一逻辑，见[游戏预置设置](doc/spec/game-preferences.md)。
-
-侧栏保留文本输入和终端 `say <原话>`；真实语音使用本地 SenseVoice 识别，页面默认启用麦克风，按住默认反引号说话、松开下令，设置页可修改设备和录音键，模型目录由宿主统一管理，开发者可用 `RA2C_SPEECH_MODEL_DIR` 覆盖。首次运行 `pnpm speech:install` 安装离线模型；详见[语音输入](doc/spec/speech-input.md)。终端 `help` 查看命令，TCP 入口为 `127.0.0.1:8790`。基础能力、运行行为、完成判定与显式调试参数见[运行时行为与调试入口](doc/architecture/runtime-control.md)。
-
-模型可在“设置”页填写 Base URL、Key 与模型名，保存后用于新请求，无需重启游戏。只保留当前一套配置，保存覆盖旧值；已有 `.env` 兼容读取，本机配置优先，空 Key 保留原值，更换 URL 需填写适用的 Key。设置页保留三个字段及保存、测试连接按钮，不提供多配置管理；只有主动点击测试连接才额外请求模型，测试不保存配置。配置保存在已忽略的 `.runtime/settings.json`，不写入调试包，详见[模型设置](doc/spec/model-settings.md)。
-
-语音模型清单在 `packages/speech/model-manifest.json`，正文放在已忽略的 `resources/speech/models/`，与 `.runtime/` 用户数据分离。准备命令完整校验并复用已安装模型，兼容旧路径迁移与压缩缓存；`speech:check` 不联网。正式构建复用同一检查并随包交付模型，用户无需另行下载。详见[语音模型资源](doc/assets/speech-model.md)。
+Deck 默认窗口 1280×800，普通桌面默认 1480×960 并适应工作区；`RA2C_STEAM_DECK=1/0` 可覆盖 Deck 判定。Linux 使用稳定用户级安装路径，macOS/Windows 仅 ZIP；安装和签名边界见对应分发规范。发布新内容时更新版本，不覆盖已交付版本的产物。
 
 ## 修改与验证
 
 ```sh
 pnpm typecheck
 pnpm test                 # 不访问云模型或真实游戏
-pnpm ui:check             # 独立无头 Chromium，仅检查模拟工作台；需先安装 Playwright 浏览器
-pnpm desktop:check        # 独立隐藏 Electron，模拟页面、合成麦克风及进程生命周期
+pnpm ui:check             # 模拟工作台，无头 Chromium
+pnpm desktop:check        # 隐藏 Electron、合成麦克风和生命周期
 pnpm maps:check
 pnpm prompts:check
 pnpm capabilities:check
 pnpm game-data:check
 ```
 
-原型优先验证真实对局体验。自动测试保留正常命令链路、关键故障与数据有效性检查；新增用例针对具体故障或基本运行能力，避免大量断言固定实验中的参数和阈值。
+按修改范围选择检查。自动测试优先保留正常链路、具体故障和数据有效性，不大量锁定实验阈值；文档修改检查链接和一致性即可。
 
-实机由用户观看。除非用户明确要求，不自动截图、录屏、生成测试报告、添加游戏内测试提示或自动移动镜头。`pnpm scenario:voice` 会访问云模型并执行真实动作，必须有用户明确要求及只有基地车的新冰天雪地对局；同局续测用 `--resume`，不属于 `pnpm test`。
+实机由用户观看。未经明确要求，不自动截图、录屏、生成测试报告、添加游戏内测试提示或移动镜头。`pnpm scenario:voice` 会调用云模型并操作真实游戏，须用户明确要求及只有基地车的新冰天雪地对局；同局续测用 `--resume`，不属于离线测试。
 
-固定提示词在 `prompts/templates/`，能力在 `prompts/capabilities/`，目录与战术分别在 `prompts/games/`、`prompts/tactics/`，游戏 Skill 在 `skills/`。新命令捕获一份完整版本，同次理解、准备、编译与重试保持该版本；不热替换运行脚本。修改正文后跑 `pnpm prompts:check`。修改能力参数结构、默认值、ID 或绑定器时，还须先跑 `pnpm capabilities:generate`，再检查能力、类型和相关测试并重启；生成类型不手工编辑。目录、科技树导入命令及规则口径见[完整游戏目录](doc/spec/full-game-catalog.md)。
+固定提示在 `prompts/templates/`，能力在 `prompts/capabilities/`，游戏和战术在 `prompts/games/`、`prompts/tactics/`，游戏 Skill 在 `skills/`。修改正文运行 `pnpm prompts:check`；改能力参数、默认值、ID 或绑定器，先运行 `pnpm capabilities:generate`，再检查能力、类型及相关测试并重启，禁止手改生成类型。新命令捕获完整版本，运行中不热替换。
 
-运行时检查点 `.runtime/state.json` 按当前快照证明同局后恢复；生产预留、真实产物、成员交接和进度不因重编/恢复重置。明确取消生产目标会停止追加并撤销其剩余队列，已造产物保留；撤销按实际队列确认并保存，重启不盲目重发。详见[生产取消](doc/spec/production-cancellation.md)。对局归档与运行恢复分离，读取归档不会重放任务。
+`pnpm game-data:import` 从本地固定站点的规则、CSF 和 art 导入目录，随后运行 `pnpm game-data:check`、`pnpm prompts:check`。当前可造性仍以本局 API 为准，详见[完整目录](doc/spec/full-game-catalog.md)。
 
-## 对局记录与反馈
+各本机执行能力可独立设置为 `script` 回退后运行 Companion：`RA2C_BUILDING_EXECUTOR`、`RA2C_MINING_EXECUTOR`、`RA2C_RELOCATION_EXECUTOR`、`RA2C_SCOUT_EXECUTOR`、`RA2C_REPAIR_EXECUTOR`、`RA2C_PRODUCTION_EXECUTOR`。回退保留目标 ID、真实产物和进度；无执行方式标记的旧目标继续原脚本，不自动迁移。探索/维修回退不替代生产开关。
 
-新命令只写 `.runtime/battles/<battle-id>/`：v3 `events.jsonl` 保存变化与引用，动态列表按成员身份和字段记变化；`objects/` 按哈希保存正文，`meta.json` 和 `summary.md` 为派生索引/复盘。相同观察不重复保存，关键变化保留完整上下文。反馈成功前同步正文和日志；保存失败保留输入供重试。旧 v1/v2 日志与 `.runtime/transcripts/` 继续兼容读取，不批量覆盖历史。
+## 对局资料工具
 
 ```sh
 pnpm records:read --list
-pnpm records:read <battle-id>             # 展开引用输出完整 JSON，无需游戏或 Companion
+pnpm records:read <battle-id>
 pnpm records:read <battle-id> --summary
-pnpm records:export <battle-id>          # 无损去重并生成单局 .ra2c.jsonl.gz 提交包
-pnpm records:export <battle-id> --zip    # 标准 ZIP，网页下载使用同一格式
-pnpm records:read <提交包路径> --summary  # 可在没有游戏和原档的机器读取
+pnpm records:export <battle-id>           # gzip 提交包
+pnpm records:export <battle-id> --zip     # 与历史页相同的标准 ZIP
+pnpm records:read <提交包路径> --summary
 ```
 
-归档供玩家与开发 Agent 复盘。终端提交包默认写 `.runtime/record-exports/`，网页 ZIP 由独立 worker 在临时目录准备，下载完成或过期后清理。两种格式均校验全部逻辑事件，保留命令、反馈、错误、代码和历史观察，原档不改写；不包含无引用正文、模型配置、Key、浏览器资料或其他对局，不上传。ZIP 另含派生摘要和校验清单，旧 gzip 格式保持兼容。历史页按开局时间显示最近十局，排除未进局记录和当前进行中的对局，不删除更早归档。指挥记录保持当前局命令与反馈，不提供代码预览。只优化后续新增记录，存量原档保持原样。数据格式与接口见[对局记录](doc/spec/battle-records.md)。
+原档在 `.runtime/battles/`，终端提交包在 `.runtime/record-exports/`，不自动删除或上传。读取不需要游戏或 Companion，不恢复任务；只优化新增记录，不批量改写旧原档。格式、反馈落盘与隐私范围见[对局记录](doc/spec/battle-records.md)。运行恢复另用 `.runtime/state.json`，仅证明同局才恢复，不盲目重发未决提交。
 
 ## 地图工具
 
-分区读取与查询不需要原始游戏素材或图片。检查其他方案或查询指定格子：
+运行时读取分区不需要原始素材。查询与校验：
 
 ```sh
 pnpm maps:check maps/ice/schemes/nanwang-0.1.0.json 39 82
 ```
 
-重新从标注图生成分区时，离线工具需要 Python 3 和 Pillow；纹理校准另需 cryptography。它们不属于伴随程序的运行时依赖。地图及图片路径可替换；地图和图片哈希、区域文字位置及校准修正保存在提取参数中。更换图片或地形时先重新核对参数，参见[分区规范](doc/spec/map-regions.md)。
+图片导入需要 Python 3、Pillow，纹理校准另需 cryptography；均不属于程序运行依赖。下列路径按本机来源调整，更换地图或图片先核对哈希与投影：
 
 ```sh
 python3 packages/maps/tools/verify_native_alignment.py --pack ~/Downloads/full-pack --map .runtime/maps/ice/mp32s8.map --image mp32s83.png --out .runtime/maps/ice/native-texture-check.json
@@ -163,15 +122,4 @@ python3 packages/maps/tools/export_static_obstacles.py --map .runtime/maps/ice/m
 python3 packages/maps/tools/import_regions.py --map .runtime/maps/ice/mp32s8.map --image mp32s83.png --annotations maps/ice/import/annotations.json --out maps/ice/schemes/nanwang-0.1.0.json --diagnostics .runtime/maps/ice/generated
 ```
 
-## 代码入口
-
-- `apps/companion/src/`：启动器、模型编排、能力绑定、记录、桥接与命令入口；`ui/` 为工作台。
-- `apps/desktop/`：Electron 独立窗口、内置 Node 宿主启动及退出管理；手柄原生输入保持游戏处理。
-- `packages/contracts/`：快照、动作、目标与命令契约。
-- `packages/command/`：Markdown 加载、能力类型、理解/编译与干跑检查。
-- `packages/runtime/`：控制对象协调、`goals/` 静态处理器、生产/归属与 v4 持久化。
-- `packages/js-worker/`：独立 QuickJS WASM 子进程；编译检查与实战分别运行。
-- `packages/game-werhd/`、`model-providers/`、`maps/`：游戏桥、云模型、地图数据。
-- `skills/scout/`、`skills/repair-vehicle/`、`skills/cover/`：探路、维修车和掩护游戏 Skill。`packages/speech/` 为常驻本地识别，工作台负责麦克风采集。
-
-运行数据在 `.runtime/`，已忽略；项目介绍与全部文档入口见 [README.md](README.md)。
+分区身份、异形边界及提交规则见[地图规范](doc/spec/map-regions.md)。模块职责和代码入口集中在[架构总览](doc/architecture/overview.md)。

@@ -1,38 +1,11 @@
 # 语音模型资源
 
-2026-11-02 用户确定正式程序随安装包内置语音模型，模型正文不进入 Git；资源准备完成后，又批准提前接入 Linux 构建。本页记录资源管理方式，打包行为见[Linux 分发](../spec/linux-distribution.md)。
+固定模型为 SenseVoiceSmall INT8（2024-07-17），由 [sherpa-onnx 官方模型发行](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models)提供。运行库、模型来源、上游文档、压缩包及逐文件大小和 SHA-256 集中在 [model-manifest.json](../../packages/speech/model-manifest.json)；不在文档或构建脚本另列版本清单。
 
-## 清单与目录
+压缩包约 163 MB，模型约 239 MB。原许可说明为必需资源，保留其 [FunASR 许可引用](https://github.com/modelscope/FunASR#license)，不改写为本项目 MIT。构建随包交付模型、tokens 与许可文件，用户无需另行下载。
 
-固定清单位于 [packages/speech/model-manifest.json](../../packages/speech/model-manifest.json)，保存模型标识、版本、引擎、上游文档、压缩包地址/大小/SHA-256、逐文件大小/SHA-256、必需性以及原许可说明来源。识别器、准备工具和检查命令共用该清单；不另写一份打包专用版本信息。
+模型正文放在已忽略的 `resources/speech/models/<model-id>/`，下载缓存与用户设置在 `.runtime/speech/`，两者分开。准备先校验已有目录与压缩缓存，再下载并逐文件检查，成功后原子发布；异常目录保留，不覆盖，旧默认目录仅在校验通过后迁移。
 
-| 内容 | 开发环境路径 | Git |
-| --- | --- | --- |
-| 固定模型清单及工具代码 | `packages/speech/` | 提交 |
-| 本机模型正文、tokens、原许可说明、可选中文样例 | `resources/speech/models/<model-id>/` | 忽略 |
-| 已校验压缩包缓存 | `.runtime/speech/downloads/<sha256>.tar.bz2` | 忽略 |
-| 麦克风/按键配置、对局、浏览器资料 | `.runtime/` | 忽略，独立于模型资源 |
+开发者可用 `RA2C_SPEECH_MODEL_DIR` 覆盖识别目录，页面只保存设备和按键。离线检查针对固定分发版本，不启动识别器或联网。构建复用同一校验，缺失或损坏即停止，不将开发者 `.runtime/` 打包。
 
-默认模型为 SenseVoice INT8 2024-07-17，模型文件约 239 MB，官方压缩包约 163 MB；确切字节数以清单为准。原始许可说明作为必需资源保留，上游链接与说明原文不改写，不以本项目代码的许可替代模型许可。
-
-## 准备与离线检查
-
-```sh
-pnpm speech:install  # 准备本机资源；重复执行先完整校验并复用已有目录
-pnpm speech:check    # 离线检查文件大小、SHA-256 与必需文件，不下载或启动识别器
-```
-
-`prepareSpeechModel` 与 `verifySpeechModel` 在 `packages/speech/src/model-assets.ts` 中，构建复用同一实现。准备过程：
-
-1. 已有目标目录时检查完整性，成功直接复用；异常目录保留并报错，不覆盖现有内容。
-2. 旧默认 `.runtime/speech/models/<model-id>/` 存在时，校验通过后移动到资源目录，无需重新下载。旧路径只有模型资源，不移动配置和对局记录。
-3. 需要下载时先查按 SHA-256 命名的压缩缓存，缓存有效则离线复用；新下载的大小和哈希必须与固定清单一致。
-4. 在临时目录提取清单中的文件，再逐文件检查；全部通过后才作为正式模型目录发布，失败清理本次临时文件，不交付半成品。
-
-页面不提供模型路径设置，也不在麦克风/按键偏好中保存路径；默认使用项目资源目录。开发者可用 `RA2C_SPEECH_MODEL_DIR` 显式覆盖，旧页面配置中的路径字段不再覆盖环境变量或默认模型，原文件在下次保存时转为版本 2 并移除该字段，设备和按键保留。资源尚未准备时兼容旧默认目录；开发者指定旧默认路径时仍可解析到迁移后的资源目录。自选模型可以与固定资源清单不同；`speech:check` 检查的是本项目固定分发版本，识别器仍按当前 SenseVoice 文件结构加载开发者指定目录。
-
-## build 接入
-
-客户端构建调用上述准备与检查，将模型、tokens 和许可说明随包分发，当前也保留中文样例供 Linux 原生识别检查。资源缺失或校验失败时停止构建；不将整个 `.runtime/` 作为打包资源，不携带开发者配置、Key、对局或浏览器 profile。
-
-正式程序从安装资源 `runtime/resources/speech/models/` 读取模型，用户无需运行下载命令；可写配置和对局使用独立用户数据目录。构建和运行命令见 [AGENTS.md](../../AGENTS.md)。
+准备与检查命令见 [AGENTS.md](../../AGENTS.md)，实现：[model-assets.ts](../../packages/speech/src/model-assets.ts)，交互见[语音输入](../spec/speech-input.md)。
