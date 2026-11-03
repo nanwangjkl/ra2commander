@@ -69,6 +69,7 @@ test('CDP 重连后下载使用原生文件名与目录，断连后文件保留'
 async function fixture(legacy = false, withMicrophone = false) {
   const folder = mkdtempSync(join(tmpdir(), 'ra2c-ui-'))
   cpSync(join(root, 'apps/companion/ui'), join(folder, 'apps/companion/ui'), { recursive: true })
+  cpSync(join(root, 'package.json'), join(folder, 'package.json'))
   const files = buildWorkbench(folder), context = await browser.newContext()
   let assets: ReturnType<typeof createServer> | undefined, origin = 'https://workbench.test'
   if (withMicrophone) {
