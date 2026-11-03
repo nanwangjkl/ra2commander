@@ -79,8 +79,11 @@ html.sidebar-collapsed .status-bar { position: fixed; right: 0; bottom: 0; z-ind
 .card-error { margin: 8px 0 0; padding: 6px 8px; border-left: 2px solid #a35b56; background: #241a1b; color: #d99a94; white-space: pre-wrap; word-break: break-all; }
 .composer { border-top: 1px solid #293541; padding: 12px 16px 14px; background: #141b23; }
 .composer form { display: grid; grid-template-columns: 36px minmax(0, 1fr) 36px; align-items: center; gap: 8px; }
-.composer-field { grid-column: 2; grid-row: 1; display: flex; align-items: center; min-width: 0; height: 36px; padding: 0 10px; background: #0f161e; border: 1px solid #33414f; border-radius: 6px; }
+.composer-field { position: relative; grid-column: 2; grid-row: 1; display: flex; align-items: center; min-width: 0; height: 36px; padding: 0 10px; overflow: hidden; background: #0f161e; border: 1px solid #33414f; border-radius: 6px; }
+.composer form[data-input-mode="voice"] .composer-field::before { content: ''; position: absolute; inset: 0 auto 0 0; width: var(--voice-level, 0%); background: #7cbf9a40; pointer-events: none; transition: width 80ms linear; }
+.composer-field > * { position: relative; min-width: 0; }
 .composer-field:focus-within { border-color: #98714e; }
+.composer form[data-voice-state="error"] .composer-field { border-color: #b28c4e; }
 .composer input { width: 100%; min-width: 0; padding: 0; background: transparent; border: 0; color: #dbe3ec; font-size: 13px; }
 .composer input:focus { outline: none; }
 .composer .composer-icon { display: grid; place-items: center; width: 36px; height: 36px; padding: 8px; border: 1px solid #344859; border-radius: 6px; background: #1b2835; color: #91a2b4; }
@@ -98,10 +101,8 @@ html.sidebar-collapsed .status-bar { position: fixed; right: 0; bottom: 0; z-ind
 .composer-hint { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; font-size: 11px; color: #75859a; }
 .composer #voice-hold.recording { background: #713e37; color: #ffe0d8; border-color: #bd7469; }
 #voice-hold { touch-action: none; user-select: none; }
-#voice-level { width: 100%; height: 12px; }
-#voice-level::-webkit-meter-bar { background: #182634; border: 0; border-radius: 4px; }
-#voice-level::-webkit-meter-optimum-value { background: #7cbf9a; border-radius: 4px; }
-.voice-status { margin: 5px 0 0; color: #8292a3; font-size: 11px; overflow-wrap: anywhere; }
+.voice-status { width: 100%; color: #b8c7d6; font-size: 13px; line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.composer form[data-voice-state="error"] .voice-status { color: #e2ac75; }
 
 /* 命令反馈；表单保持独立，状态推送不替换正在编辑的字段。 */
 .card-feedback { margin-top: 9px; border-top: 1px solid #34414b; padding-top: 8px; }

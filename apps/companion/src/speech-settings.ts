@@ -10,7 +10,7 @@ export class SpeechSettings {
   private warning = ''
   private readonly modelOverride: string
   recognizer: SpeechRecognizer
-  constructor(private readonly root: string, environment: NodeJS.ProcessEnv = process.env) {
+  constructor(root: string, environment: NodeJS.ProcessEnv = process.env, private readonly modelRoot = root) {
     this.path = join(root, '.runtime/speech/settings.json')
     this.modelOverride = environment.RA2C_SPEECH_MODEL_DIR || ''
     this.config = { revision: 0, deviceId: '', key: 'Backquote' }
@@ -23,7 +23,7 @@ export class SpeechSettings {
     }
     this.recognizer = new LocalSpeechRecognizer(this.modelDir)
   }
-  get modelDir(): string { return resolveSpeechModelDir(this.root, this.modelOverride) }
+  get modelDir(): string { return resolveSpeechModelDir(this.modelRoot, this.modelOverride) }
   private validate(input: SpeechSettingsInput): SpeechSettingsInput {
     if (!input || !Object.hasOwn(SPEECH_KEYS, input.key) || typeof input.deviceId !== 'string' || input.deviceId.length > 2048) throw new Error('语音设置格式错误')
     return { revision: input.revision, deviceId: input.deviceId, key: input.key }

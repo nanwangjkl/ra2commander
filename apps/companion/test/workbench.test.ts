@@ -111,7 +111,7 @@ async function fixture(legacy = false, withMicrophone = false) {
       if (window.__uiTest.micPermissionPending) await new Promise(resolve => { window.__uiTest.micGrant = resolve; });
       if (window.__uiTest.micDenied) throw new DOMException('fixture denied', 'NotAllowedError');
       const audio = new AudioContext({ sampleRate: 16000 }), oscillator = audio.createOscillator(), gain = audio.createGain(), destination = audio.createMediaStreamDestination();
-      gain.gain.value = 0.1; oscillator.connect(gain); gain.connect(destination); oscillator.start(); await audio.resume();
+      gain.gain.value = 0.1; oscillator.connect(gain); gain.connect(destination); oscillator.start(); void audio.resume();
       window.__uiTest.tracks.push(...destination.stream.getTracks()); return destination.stream;
     } });
   ` })
@@ -213,26 +213,36 @@ test('反复更新只保留一份订阅与轮询，草稿、焦点、页签和�
   } finally { await f.close() }
 })
 
-test('游戏内按住说话仅提交一次，权限失败可重试，隐藏和重连取消语音并释放麦克风', { timeout: 25_000 }, async () => {
+test('默认启用语音，游戏内按住仅提交一次，权限失败可重试，重连释放旧麦克风并恢复语音', { timeout: 25_000 }, async () => {
   const f = await fixture(false, true), { page } = f
   try {
     await page.waitForFunction(() => window.__ra2cSpeech?.view?.engine.state === 'ready')
+    await page.waitForFunction(() => !(document.getElementById('voice-hold') as HTMLButtonElement).disabled)
+    assert.equal(await page.locator('#voice-enable').getAttribute('aria-pressed'), 'true', '打开页面即启用麦克风，无需先点击开关')
+    assert.equal(await page.locator('#say-input').isHidden(), true)
+    assert.equal(await page.locator('#voice-status').innerText(), '按住右侧按钮或`说话')
+    assert.equal(await page.evaluate(() => window.__uiTest.requests.filter(r => r.path.startsWith('/commander/voice/')).length), 0, '启用麦克风不会自动录音或下令')
+    await page.locator('#voice-enable').click()
     assert.equal(await page.locator('#speech-model-dir').count(), 0)
     assert.equal(await page.locator('#speech-form select').count(), 2)
     await page.locator('#say-input').fill('暂存的文字指令')
     const sendWidth = (await page.locator('#say-submit').boundingBox())!.width
     assert.equal(await page.locator('#voice-status').isHidden(), true)
+    assert.equal(await page.locator('.composer-field #voice-status').count(), 1)
+    assert.equal(await page.locator('#voice-level').count(), 0)
     assert.equal(await page.locator('#voice-enable').getAttribute('aria-pressed'), 'false')
     const composerHeight = (await page.locator('.composer').boundingBox())!.height
     await page.evaluate(() => { window.__uiTest.micDenied = true; window.__uiTest.micPermissionPending = true })
     await page.locator('#voice-enable').click()
     await page.waitForFunction(() => typeof window.__uiTest.micGrant === 'function')
     assert.equal(await page.locator('#voice-enable').getAttribute('aria-busy'), 'true')
-    assert.equal(await page.locator('#voice-status').isHidden(), true)
+    assert.equal(await page.locator('#voice-status').isVisible(), true)
     assert.equal((await page.locator('.composer').boundingBox())!.height, composerHeight, '等待授权只在开关内显示 loading，不撑高输入区')
     assert.notEqual(await page.locator('#voice-enable').evaluate(button => getComputedStyle(button, '::after').animationName), 'none')
     await page.evaluate(() => { window.__uiTest.micPermissionPending = false; window.__uiTest.micGrant!() })
     await page.waitForFunction(() => document.getElementById('voice-status')!.textContent!.includes('权限被拒绝'))
+    assert.match(await page.locator('#say-input').getAttribute('placeholder') ?? '', /权限被拒绝/)
+    assert.equal((await page.locator('.composer').boundingBox())!.height, composerHeight, '权限错误也不增加框外提示行')
     assert.equal(await page.evaluate(() => window.__uiTest.requests.filter(r => r.path.endsWith('/start')).length), 0)
     await page.evaluate(() => { window.__uiTest.micDenied = false })
     await page.locator('#voice-enable').click()
@@ -240,7 +250,10 @@ test('游戏内按住说话仅提交一次，权限失败可重试，隐藏和�
     assert.equal(await page.locator('#voice-enable').getAttribute('aria-pressed'), 'true')
     assert.equal(await page.locator('#say-input').isHidden(), true)
     assert.equal(await page.locator('#say-submit').isHidden(), true)
-    assert.equal(await page.locator('#voice-level').isVisible(), true)
+    assert.equal(await page.locator('#voice-status').isVisible(), true)
+    assert.equal(await page.locator('#voice-status').innerText(), '按住右侧按钮或`说话')
+    await page.waitForFunction(() => parseFloat((document.querySelector('.composer-field') as HTMLElement).style.getPropertyValue('--voice-level')) > 0)
+    assert.equal(await page.locator('.composer-field').evaluate(node => parseFloat(getComputedStyle(node, '::before').height) === node.clientHeight), true, '音量填充覆盖输入区背景的完整高度')
     assert.equal((await page.locator('#voice-hold').boundingBox())!.width, sendWidth)
     await page.locator('#say-form').evaluate(form => (form as HTMLFormElement).requestSubmit())
     assert.equal(await page.evaluate(() => window.__uiTest.requests.filter(r => r.path === '/commander/say').length), 0, '语音模式不会误发保留的文字草稿')
@@ -254,9 +267,13 @@ test('游戏内按住说话仅提交一次，权限失败可重试，隐藏和�
     await game.click()
     await page.keyboard.down('Backquote'); await page.keyboard.down('Backquote')
     await page.waitForFunction(() => document.querySelector('.card-stage')!.textContent!.includes('录音中'))
+    assert.match(await page.locator('#voice-status').innerText(), /正在录音/)
+    assert.equal((await page.locator('.composer').boundingBox())!.height, composerHeight, '录音状态保留固定工具栏高度')
     await page.waitForTimeout(220)
     await page.keyboard.up('Backquote'); await page.keyboard.up('Backquote')
     await page.waitForFunction(() => window.__uiTest.requests.some(r => r.path.endsWith('/audio')))
+    assert.match(await page.locator('#voice-status').innerText(), /正在识别/)
+    assert.equal((await page.locator('.composer').boundingBox())!.height, composerHeight, '识别状态不把工具栏向上撑开')
     const calls = await page.evaluate(() => window.__uiTest.requests.filter(r => r.path.startsWith('/commander/voice/')))
     assert.equal(calls.filter(r => r.path.endsWith('/start')).length, 1)
     assert.equal(calls.filter(r => r.path.endsWith('/audio')).length, 1)
@@ -268,6 +285,7 @@ test('游戏内按住说话仅提交一次，权限失败可重试，隐藏和�
     }, id)
     assert.match(await page.locator(`[data-command="${id}"] .card-text`).innerText(), /展开基地/)
     assert.equal(await page.locator(`[data-command="${id}"] .card-source`).innerText(), '语音')
+    assert.equal(await page.locator('#voice-status').innerText(), '按住右侧按钮或`说话')
     await page.keyboard.down('Backquote')
     await page.waitForFunction(() => window.__uiTest.requests.filter(r => r.path.endsWith('/start')).length === 2)
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')) })
@@ -277,12 +295,15 @@ test('游戏内按住说话仅提交一次，权限失败可重试，隐藏和�
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }) })
     await game.click(); await page.keyboard.down('Backquote')
     await page.waitForFunction(() => window.__uiTest.requests.filter(r => r.path.endsWith('/start')).length === 3)
+    const oldTrackCount = await page.evaluate(() => window.__uiTest.tracks!.length)
     await refreshCommandPanel(page); await page.keyboard.up('Backquote')
-    await page.waitForFunction(() => window.__uiTest.tracks!.every(track => track.readyState === 'ended'))
-    assert.equal(await page.locator('#voice-hold').isDisabled(), true)
-    assert.equal(await page.locator('#say-input').isVisible(), true)
+    await page.waitForFunction(count => window.__uiTest.tracks!.slice(0, count).every(track => track.readyState === 'ended'), oldTrackCount)
+    await page.waitForFunction(() => !(document.getElementById('voice-hold') as HTMLButtonElement).disabled)
+    assert.equal(await page.locator('#say-input').isHidden(), true)
     assert.equal(await page.locator('#say-input').inputValue(), '暂存的文字指令')
     assert.equal(await page.evaluate(() => window.__uiTest.requests.filter(r => r.path.endsWith('/audio')).length), 1)
+    await page.locator('#voice-enable').click(); await refreshCommandPanel(page)
+    assert.equal(await page.locator('#say-input').isVisible(), true, '手动关闭语音后重连仍保留文字模式')
     assert.equal(await page.evaluate(() => window.__uiTest.sources.filter(s => !s.closed).length), 1)
     assert.deepEqual(f.errors, [])
   } finally { await f.close() }

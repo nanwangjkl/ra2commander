@@ -1,0 +1,15 @@
+{
+  "name": "@ra2c/desktop",
+  "version": "0.1.2",
+  "private": true,
+  "type": "module",
+  "main": "src/main.mjs",
+  "scripts": {
+    "start": "node tools/start.mjs",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "electron": "45.2.1",
+    "playwright": "^1.49.0"
+  }
+}

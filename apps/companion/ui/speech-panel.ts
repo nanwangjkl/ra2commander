@@ -2,15 +2,17 @@ import type { CommandEvent } from '../../../packages/contracts/src/command-log.t
 import type { SpeechSettingsInput, SpeechSettingsView } from '../../../packages/contracts/src/speech.ts'
 import { MicrophoneCapture } from './speech-audio.js'
 
-interface SpeechMemory { view?: SpeechSettingsView; draft?: SpeechSettingsInput; dirty: boolean }
+interface SpeechMemory { view?: SpeechSettingsView; draft?: SpeechSettingsInput; dirty: boolean; enabled?: boolean }
 interface Recording { id: string; kind: 'key' | 'pointer'; released: boolean; ready: Promise<void>; timer: ReturnType<typeof setTimeout> }
 declare global { interface Window { __ra2cSpeech?: SpeechMemory } }
 
 export function mountSpeechPanel() {
   const memory = window.__ra2cSpeech ??= { dirty: false }, lifetime = new AbortController(), signal = lifetime.signal
+  memory.enabled ??= true
   const enable = document.querySelector<HTMLButtonElement>('#voice-enable')!, hold = document.querySelector<HTMLButtonElement>('#voice-hold')!
-  const status = document.querySelector<HTMLElement>('#voice-status')!, meter = document.querySelector<HTMLMeterElement>('#voice-level')!
+  const status = document.querySelector<HTMLElement>('#voice-status')!, field = document.querySelector<HTMLElement>('.composer-field')!
   const composer = document.querySelector<HTMLFormElement>('#say-form')!, input = document.querySelector<HTMLInputElement>('#say-input')!, send = document.querySelector<HTMLButtonElement>('#say-submit')!
+  const textPlaceholder = input.placeholder
   const form = document.querySelector<HTMLFormElement>('#speech-form')!, device = document.querySelector<HTMLSelectElement>('#speech-device')!
   const key = document.querySelector<HTMLSelectElement>('#speech-key')!
   const settingsStatus = document.querySelector<HTMLElement>('#speech-settings-status')!, reload = document.querySelector<HTMLButtonElement>('#speech-reload')!
@@ -27,10 +29,9 @@ export function mountSpeechPanel() {
   }
   const render = () => {
     if (signal.aborted) return
-    const enabled = !!microphone
+    const enabled = !!microphone || enabling
     composer.dataset.inputMode = enabled ? 'voice' : 'text'
     input.hidden = input.disabled = enabled
-    meter.hidden = !enabled
     send.hidden = send.disabled = enabled
     hold.hidden = !enabled
     enable.disabled = enabling
@@ -41,11 +42,19 @@ export function mountSpeechPanel() {
     const recording = !!active && !active.released
     hold.classList.toggle('recording', recording); hold.setAttribute('aria-pressed', String(recording))
     const label = key.querySelector<HTMLOptionElement>(`option[value="${memory.view?.key || 'Backquote'}"]`)?.textContent || '录音键'
+    const shortcut = !memory.view?.key || memory.view.key === 'Backquote' ? '`' : label
     hold.setAttribute('aria-label', recording ? '正在录音，松开下令' : '按住说话')
     hold.title = recording ? '正在录音，松开下令；Esc 取消' : `按住说话（${label}），松开下令`
-    status.textContent = message || connectionError || (active ? '正在录音，Esc 取消' : jobs.size ? `正在识别 ${jobs.size} 条语音…` : memory.view?.engine.state === 'loading' ? '正在加载本地识别器…'
-      : memory.view?.engine.error || '')
-    status.hidden = !status.textContent
+    const warning = message || connectionError || memory.view?.engine.error || ''
+    const speechState = warning ? 'error' : active ? 'recording' : jobs.size ? 'transcribing' : memory.view?.engine.state === 'loading' ? 'loading' : 'ready'
+    const speechText = warning || (active ? '正在录音，松开下令' : jobs.size ? jobs.size === 1 ? '正在识别…' : `正在识别 ${jobs.size} 条语音…`
+      : speechState === 'loading' ? '正在加载本地识别器…' : `按住右侧按钮或${shortcut}说话`)
+    composer.dataset.voiceState = speechState
+    status.textContent = enabled ? speechText : warning
+    status.hidden = !enabled
+    // 关闭麦克风时保留可编辑文字及草稿，异常在占位提示与悬停说明中呈现。
+    input.placeholder = warning || textPlaceholder
+    field.title = enabled ? speechText : warning
   }
   const cancel = (id: string, reason: string) => {
     const job = jobs.get(id)
@@ -57,7 +66,7 @@ export function mountSpeechPanel() {
     render()
   }
   const cancelAll = (reason: string) => { for (const id of [...jobs.keys()]) cancel(id, reason) }
-  const disable = (reason: string) => { cancelAll(reason); microphone?.close(); microphone = undefined; meter.value = 0; render() }
+  const disable = (reason: string) => { cancelAll(reason); microphone?.close(); microphone = undefined; field.style.setProperty('--voice-level', '0%'); render() }
   const devices = async () => {
     const available = await navigator.mediaDevices?.enumerateDevices() ?? []
     if (signal.aborted) return
@@ -112,20 +121,27 @@ export function mountSpeechPanel() {
       cancel(recording.id, '录音提交未确认，已取消'); local(recording.id, 'failed', String(error)); message = String(error); render()
     }
   }
-  enable.addEventListener('click', async () => {
-    if (enabling) return
-    if (microphone) { message = ''; disable('麦克风已关闭，取消未提交语音'); return }
-    if (!navigator.mediaDevices?.getUserMedia || !window.AudioWorkletNode) { message = '当前浏览器不支持麦克风采集'; render(); return }
+  const activate = async () => {
+    if (enabling || microphone || signal.aborted) return
+    if (!navigator.mediaDevices?.getUserMedia || !window.AudioWorkletNode) { memory.enabled = false; message = '当前浏览器不支持麦克风采集'; render(); return }
     enabling = true; message = ''; render()
-    const capture = new MicrophoneCapture(value => { if (!signal.aborted) meter.value = value }, () => { message = '麦克风已断开，请重新启用'; disable('麦克风已断开，取消未提交语音') })
+    const capture = new MicrophoneCapture(value => { if (!signal.aborted) field.style.setProperty('--voice-level', `${Math.round(Math.max(0, Math.min(1, value / 0.25)) * 100)}%`) }, () => { memory.enabled = false; message = '麦克风已断开，请重新启用'; disable('麦克风已断开，取消未提交语音') })
     try {
       await capture.enable(memory.view?.deviceId || '', signal)
       if (signal.aborted) { capture.close(); return }
-      microphone = capture; await devices()
+      microphone = capture; memory.enabled = true; await devices()
     } catch (error) {
-      if (!signal.aborted) message = error instanceof DOMException && error.name === 'NotAllowedError' ? '麦克风权限被拒绝，请允许后重新启用'
-        : error instanceof DOMException && ['NotFoundError', 'OverconstrainedError'].includes(error.name) ? '找不到所选麦克风，请在设置中重新选择' : `麦克风启用失败：${String(error)}`
+      if (!signal.aborted) {
+        memory.enabled = false
+        message = error instanceof DOMException && error.name === 'NotAllowedError' ? '麦克风权限被拒绝，请允许后重新启用'
+          : error instanceof DOMException && ['NotFoundError', 'OverconstrainedError'].includes(error.name) ? '找不到所选麦克风，请在设置中重新选择' : `麦克风启用失败：${String(error)}`
+      }
     } finally { enabling = false; render() }
+  }
+  enable.addEventListener('click', () => {
+    if (enabling) return
+    if (microphone) { memory.enabled = false; message = ''; disable('麦克风已关闭，取消未提交语音'); return }
+    void activate()
   }, { signal })
   hold.addEventListener('pointerdown', event => { if (event.button !== 0 || hold.disabled) return; event.preventDefault(); hold.setPointerCapture(event.pointerId); begin('pointer') }, { signal })
   hold.addEventListener('pointerup', () => { void release('pointer') }, { signal })
@@ -175,7 +191,7 @@ export function mountSpeechPanel() {
   }
   form.addEventListener('input', draft, { signal }); form.addEventListener('change', draft, { signal })
   form.addEventListener('submit', async event => {
-    event.preventDefault(); draft(); disable('语音设置正在更改，取消未提交语音')
+    event.preventDefault(); draft(); memory.enabled = false; disable('语音设置正在更改，取消未提交语音')
     try {
       memory.view = await request('/commander/speech', JSON.stringify({ ...memory.draft, revision: memory.view?.revision ?? 0 }))
       if (signal.aborted) return
@@ -184,12 +200,13 @@ export function mountSpeechPanel() {
     } catch (error) { if (!signal.aborted) settingsStatus.textContent = String(error) }
   }, { signal })
   reload.addEventListener('click', async () => {
-    disable('识别器正在重载，取消未提交语音'); reload.disabled = true
+    memory.enabled = false; disable('识别器正在重载，取消未提交语音'); reload.disabled = true
     try { await request('/commander/speech/reload', '{}'); message = ''; await load() }
     catch (error) { if (!signal.aborted) settingsStatus.textContent = String(error) }
     finally { if (!signal.aborted) reload.disabled = false }
   }, { signal })
-  fill(); render(); void load()
+  fill(); render()
+  void load().then(() => { if (memory.enabled && !signal.aborted) void activate() })
   return { show: () => { void load() }, dispose: () => {
     if (signal.aborted) return
     disable('侧栏重新连接，取消未提交语音'); lifetime.abort(); frameLifetime?.abort(); clearTimeout(pollTimer)

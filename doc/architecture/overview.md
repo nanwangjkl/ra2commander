@@ -1,16 +1,18 @@
 # 当前技术架构
 
-ra2commander 是通过 ra2web 公开玩家 API 运行的本机指挥伴随程序。当前支持文本和本地语音输入，使用 TypeScript / Node.js、Playwright Chromium、独立 QuickJS WASM 与 SenseVoice 识别子进程，以及可取消的云模型请求。模型适配与编译流程由项目代码实现，未接入 Pi、LangGraph 或其他 Agent Core。
+ra2commander 是通过 ra2web 公开玩家 API 运行的本机指挥伴随程序。当前支持文本和本地语音输入，使用 TypeScript / Node.js、Playwright 游戏桥、Chromium 或 Electron 窗口、独立 QuickJS WASM 与 SenseVoice 识别子进程，以及可取消的云模型请求。模型适配与编译流程由项目代码实现，未接入 Pi、LangGraph 或其他 Agent Core。
 
-截至 2026-11-02，工作台、命令侧栏、对局反馈，以及探路、维修车和掩护三个游戏 Skill 已实现。基础攻击、守卫、常规单位部署、探路、维修车，以及有限生产、持续补电和队列控制默认本机执行，保留旧脚本与按能力回退。运行时职责、共享订单事实、页面桥及 UI 生命周期整理已验收提交；本地录音/识别已接入并待用户验收。当前约束见 [AGENTS.md](../../AGENTS.md)，各轮批准及验收见[开发记录](../roadmap/development-history.md)和[架构整理计划](../roadmap/architecture-consolidation.md)。
+截至 2026-11-02，工作台、命令侧栏、对局反馈，以及探路、维修车和掩护三个游戏 Skill 已实现。基础攻击、守卫、常规单位部署、探路、维修车，以及有限生产、持续补电和队列控制默认本机执行，保留旧脚本与按能力回退。运行时职责、共享订单事实、页面桥及 UI 生命周期整理已验收提交；本地录音/识别已获用户确认并提交，Electron 独立窗口开发检查完成待用户验收。当前约束见 [AGENTS.md](../../AGENTS.md)，各轮批准及验收见[开发记录](../roadmap/development-history.md)和[架构整理计划](../roadmap/architecture-consolidation.md)。
 
 历史方案和候选选型保留在 `doc/roadmap/` 与 `doc/decisions/`，本页描述当前实现。产品目标见[需求](../spec/requirements.md)，公开 API 调查见[游戏接入](game-api.md)。
 
-用户于 2026-11-01 将后续工作重排为历史和设置页内容、语音识别、打包客户端三个阶段，详见[新阶段计划](../roadmap/client-development-phases.md)。阶段 1 的最近十局、后台 ZIP 导出与模型设置已于 2026-11-02 实现，同日获用户验收并授权开始语音阶段；客户端未启动，客户端技术尚未选定。
+用户于 2026-11-01 将后续工作重排为历史和设置页内容、语音识别、打包客户端三个阶段，详见[新阶段计划](../roadmap/client-development-phases.md)。阶段 1、2 已获用户确认并提交；阶段 3 以 Steam Deck 为目标，独立窗口后用户批准提前交付 Linux 分发，录音按键适配仍单独验收，见[客户端计划](../roadmap/electron-client.md)。
 
 ## 运行入口与工作台
 
-`pnpm companion` 启动本机 HTTPS 服务，连接常驻 Chromium 并打开 `/commander/`。游戏在同源 iframe 中运行，右侧为命令与反馈侧栏。启动时构建 UI，重连只更新侧栏模块和样式，不刷新游戏 iframe；收起侧栏后游戏占满工作台。顶部品牌及底部状态栏固定，指挥记录、历史对战、设置横排切换。历史与设置按选页读取，不额外订阅战场事件；ZIP 转换在独立 worker 中进行，模型设置由宿主持久化，保留环境配置兼容。规则查询、快照和动作都明确绑定游戏 frame。
+`apps/desktop/` 的 Electron 窗口直接承载同一工作台，并使用 Electron 内置 Node 启动现有宿主。宿主只连接该窗口的本机 CDP，不启动外部浏览器；页面桥、HTTP/SSE、模型、执行器与记录均共用现有模块。窗口管理单实例、资料目录和本机权限，关闭时先通知宿主保存并退出。开发数据默认沿用 `.runtime/`，Electron profile 独立保存；可写数据根和固定模型资源可分别解析。当前没有游戏手柄重映射或输入转发层。
+
+`pnpm companion` 启动本机 HTTPS 服务，连接常驻 Chromium 并打开 `/commander/`。游戏在同源 iframe 中运行，右侧为命令与反馈侧栏。开发入口启动时构建 UI，正式包读取预编译资源；重连只更新侧栏模块和样式，不刷新游戏 iframe，收起侧栏后游戏占满工作台。顶部品牌及底部状态栏固定，指挥记录、历史对战、设置横排切换。历史与设置按选页读取，不额外订阅战场事件；ZIP 转换在独立 worker 中进行，模型设置由宿主持久化，保留环境配置兼容。规则查询、快照和动作都明确绑定游戏 frame。
 
 `workbench-lifecycle.ts` 统一挂载和卸载外壳、页签与命令面板；外壳的布局、轮询和全屏转接归 `workbench-shell.ts` 管理。请求与事件订阅随各自生命周期撤销，迟到回调不写入新视图。重连先准备资源、再交接当前界面，保留页面内草稿、焦点、滚动和游戏文档；并发刷新只接受最新请求。旧页面没有外壳清理引用时沿用原外壳，不重复注册监听，待自然加载新版后统一管理。独立 UI 检查使用模拟页面和无头浏览器，见 `pnpm ui:check`。
 

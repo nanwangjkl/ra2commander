@@ -1,7 +1,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
-import { ModuleKind, ScriptTarget, transpileModule } from 'typescript'
+import { createRequire } from 'node:module'
+import { existsSync } from 'node:fs'
 import type { BrowserContext, Frame, Page } from 'playwright'
 import { isGameDocument } from '@ra2c/game-werhd'
 
@@ -11,6 +12,14 @@ let uiVersion = ''
 /** 启动时做最小静态构建；产物放在已忽略的运行目录，不需要开发服务器或整页热更新。 */
 export function buildWorkbench(root: string): Record<string, string> {
   const ui = join(root, 'apps/companion/ui')
+  const manifest = join(ui, 'built.json')
+  if (existsSync(manifest)) {
+    const built = JSON.parse(readFileSync(manifest, 'utf8')) as { version: string; files: string[] }
+    uiVersion = built.version
+    return Object.fromEntries(built.files.map(name => [`${WORKBENCH_PATH}${name === 'index.html' ? '' : name}`, join(ui, name)]).concat([[`${WORKBENCH_PATH}index.html`, join(ui, 'index.html')]]))
+  }
+  if (process.env.RA2C_PACKAGED === '1') throw new Error('侧栏构建资源缺失')
+  const { ModuleKind, ScriptTarget, transpileModule } = createRequire(import.meta.url)('typescript') as typeof import('typescript')
   const out = join(root, '.runtime/ui')
   mkdirSync(out, { recursive: true })
   const sources = ['workbench', 'workbench-lifecycle', 'workbench-shell', 'sidebar-tabs', 'command-panel', 'command-card', 'command-feedback', 'history-panel', 'model-settings-panel', 'speech-panel', 'speech-audio', 'pcm-capture-worklet']
@@ -25,6 +34,8 @@ export function buildWorkbench(root: string): Record<string, string> {
   }
   return files
 }
+
+export function workbenchBuildVersion(): string { return uiVersion }
 
 /** 仅升级工作台模块；并发刷新只允许最新请求挂载，资源失败时旧界面继续工作。 */
 export async function refreshCommandPanel(page: Page): Promise<void> {

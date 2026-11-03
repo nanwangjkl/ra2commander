@@ -157,6 +157,10 @@ vite.config.ts.timestamp-*
 # 本机语音模型资源：固定清单在 packages/speech/model-manifest.json
 resources/speech/models/
 
+# 已转换的游戏资源；只提交 packages/game-werhd/game-resources.json 固定清单
+resources/game/
+resources/game-site/
+
 # Offline map tools
 __pycache__/
 *.pyc

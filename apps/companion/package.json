@@ -12,6 +12,7 @@
     "@ra2c/runtime": "workspace:*",
     "@ra2c/speech": "workspace:*",
     "playwright": "^1.49.0",
+    "selfsigned": "5.5.0",
     "yauzl": "^3.4.0",
     "yazl": "^3.3.1"
   },

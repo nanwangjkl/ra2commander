@@ -33,13 +33,14 @@ export class MicrophoneCapture {
     const cancelled = () => this.close()
     signal.addEventListener('abort', cancelled, { once: true })
     const context = this.context = new AudioContext({ sampleRate: 16000 })
-    const resumed = context.resume().catch(error => { if (!this.closed) throw error })
+    // 自动启用可能早于首次用户手势，浏览器此时会挂起 resume；按住录音时再等待恢复。
+    void context.resume().catch(() => {})
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true,
         ...(deviceId ? { deviceId: { exact: deviceId } } : {}) }, video: false })
       if (this.closed || signal.aborted) { stream.getTracks().forEach(track => track.stop()); throw new Error('已取消麦克风授权') }
       this.stream = stream
-      await resumed; await context.audioWorklet.addModule(new URL('./pcm-capture-worklet.js', import.meta.url))
+      await context.audioWorklet.addModule(new URL('./pcm-capture-worklet.js', import.meta.url))
       if (this.closed || signal.aborted) throw new Error('已取消麦克风授权')
       const node = this.node = new AudioWorkletNode(context, 'ra2c-pcm-capture', { channelCount: 1, channelCountMode: 'explicit' })
       node.onprocessorerror = () => { if (!this.closed) this.disconnected() }

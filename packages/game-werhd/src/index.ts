@@ -1,2 +1,5 @@
 export { WerhdBridge, isGameDocument, type BridgeState } from './page-bridge.ts'
+export { createGameDefaultsSource } from './game-defaults.ts'
+export { prepareGameSite, verifyGameSite, verifyAsset, GAME_SITE } from './site-assets.ts'
 export { setupCdnProxy } from './cdn-proxy.ts'
+export { GAME_RESOURCES, defaultGameResourcesDir, verifyGameResources, prepareGameResources, type GameResourceCatalog } from './resource-assets.ts'

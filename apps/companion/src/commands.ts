@@ -67,6 +67,8 @@ function parseIds(spec: string, snap: Snapshot | undefined): number[] | undefine
 }
 
 export interface CommandContext {
+  /** 可写运行数据的根，缺省沿用开发仓库。 */
+  dataRoot?: string
   browser: Browser
   bridge: WerhdBridge
   page: Page
@@ -101,7 +103,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
   const { bridge, page } = ctx
   if (cmd === 'quit') ctx.transcripts?.cancelAll(new Error('伴随程序正在退出'))
   switch (cmd) {
-    case 'say': return runTranscript(line.slice(3).trim(), ctx, ROOT)
+    case 'say': return runTranscript(line.slice(3).trim(), ctx, ctx.dataRoot ?? ROOT)
     case 'map': {
       if (args[0] !== 'use' || args[1] !== 'ice') return '用法: map use ice（请确认当前对局使用冰天雪地）'
       const { regions, area } = await loadIceMap()
@@ -271,8 +273,8 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       return executeCapability('control.stop', { scope: 'units', unitIds: ids }, ctx, line)
     }
     case 'shot': {
-      mkdirSync(join(ROOT, '.runtime/shots'), { recursive: true })
-      const file = join(ROOT, `.runtime/shots/${Date.now()}.png`)
+      mkdirSync(join(ctx.dataRoot ?? ROOT, '.runtime/shots'), { recursive: true })
+      const file = join(ctx.dataRoot ?? ROOT, `.runtime/shots/${Date.now()}.png`)
       await page.screenshot({ path: file })
       return `截图: ${file}`
     }

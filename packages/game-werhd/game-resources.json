@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "id": "ra2web-base-0.87.0-1",
+  "sources": [
+    "https://werhd.k0s.cn/",
+    "https://res2.wangerhuoda.cn/",
+    "https://wyhjres2.bun.sh.cn/"
+  ],
+  "pinnedFiles": {
+    "ra2ts_l.mp4": {
+      "bytes": 2034748,
+      "sha256": "b9e6d9bc45e66b79efa9d222df70b4d69924bec4942145feaf55d0bcb2186ac0"
+    }
+  },
+  "notes": [
+    "2026-11-02 三个官方镜像的视频内容及 SHA-256 相同，实际 CRC32 为 2687901816，上游清单仍写 1063913029；本地清单固定已核对正文的正确校验值。",
+    "当前 0.87.0 使用 MIX 内的 ls800*.shp 和调色板生成载入画面；镜像清单残留的十个 ls800*.png 均已下线，不属于本地发行清单。"
+  ],
+  "manifest": {
+    "version": 2,
+    "format": "mix",
+    "checksums": {
+      "glsl.png": 567587708,
+      "ra2ts_l.mp4": 2687901816,
+      "isosnow.mix": 516022120,
+      "snow.mix": 3179804312,
+      "sno.mix": 2302518346,
+      "isotemp.mix": 3082696591,
+      "temperat.mix": 2291876867,
+      "tem.mix": 1378095083,
+      "isourb.mix": 3742684030,
+      "urban.mix": 3435196808,
+      "urb.mix": 1378095083,
+      "sidec01.mix": 3770031253,
+      "sidec02.mix": 3395797540,
+      "cameo.mix": 4119923251,
+      "strings.mix": 3409145858,
+      "ui.mix": 578204726,
+      "ini.mix": 1601374592,
+      "anims.mix": 196541088,
+      "vxl.mix": 298973809,
+      "build-gen.mix": 1755630257,
+      "sounds.mix": 324100780,
+      "eva-ally.mix": 3225454541,
+      "eva-sov.mix": 3466385364
+    }
+  }
+}

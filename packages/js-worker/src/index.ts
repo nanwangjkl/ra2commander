@@ -23,7 +23,8 @@ export class StepExecutor {
     if (this.instance) return this.instance
     const child = fork(new URL('./worker.mjs', import.meta.url), [], {
       execArgv: ['--max-old-space-size=64'],
-      env: {},
+      // Electron 内置 Node 继续用于隔离进程；仍不传递模型 Key 等宿主环境。
+      env: process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {},
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       serialization: 'json',
     })

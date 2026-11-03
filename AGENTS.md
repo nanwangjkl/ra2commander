@@ -36,9 +36,11 @@ RTS 优先快速反应。能理解行动目标时，Agent 应结合当前战况�
 
 [里程碑后的架构整理](doc/roadmap/architecture-consolidation.md)已完成运行时职责收拢、探路与维修车本机化、生产协调、页面桥和 UI 生命周期整理，并经用户验收提交。最后的文档精简已于 2026-11-01 获用户确认并要求提交，本轮整理收尾，新功能另定范围。早前[运行时整理](doc/roadmap/runtime-simplification.md)阶段 1～5 已全部验收，没有阶段 6。
 
-用户于 2026-11-01 将尚未完成的开发按[新阶段计划](doc/roadmap/client-development-phases.md)重排为：1 历史和设置页内容 → 2 语音识别模块 → 3 Electron 或其他打包客户端方案。已完成部分及验收记录不变，原工作台计划保留作历史参考，各阶段单独实施和验收。阶段 1 已于 2026-11-02 获用户验收并要求提交推送，同日授权开始阶段 2 语音识别；阶段 2 及模型资源准备经本轮交互调整后，用户确认保持当前实现并要求提交推送，保留手动重新加载识别器。打包客户端尚未启动；指挥记录保持当前局命令与反馈。
+用户于 2026-11-01 将尚未完成的开发按[新阶段计划](doc/roadmap/client-development-phases.md)重排为：1 历史和设置页内容 → 2 语音识别模块 → 3 Electron 或其他打包客户端方案。已完成部分及验收记录不变，原工作台计划保留作历史参考，各阶段单独实施和验收。阶段 1 已验收提交 `fc1a5f3`；阶段 2 语音及模型资源准备经用户确认后提交 `52d8841`，保留手动重新加载识别器。阶段 3A 独立窗口后，当前按用户追加授权交付 3C 的 Linux x64 分发，待用户在 Deck 验收；指挥记录保持当前局命令与反馈。
 
 阶段 1 的最近 10 局列表、完整 ZIP 下载、模型 URL/Key/模型名设置已于 2026-11-02 完成开发检查并获用户验收。沿用文件归档，以 `.runtime/settings.json` 保存模型配置，不引入 SQLite；独立复盘页面和其他设置项暂不实施。行为见[模型设置](doc/spec/model-settings.md)、[对局记录](doc/spec/battle-records.md)，范围见[详细方案](doc/roadmap/history-download-and-model-settings.md)。
+
+客户端目标已于 2026-11-02 明确为 Steam Deck 独立窗口，采用 Electron，目标 SteamOS/Linux x64。手柄只补充语音录音按键，其余输入交给游戏现有原生支持；先验证原生输入，再优先以独立背键映射现有录音键，不另建游戏操控映射或输入转发层。3A 后追加了基础游戏资源首启与默认设置。用户随后批准提前实施 3C 的 Linux x64 AppImage、tar.gz 和用户级安装，本轮交付后待 Deck 验收；3B 录音按键与适配仍未启动，见[客户端计划](doc/roadmap/electron-client.md)。
 
 ## 游戏行为约束
 
@@ -55,10 +57,10 @@ RTS 优先快速反应。能理解行动目标时，Agent 应结合当前战况�
 
 ## 开发环境
 
-- Node >= 22、pnpm >= 9。
+- Node >= 22.12、pnpm >= 9。
 - 本地游戏静态站点默认 `~/my/code/ra2web.github.io`（参考快照 `7f6858a`）。
-- 游戏资源默认 `~/Downloads/full-pack.7z`，导入一次后保存在 `.runtime/profile`。
-- 环境覆盖：`RA2C_GAME_DIR`、`RA2C_PACK`、`RA2C_PORT`、`RA2C_PROFILE`。
+- 基础游戏资源通过准备命令放入 `resources/game/`，不提交 Git。Electron 必需，浏览器 Companion 准备后也自动使用；未准备时兼容旧远端路径。原版 `~/Downloads/full-pack.7z` 仅保留旧手动导入入口。
+- 环境覆盖：`RA2C_GAME_DIR`、`RA2C_GAME_RESOURCES_DIR`、`RA2C_PACK`、`RA2C_PORT`、`RA2C_PROFILE`。
 - 建筑操作、采矿、搬迁默认本机执行；分别设置 `RA2C_BUILDING_EXECUTOR=script`、`RA2C_MINING_EXECUTOR=script`、`RA2C_RELOCATION_EXECUTOR=script` 后运行 `pnpm companion` 可回退对应能力，保留目标 ID 和实际进度并生成脚本接管。默认模式不迁移无标记的旧脚本目标。
 - 探路 `scout@1.5.0` 默认本机完成现有犬编队、新造犬有限生产和并行探索。`RA2C_SCOUT_EXECUTOR=script pnpm companion` 独立回退探索；无标记旧探索不自动迁移。
 - `repair-vehicle@1.2.0` 默认本机完成现有组件编队、新造组件有限生产、组装、维修与跟随。`RA2C_REPAIR_EXECUTOR=script pnpm companion` 独立回退组装维修；无标记旧维修不自动迁移。
@@ -69,16 +71,40 @@ pnpm install
 pnpm playwright-install   # 首次下载 Chromium
 pnpm speech:install       # 首次安装本地中文语音模型
 pnpm speech:check         # 离线检查固定模型资源
+pnpm game:resources:install # 开发时准备固定游戏资源，未来构建时随包交付
+pnpm game:resources:check   # 离线校验游戏资源
+pnpm game:site:install     # 准备固定站点与冰天雪地，可复用本机 RA2C_GAME_DIR
 pnpm companion
+pnpm desktop             # Electron 独立窗口，当前为开发入口
+pnpm build               # 正式运行目录，准备并校验资源，编译宿主和侧栏
+pnpm dist:linux          # Docker Linux x64 构建、分发相关检查及 AppImage/tar.gz
+pnpm dist:check          # 在干净 Linux 容器中解包并检查 dist 中的实际两个包
 ```
 
-Companion 启动本地 HTTPS 服务和常驻 Chromium，导入资源、注入页面桥并打开 `https://127.0.0.1:8787/commander/`。左侧为游戏 iframe，右侧为命令侧栏。玩家手动进入单机 → 遭遇战；当前单图配置自动绑定冰天雪地分区。重启复用工作台和对局，不自动刷新 iframe；`quit` 只断连，`quit hard` 才关闭浏览器。
+Companion 启动本地 HTTPS 服务和常驻 Chromium，提供游戏资源、注入页面桥并打开 `https://127.0.0.1:8787/commander/`。左侧为游戏 iframe，右侧为命令侧栏。玩家手动进入单机 → 遭遇战；当前单图配置自动绑定冰天雪地分区。重启复用工作台和对局，不自动刷新 iframe；`quit` 只断连，`quit hard` 才关闭浏览器。
 
-侧栏保留文本输入和终端 `say <原话>`；真实语音使用本地 SenseVoice 识别，点“启用麦克风”后按住默认反引号说话、松开下令，设置页可修改设备和录音键，模型目录由宿主统一管理，开发者可用 `RA2C_SPEECH_MODEL_DIR` 覆盖。首次运行 `pnpm speech:install` 安装离线模型；详见[语音输入](doc/spec/speech-input.md)。终端 `help` 查看命令，TCP 入口为 `127.0.0.1:8790`。基础能力、运行行为、完成判定与显式调试参数见[运行时行为与调试入口](doc/architecture/runtime-control.md)。
+`pnpm desktop` 由 Electron 直接承载同一工作台，宿主使用其内置 Node 运行，通过本机 CDP 连接现有窗口，不启动外部 Chromium。首次开发启动自动准备 Electron 运行文件；关闭窗口先保存并停止宿主，再退出整个客户端。默认与 Companion 共用 8787/8790 服务端口，两个入口不要同时运行。开发模式的设置和归档沿用项目 `.runtime/`，Electron 浏览器资料独立在 `.runtime/desktop-profile/`；新 profile 自动从本机加载基础资源，无需手动选择或导入，不迁移已有浏览器中的对局。正式包默认把用户数据放在 `${XDG_DATA_HOME:-~/.local/share}/ra2commander/.runtime/`，模型、游戏资源和预编译侧栏读取安装资源，不写程序目录。`RA2C_DATA_ROOT` 可覆盖用户数据根。终端 `quit` 在桌面模式退出整个客户端。
+
+Linux 构建需先运行 Docker，`pnpm dist:linux` 自动使用隔离的 Linux x64 环境与构建缓存，产物在 `dist/`，不上传。正式运行不需要 Node、pnpm、开发目录或外部浏览器；基础资源和中文模型已在包内。构建与安装行为见[Linux 分发](doc/spec/linux-distribution.md)。在 Deck 桌面模式安装 AppImage：
+
+```sh
+chmod +x RA2Commander-0.1.2-linux-x86_64.AppImage
+./RA2Commander-0.1.2-linux-x86_64.AppImage --install
+```
+
+安装后从应用菜单打开，或将 `~/Applications/RA2Commander/RA2Commander.AppImage` 添加为非 Steam 游戏。tar.gz 解压版运行其 `install.sh`，直接启动入口为 `ra2commander`。升级关闭旧程序后重新安装，卸载运行程序的 `--uninstall` 或解压版 `uninstall.sh`，用户数据保留。下载文件名随版本变化，校验清单为同目录 `SHA256SUMS`。Deck 实机与手柄验收仍须由用户完成。
+
+Linux 0.1.1 的入口静态启动器在执行 Electron 前排除 Steam 覆盖层的两个预加载库文件名，保留其他环境与参数，用于修复 Deck 反馈的 zygote 在 `gameoverlayrenderer.so` 中崩溃。真实 Electron 程序为同目录 `ra2commander.bin`，常规启动与 Steam 快捷方式继续指向 `ra2commander` 或 AppImage，详见[分发规范](doc/spec/linux-distribution.md)。
+
+游戏资源固定清单在 `packages/game-werhd/game-resources.json`。启动时校验已准备资源，通过同源地址供游戏正常缓存；仅改写返回浏览器的资源配置，不改外部站点文件或伪造缓存标志。音乐、地图、MOD 和战役仍沿用原配置，完整离线分发尚未完成，详见[游戏资源](doc/assets/game-resources.md)。
+
+首次使用的游戏默认设置为音乐音量 0、主音量 2/10、屏幕虚拟摇杆关闭、卷动速率第 5 格；遭遇战默认冰天雪地，我方利比亚，对手为一个法国 AI-简单。仅在对应 localStorage 键缺失时初始化，保留玩家后续修改；浏览器与 Electron 共用同一逻辑，见[游戏预置设置](doc/spec/game-preferences.md)。
+
+侧栏保留文本输入和终端 `say <原话>`；真实语音使用本地 SenseVoice 识别，页面默认启用麦克风，按住默认反引号说话、松开下令，设置页可修改设备和录音键，模型目录由宿主统一管理，开发者可用 `RA2C_SPEECH_MODEL_DIR` 覆盖。首次运行 `pnpm speech:install` 安装离线模型；详见[语音输入](doc/spec/speech-input.md)。终端 `help` 查看命令，TCP 入口为 `127.0.0.1:8790`。基础能力、运行行为、完成判定与显式调试参数见[运行时行为与调试入口](doc/architecture/runtime-control.md)。
 
 模型可在“设置”页填写 Base URL、Key 与模型名，保存后用于新请求，无需重启游戏。只保留当前一套配置，保存覆盖旧值；已有 `.env` 兼容读取，本机配置优先，空 Key 保留原值，更换 URL 需填写适用的 Key。设置页保留三个字段及保存、测试连接按钮，不提供多配置管理；只有主动点击测试连接才额外请求模型，测试不保存配置。配置保存在已忽略的 `.runtime/settings.json`，不写入调试包，详见[模型设置](doc/spec/model-settings.md)。
 
-语音模型清单在 `packages/speech/model-manifest.json`，正文放在已忽略的 `resources/speech/models/`，与 `.runtime/` 用户数据分离。准备命令完整校验并复用已安装模型，兼容旧路径迁移与压缩缓存；`speech:check` 不联网。正式程序将随安装包内置模型，build 与客户端接入另行实施，本轮不新增构建入口。详见[语音模型资源](doc/assets/speech-model.md)。
+语音模型清单在 `packages/speech/model-manifest.json`，正文放在已忽略的 `resources/speech/models/`，与 `.runtime/` 用户数据分离。准备命令完整校验并复用已安装模型，兼容旧路径迁移与压缩缓存；`speech:check` 不联网。正式构建复用同一检查并随包交付模型，用户无需另行下载。详见[语音模型资源](doc/assets/speech-model.md)。
 
 ## 修改与验证
 
@@ -86,6 +112,7 @@ Companion 启动本地 HTTPS 服务和常驻 Chromium，导入资源、注入页
 pnpm typecheck
 pnpm test                 # 不访问云模型或真实游戏
 pnpm ui:check             # 独立无头 Chromium，仅检查模拟工作台；需先安装 Playwright 浏览器
+pnpm desktop:check        # 独立隐藏 Electron，模拟页面、合成麦克风及进程生命周期
 pnpm maps:check
 pnpm prompts:check
 pnpm capabilities:check
@@ -135,6 +162,7 @@ python3 packages/maps/tools/import_regions.py --map .runtime/maps/ice/mp32s8.map
 ## 代码入口
 
 - `apps/companion/src/`：启动器、模型编排、能力绑定、记录、桥接与命令入口；`ui/` 为工作台。
+- `apps/desktop/`：Electron 独立窗口、内置 Node 宿主启动及退出管理；手柄原生输入保持游戏处理。
 - `packages/contracts/`：快照、动作、目标与命令契约。
 - `packages/command/`：Markdown 加载、能力类型、理解/编译与干跑检查。
 - `packages/runtime/`：控制对象协调、`goals/` 静态处理器、生产/归属与 v4 持久化。

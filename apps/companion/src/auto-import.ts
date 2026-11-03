@@ -1,4 +1,5 @@
 import type { Frame, Page } from 'playwright'
+import { setTimeout as delay } from 'node:timers/promises'
 
 /** 启动阶段已知对话框：出现即点击对应按钮（音频授权、资源恢复、显卡提示等一次性确认）。 */
 const STARTUP_DIALOG_BUTTONS: Array<{ match: RegExp; button: string }> = [
@@ -17,13 +18,14 @@ const STARTUP_DIALOG_BUTTONS: Array<{ match: RegExp; button: string }> = [
  */
 export async function dismissStartupDialogs(
   page: Page | Frame,
-  { timeoutMs = 300_000, log = console.log }: { timeoutMs?: number; log?: (msg: string) => void } = {},
+  { timeoutMs = 300_000, log = console.log, signal }: { timeoutMs?: number; log?: (msg: string) => void; signal?: AbortSignal } = {},
 ): Promise<string[]> {
   const handled: string[] = []
   const deadline = Date.now() + timeoutMs
   const canvas = page.locator('canvas').first()
 
   while (Date.now() < deadline) {
+    signal?.throwIfAborted()
     const text = (await page
       .evaluate(`(document.body.innerText || '')`)
       .catch(() => '')) as string
@@ -34,7 +36,7 @@ export async function dismissStartupDialogs(
         await btn.click()
         handled.push(`${rule.button}（${rule.match.source}）`)
         log(`[companion] 已处理启动对话框: ${rule.button}`)
-        await new Promise(resolve => setTimeout(resolve, 3000))
+        await delay(3000, undefined, { ...(signal ? { signal } : {}) })
         continue
       }
     }
@@ -42,7 +44,7 @@ export async function dismissStartupDialogs(
     if ((await canvas.isVisible().catch(() => false)) && !rule) {
       if (/主选单|单机模式|联机大厅/.test(text)) break
     }
-    await new Promise(resolve => setTimeout(resolve, 2000))
+    await delay(2000, undefined, { ...(signal ? { signal } : {}) })
   }
   return handled
 }
