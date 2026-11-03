@@ -7,7 +7,7 @@ done
 pnpm install --frozen-lockfile --store-dir /cache/pnpm
 pnpm typecheck
 node apps/desktop/tools/check-launcher.mjs
-node --import tsx --test --test-concurrency=1 tests/desktop-install.test.ts tests/game-defaults.test.ts tests/game-resources.test.ts tests/speech-model.test.ts tests/model-settings.test.ts
+node --import tsx --test --test-concurrency=1 tests/desktop-install.test.ts tests/desktop-build.test.ts tests/workbench-exit.test.ts tests/game-defaults.test.ts tests/game-resources.test.ts tests/speech-model.test.ts tests/model-settings.test.ts
 pnpm build
 pnpm exec electron-builder --config apps/desktop/electron-builder.cjs --linux --x64 --dir --publish never
 task_check_dir=$(mktemp -d)

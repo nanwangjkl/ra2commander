@@ -22,9 +22,12 @@ export function buildWorkbench(root: string): Record<string, string> {
   const { ModuleKind, ScriptTarget, transpileModule } = createRequire(import.meta.url)('typescript') as typeof import('typescript')
   const out = join(root, '.runtime/ui')
   mkdirSync(out, { recursive: true })
+  const { version: appVersion } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version: string }
+  const html = readFileSync(join(ui, 'index.html'), 'utf8').replaceAll('__RA2C_APP_VERSION__', appVersion)
+  writeFileSync(join(out, 'index.html'), html)
   const sources = ['workbench', 'workbench-lifecycle', 'workbench-shell', 'sidebar-tabs', 'command-panel', 'command-card', 'command-feedback', 'history-panel', 'model-settings-panel', 'speech-panel', 'speech-audio', 'pcm-capture-worklet']
-  uiVersion = createHash('sha256').update(['index.html', 'workbench.css', ...sources.map(name => `${name}.ts`)].map(name => readFileSync(join(ui, name), 'utf8')).join('\n')).digest('hex').slice(0, 12)
-  const files: Record<string, string> = { [WORKBENCH_PATH]: join(ui, 'index.html'), [`${WORKBENCH_PATH}index.html`]: join(ui, 'index.html'), [`${WORKBENCH_PATH}workbench.css`]: join(ui, 'workbench.css') }
+  uiVersion = createHash('sha256').update(appVersion).update(['index.html', 'workbench.css', ...sources.map(name => `${name}.ts`)].map(name => readFileSync(join(ui, name), 'utf8')).join('\n')).digest('hex').slice(0, 12)
+  const files: Record<string, string> = { [WORKBENCH_PATH]: join(out, 'index.html'), [`${WORKBENCH_PATH}index.html`]: join(out, 'index.html'), [`${WORKBENCH_PATH}workbench.css`]: join(ui, 'workbench.css') }
   for (const name of sources) {
     const compiled = transpileModule(readFileSync(join(ui, `${name}.ts`), 'utf8'), {
       compilerOptions: { target: ScriptTarget.ES2022, module: ModuleKind.ES2022 },

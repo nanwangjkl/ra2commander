@@ -74,7 +74,7 @@ try {
   }
   const ports = { RA2C_PORT: await freePort(), RA2C_CMD_PORT: await freePort() }
   async function start() {
-    const env = { ...process.env, ...ports, ...(linux ? { LD_PRELOAD: overlay } : {}), RA2C_DATA_ROOT: data, RA2C_DESKTOP_HIDDEN: '1' }
+    const env = { ...process.env, ...ports, ...(linux ? { LD_PRELOAD: overlay, RA2C_STEAM_DECK: '1' } : {}), RA2C_DATA_ROOT: data, RA2C_DESKTOP_HIDDEN: '1' }
     delete env.ELECTRON_RUN_AS_NODE; delete env.RA2C_PACKAGED
     const appRun = join(appDir, 'AppRun')
     if (existsSync(appRun)) {
@@ -93,8 +93,8 @@ try {
     })
     const page = await application.firstWindow()
     const bounds = await application.evaluate(({ BrowserWindow, screen }) => ({ actual: BrowserWindow.getAllWindows()[0].getSize(), area: screen.getPrimaryDisplay().workAreaSize }))
-    // Steam Deck 的专用尺寸由独立检查覆盖；其他桌面保持当前工作区内的默认窗口。
-    if (!linux) assert.deepEqual(bounds.actual, [Math.min(1480, bounds.area.width), Math.min(960, bounds.area.height)])
+    if (linux) assert.deepEqual(bounds.actual, [1280, 800], 'Steam Deck 使用 1280×800')
+    else assert.deepEqual(bounds.actual, [Math.min(1480, bounds.area.width), Math.min(960, bounds.area.height)])
     await page.route('**/*', async route => {
       const url = new URL(route.request().url())
       if (url.pathname.startsWith('/ra2c-game-resources/')) requested.add(url.pathname)
@@ -109,9 +109,13 @@ try {
     }
     throw new Error(`打包后的游戏未进入主菜单：${JSON.stringify(await Promise.all(page.frames().map(async frame => ({ url: frame.url(), text: (await frame.locator('body').innerText({ timeout: 1000 }).catch(() => '')).slice(-1500) }))))}\n阻止的外部请求：${[...blocked]}\n${diagnostic}`)
   }
-  async function close() {
+  async function close(viaSettings = false) {
     const child = application.process(), exited = once(child, 'exit')
-    await application.evaluate(({ app }) => app.quit())
+    if (viaSettings) {
+      const page = await application.firstWindow()
+      await page.locator('#tab-settings').click()
+      await page.getByRole('button', { name: '退出游戏', exact: true }).click()
+    } else await application.evaluate(({ app }) => app.quit())
     await Promise.race([exited, delay(15_000, undefined, { ref: false }).then(() => { throw new Error('打包程序退出超时') })])
     assert.equal(child.exitCode, 0); await application.close().catch(() => {}); application = undefined
   }
@@ -146,7 +150,7 @@ try {
   const restored = await second.frame.evaluate(() => ({ mixer: localStorage.getItem('_r_mixer_v3'), joystick: localStorage.getItem('ra2web.mobileJoystickLite.enabled') }))
   assert.deepEqual(restored, { mixer: '0,0.6;5,0.1', joystick: '1' })
   assert.equal(JSON.parse(readFileSync(join(data, '.runtime/speech/settings.json'), 'utf8')).key, 'F9')
-  await close(); assert.ok(requested.size >= 4)
+  await close(true); assert.ok(requested.size >= 4)
   console.log('[package] 干净资料首启、本机地图、设置保存、退出与重开检查通过')
   if (linux) {
     const installEnv = { ...process.env, XDG_DATA_HOME: join(temporary, 'xdg'), RA2C_DATA_ROOT: join(temporary, 'installer-data') }

@@ -1,68 +1,69 @@
-# ra2commander
+# RA2 Commander
 
-基于 [ra2web](https://github.com/ra2web/ra2web.github.io) 的独立开源本机语音指挥执行系统。玩家巡视战场并下达战略命令，AI 理解目标，本机流程或对应控制对象的 JavaScript 执行战术微操和生产。
+用中文语音指挥红警。按住录音键说出目标，RA2 Commander 负责生产、建设、编队和部队行动，你可以随时改令或停止。
 
-设计上优先快速反应：命令有合理解释就行动，接受误判与次优结果，由玩家后续命令纠正。“造重工”按当前对局选择，不因未说明盟军或苏军而停下来询问。
+项目通过 [ra2web（网页红井）](https://github.com/ra2web/ra2web.github.io) 的公开玩家 API 控制游戏，使用 Electron 将游戏和指挥侧栏放在同一个窗口中。目前围绕**冰天雪地**地图开发，已在 Steam Deck 上完成实机验收。
 
-每队与全局分别是独立控制对象，目标与执行进度独立保存。固定流程由本机执行，需要代码的目标在对应对象内共用一份脚本及生成、校验、替换和修复机制。主程序使用 TypeScript / Node.js；云端模型理解命令并按需生成代码，实时运行时持续观察战况并提交动作。新生产、持续补电及队列控制的执行方式见[生产说明](doc/spec/production-execution.md)。
+## 能做什么
 
-语音绑定失败会单独重决策；执行错误或具备条件却长期没有进展时，携带实际动作与结果限次修复脚本。见[自动恢复](doc/spec/automatic-recovery.md)。
+可以从这些命令开始：
 
-浏览器工作台第一阶段已由用户验收通过：游戏位于左侧 iframe，右侧侧栏可调宽、折叠，全屏保留整个工作台，Companion 重启沿用当前对局。侧栏已接入文本下令、原话、理解、实际选择、执行/完成状态与错误；追加的逐命令反馈、本机归档及侧栏精简已由用户验收通过，当前默认自动绑定冰天雪地分区。新阶段 1 的历史最近十局与完整 ZIP 下载、模型 URL/Key/模型名设置已于 2026-11-02 获用户验收；本地录音识别随后获用户确认并提交，安装及按键说明见[语音输入](doc/spec/speech-input.md)。
+```text
+展开基地
+造五辆坦克，编入一队
+一队进攻三楼右下
+探路
+防守基地
+```
 
-当前[客户端阶段](doc/roadmap/electron-client.md)提供 Electron 独立窗口，复用现有工作台和指挥宿主。提供 Linux x64 的 [AppImage/tar.gz](doc/spec/linux-distribution.md) 及 macOS、Windows 的[本机构建入口](doc/spec/desktop-distribution.md)，内置游戏基础资源、冰天雪地和中文语音模型。普通桌面使用默认窗口，Steam Deck 使用 1280×800；手柄录音键与休眠适配仍单独实施。环境、构建和安装说明见 [AGENTS.md](AGENTS.md)。
+生产会自动补齐必要科技前置；部队可以按地图分区移动、进攻和防守。探路、维修车、掩护三个游戏 Skill 处理持续协作，例如让多条狗分头探索，或让防空车随坦克一起行动。
 
-M1（公共 API 桥）与 M2 单队循环已实测：文本命令经云模型（DeepSeek/GLM 可切换）编译为独立任务脚本，经快照驱动持续执行——26 坦克守区、战损六成边界回撤、改令/撤权、故障隔离均通过真实对局与合成回放验证。当前已改为编队/全局脚本统一替换，支持多目标生产、转编与持续补员、v4 持久化（兼容 v3）；本轮自动化验证与实机记录见[改造方案](doc/roadmap/script-ownership-refactor.md)。宿主保留请求失效检查及 QuickJS 子进程隔离。运行方式与显式授权参数见 [AGENTS.md](AGENTS.md)；首版范围与验证安排见[实施与验证计划](doc/roadmap/implementation-plan.md)。
+侧栏显示每条命令、实际理解、执行状态和错误。每条命令都能添加反馈，历史对战页可以下载最近十局的完整调试包，供复盘和排查问题。
 
-## 文档导航
+这是一个仍在迭代的个人项目。系统优先按合理解释行动，可能选错对象或执行得不够好；后续命令可以纠正它。当前地图和规则经过专门适配，其他地图、MOD 的效果需要另外验证。
 
-| 文档 | 回答的问题 |
-| --- | --- |
-| [产品需求](doc/spec/requirements.md) | 玩家能做什么，AI 获得哪些权限，任务应该如何表现？ |
-| [架构设计](doc/architecture/overview.md) | 当前命令、运行时与归档如何协作？ |
-| [运行时行为与调试](doc/architecture/runtime-control.md) | 已实现的目标如何完成、取消、恢复，终端如何调试？ |
-| [游戏 API 调查](doc/architecture/game-api.md) | 现有接口能做到什么，依据和限制是什么？ |
-| [地图分区数据](doc/spec/map-regions.md) | 如何读取冰天雪地分区、核对坐标和提交其他方案？ |
-| [实施与验证计划](doc/roadmap/implementation-plan.md) | 先做什么，如何测量和验证首版？ |
-| [编队与全局脚本改造方案](doc/roadmap/script-ownership-refactor.md) | 如何改为每编队一份脚本、全局一份脚本，并统一替换？ |
-| [运行时整理与响应速度改造计划](doc/roadmap/runtime-simplification.md) | 如何分阶段改善调度、目标扩展、对象选择、归档和模型调用？（阶段 1～5 全部验收） |
-| [里程碑后的架构整理](doc/roadmap/architecture-consolidation.md) | 如何收拢运行时职责、分离订单与掩护事实、统一命令校正，再逐项迁移固定流程？ |
-| [开发与验收记录索引](doc/roadmap/development-history.md) | 各轮开发何时获准、验收与提交，哪些阶段仍未启动？ |
-| [后续开发阶段](doc/roadmap/client-development-phases.md) | 历史和设置页 → 语音识别 → 打包客户端，如何分阶段交付和验收？ |
-| [Steam Deck 客户端](doc/roadmap/electron-client.md) | Electron 独立窗口、录音背键与完整分发如何分三次交付？ |
-| [历史下载与模型设置方案](doc/roadmap/history-download-and-model-settings.md) | 最近十局、完整 ZIP 下载和模型 URL/Key 设置如何实现，是否需要 SQLite？（已验收） |
-| [语音输入](doc/spec/speech-input.md) | 如何安装本地模型、选择设备和录音键，如何下令与取消？ |
-| [语音模型资源](doc/assets/speech-model.md) | 如何固定版本、校验与复用模型资源，并为以后随安装包分发做准备？ |
-| [游戏资源](doc/assets/game-resources.md) | 如何准备固定基础资源、首次从本机自动加载，并为随包交付做准备？ |
-| [游戏预置设置](doc/spec/game-preferences.md) | 默认音量与虚拟摇杆如何初始化、保存并保留玩家修改？ |
-| [Linux 分发](doc/spec/linux-distribution.md) | AppImage 和解压版如何构建、安装、保存用户数据与卸载？ |
-| [macOS 与 Windows 分发](doc/spec/desktop-distribution.md) | ZIP 解压版如何按本机架构构建，如何区分桌面与 Deck 尺寸？ |
-| [本机模型设置](doc/spec/model-settings.md) | 如何保存模型 URL、Key 与模型名，覆盖保存唯一配置，兼容环境配置、测试连接并切换后续请求？ |
-| [生产协调本机化计划](doc/roadmap/production-native-execution.md) | 如何分两阶段迁移有限生产、持续补电与显式队列控制，并保留共享前置、出厂交接和恢复？（两阶段均已验收） |
-| [生产执行方式](doc/spec/production-execution.md) | 哪些生产由本机执行，如何准备科技树、共享台账及耗电，如何取消、恢复和回退？ |
-| [六句模拟语音测试](doc/roadmap/voice-six-commands.md) | 展开、建设、造兵编队、地名移动、补电和进攻的实机效果如何？ |
-| [原工作台、侧栏与语音开发计划](doc/roadmap/browser-workbench-and-voice.md) | 既有阶段范围与交付经过；未完成工作的后续顺序见新阶段计划 |
-| [探路 Skill](doc/spec/scouting-skills.md) | 如何配置、调用、取消和恢复探路，以及如何确认真实探索覆盖？ |
-| [维修车 Skill](doc/spec/repair-vehicle-skill.md) | 如何生产、组装维修车，按坦克血量选择目标并让多车并行维修？ |
-| [掩护 Skill 开发计划](doc/roadmap/cover-skill.md) | 同队掩护、生产接入、协同行动及防空优先（后续阶段已合并交付，0.2.7 修正已获认可） |
-| [掩护 Skill](doc/spec/cover-skill.md) | 当前如何安排同队角色、处理两种速度差、取消和恢复协同行军？ |
-| [进攻时自动碾压](doc/spec/crushing.md) | 哪些车辆分头碾压、如何保留掩护及受阻回退、保存与恢复？（已获用户实测认可并提交） |
-| [基础能力、提示词与 Skill 改造方案](doc/roadmap/capabilities-prompts-and-skills.md) | 如何统一能力入口、将提示词外置为 Markdown，并组合“探路”等常规操作？（A～C 已验收，探路流程已实机认可） |
-| [玩家基础能力](doc/spec/player-capabilities.md) | 已接通哪些能力，Markdown 参数如何连接模型、类型与宿主，如何新增能力？ |
-| [生产取消](doc/spec/production-cancellation.md) | 如何撤销一个目标剩余的游戏队列，保留产物并继续其他生产？ |
-| [生产建筑集结点与出口疏通计划](doc/roadmap/factory-rally-and-exit.md) | 默认集结、到点后交接、静态障碍避让与有限出口疏通已通过用户验收 |
-| [生产建筑集结点](doc/spec/factory-rally.md) | 如何指定出厂目的地，自动分散重工集结点，以及同局保存和提交状态的限制？ |
-| [建筑方位要求](doc/spec/building-placement.md) | 如何保留明确的上、下、左、右要求，选择合法落点并确认实际位置？ |
-| [建筑维修与出售](doc/spec/building-operations.md) | 如何直接使用原生扳手维修，或出售指定己方建筑，并确认实际效果？ |
-| [基地搬迁与区域建造](doc/spec/base-relocation.md) | 如何收起基地、搬至分区重新展开，并等待搬迁后在区域内建造？ |
-| [指定分区采矿](doc/spec/regional-mining.md) | 如何指挥现有矿车采区内矿石，并保留正常采集、返厂与卸货？ |
-| [现有单位攻击与飞机出击](doc/spec/selected-attacks-and-sorties.md) | 如何不建队直接攻击，并让飞机等待装弹、投弹一次后完成？ |
-| [基地防守](doc/spec/base-defense.md) | 如何攻击进入基地所在分区的敌人，无敌人时原地待命，并跟随基地变形和跨区？ |
-| [常规单位部署](doc/spec/unit-deployment.md) | 如何让大兵、辐射工兵等移动部署，衔接本次生产并确认实际姿态？ |
-| [游戏规则与战术约定](doc/spec/game-rules-and-tactics.md) | 如何按真实规则选择阵营项目、复用前置，并按目标组合战术提示？ |
-| [完整游戏目录与通用科技树](doc/spec/full-game-catalog.md) | 如何识别尚未解锁的单位与建筑，导入中文名称并自动补齐前置和生产设施？ |
-| [对局记录与命令反馈](doc/spec/battle-records.md) | 如何归档命令反馈、理解、代码和实际成果，导出紧凑单局提交包供开发复盘？ |
-| [领域术语](doc/spec/CONTEXT.md) | 玩家、编队、战损、授权条件与 Skill 分别指什么？ |
-| [架构决策记录](doc/decisions/README.md) | 为什么选择当前方案，有哪些取舍和后果？ |
+## 开始使用
 
-建议先读产品需求与当前架构，实现游戏适配器时查 API 调查，评审取舍时查 ADR。历史选型和未实施方案保留在路线图与决策记录中，实机验收按阶段进行。
+在“设置”中填写兼容 OpenAI Chat Completions 协议的模型 **URL、Key、模型名称**，可以先点“测试连接”。设置只保存当前一套配置，后续命令立即使用新配置。
+
+进入游戏的“单机 → 遭遇战”，使用冰天雪地地图。默认我方利比亚，对手为法国简单电脑；可以在开局前自行修改。
+
+麦克风默认启用。按住反引号键（`Backquote`）或输入区右侧按钮说话，松开后识别并下令；关闭左侧麦克风开关即可改用文字输入。设置页可以选择麦克风和录音键。Steam Deck 可用 Steam 的键盘映射触发录音键，其余操作沿用游戏输入。
+
+语音通过随包的 **SenseVoiceSmall INT8** 在本机识别，转写后的文字交给所配置的云模型理解；实时执行在本机持续进行，不逐帧请求模型。原始录音默认不保存、不上传，命令理解需要网络和模型服务。
+
+### 从源码运行
+
+需要 Node.js ≥ 22.12 和 pnpm 9。首次准备会下载游戏资源与语音模型，它们不保存在 Git 中。
+
+```sh
+pnpm install --frozen-lockfile
+pnpm game:resources:install
+pnpm game:site:install
+pnpm speech:install
+pnpm desktop
+```
+
+浏览器开发入口、构建命令、环境变量及检查方式见 [AGENTS.md](AGENTS.md)。
+
+### 桌面包
+
+正式包包含运行环境、基础游戏资源、冰天雪地和语音模型，无需另装 Node.js 或浏览器；其他地图、音乐和在线服务仍可能访问上游。
+
+| 平台 | 格式 | 验证情况 |
+| --- | --- | --- |
+| SteamOS / Linux x64 | AppImage、tar.gz | Steam Deck 实机已验收，Deck 窗口为 1280×800 |
+| macOS | ZIP，解压运行 `.app` | Apple Silicon 已构建检查；尚未提供开发者签名与公证 |
+| Windows | ZIP，解压运行 `ra2commander.exe` | 已提供构建入口，尚未完成目标系统构建与实机验证 |
+
+macOS、Windows 采用普通桌面窗口尺寸。程序与用户数据分开保存，升级替换程序会保留设置和对局；安装方式见 [Linux 分发](doc/spec/linux-distribution.md)及[桌面分发](doc/spec/desktop-distribution.md)。
+
+## 参与开发
+
+遇到问题时，可以在命令卡片中记录实际表现与期望，再从历史页下载相关对局 ZIP。调试包包含命令、理解、生成代码、运行观察和反馈，不包含模型 Key 或浏览器资料，不会自动上传。
+
+开发约定和命令见 [AGENTS.md](AGENTS.md)，模块与行为说明见[开发文档](doc/README.md)。地图分区支持多个作者和版本，提交方式见[地图分区](doc/spec/map-regions.md)；固定提示词在 [prompts/](prompts/)，游戏 Skill 在 [skills/](skills/)。
+
+## 致谢与许可
+
+本仓库代码采用 [MIT License](LICENSE)。游戏由 [ra2web](https://github.com/ra2web/ra2web.github.io) 提供，语音识别使用 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 与 [SenseVoice](https://github.com/FunAudioLLM/SenseVoice)。游戏、游戏素材和语音模型各自保留上游许可，本项目的 MIT 许可不覆盖这些资源；固定来源与许可说明见[游戏资源](doc/assets/game-resources.md)和[语音模型资源](doc/assets/speech-model.md)。

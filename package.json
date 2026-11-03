@@ -1,6 +1,6 @@
 {
   "name": "ra2commander",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "基于 ra2web 公共玩家 API 的本机语音指挥伴随程序",
   "license": "MIT",

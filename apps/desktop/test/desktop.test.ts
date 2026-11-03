@@ -53,7 +53,7 @@ test('Electron 内置 Node 可以加载识别库并运行隔离 QuickJS，不需
   finally { await stop(child) }
 })
 
-for (const closeMethod of ['window', 'quit'] as const) test(`独立窗口保留设置和单实例，网页离开确认不阻塞${closeMethod === 'window' ? '关闭按钮' : '菜单退出'}`, { timeout: 60_000 }, async () => {
+for (const closeMethod of ['window', 'quit', 'settings'] as const) test(`独立窗口保留设置和单实例，网页离开确认不阻塞${{ window: '关闭按钮', quit: '菜单退出', settings: '设置页退出' }[closeMethod]}`, { timeout: 60_000 }, async () => {
   const folder = mkdtempSync(join(tmpdir(), 'ra2c desktop ')), game = join(folder, 'game')
   mkdirSync(game); mkdirSync(join(folder, '.runtime'), { recursive: true })
   writeFileSync(join(game, 'index.html'), '<!doctype html><title>模拟游戏</title><p>主选单 单机模式</p><canvas width="800" height="600"></canvas><script>window.addEventListener("beforeunload",event=>{event.preventDefault();event.returnValue=""})</script>')
@@ -100,7 +100,8 @@ for (const closeMethod of ['window', 'quit'] as const) test(`独立窗口保留�
     await page.evaluate(() => window.addEventListener('beforeunload', event => { event.preventDefault(); event.returnValue = '' }))
     const exited = once(child, 'exit')
     // 走真实原生窗口关闭；调试协议的 page.close 会绕过网页的离开确认。
-    await application.evaluate(({ app, BrowserWindow }, method) => {
+    if (closeMethod === 'settings') await page.getByRole('button', { name: '退出游戏', exact: true }).click()
+    else await application.evaluate(({ app, BrowserWindow }, method) => {
       if (method === 'window') BrowserWindow.getAllWindows()[0]!.close()
       else app.quit()
     }, closeMethod)

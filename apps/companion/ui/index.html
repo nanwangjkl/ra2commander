@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
-    <title>RA2 Commander · 指挥工作台</title>
+    <title>RA2 Commander v__RA2C_APP_VERSION__ · 指挥工作台</title>
     <link rel="stylesheet" href="/commander/workbench.css" />
     <script type="module" src="/commander/workbench.js"></script>
   </head>
@@ -16,7 +16,7 @@
         </div>
         <div id="resize-sidebar" role="separator" aria-label="调整侧栏宽度" aria-orientation="vertical" aria-controls="sidebar" tabindex="0"></div>
         <header class="sidebar-heading">
-          <h1>RA2 Commander</h1>
+          <h1>RA2 Commander <span class="app-version">v__RA2C_APP_VERSION__</span></h1>
           <p id="notice" role="status" hidden></p>
         </header>
         <aside id="sidebar" aria-label="指挥面板">
@@ -50,20 +50,32 @@
           </section>
           <section id="page-settings" class="sidebar-page" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden>
             <div class="page-content">
-              <form id="model-form" class="settings-form">
-                <label>URL<input id="model-url" type="url" required autocomplete="off" placeholder="https://api.example.com/v1" maxlength="2048" /></label>
-                <label>API Key<input id="model-key" type="password" autocomplete="new-password" placeholder="填写服务的 API Key" maxlength="8192" /></label>
-                <label>模型名称<input id="model-model" type="text" required autocomplete="off" placeholder="模型 ID" maxlength="200" /></label>
-                <div class="settings-actions"><button id="model-save" type="submit">保存</button><button id="model-test" type="button">测试连接</button></div>
-              </form>
-              <p id="model-status" class="page-message" role="status"></p>
-              <h2 class="settings-section-title">语音输入</h2>
-              <form id="speech-form" class="settings-form">
-                <label>麦克风<select id="speech-device"><option value="">系统默认麦克风</option></select></label>
-                <label>录音按键<select id="speech-key"><option value="Backquote">反引号 `</option><option value="ControlRight">右 Ctrl</option><option value="AltRight">右 Alt</option><option value="F8">F8</option><option value="F9">F9</option></select></label>
-                <div class="settings-actions"><button type="submit">保存语音设置</button><button id="speech-reload" type="button">重新加载识别器</button></div>
-              </form>
-              <p id="speech-settings-status" class="page-message" role="status"></p>
+              <section aria-labelledby="model-settings-title">
+                <h2 id="model-settings-title" class="settings-section-title">模型配置</h2>
+                <form id="model-form" class="settings-form">
+                  <label>URL<input id="model-url" type="url" required autocomplete="off" placeholder="https://api.example.com/v1" maxlength="2048" /></label>
+                  <label>API Key<input id="model-key" type="password" autocomplete="new-password" placeholder="填写服务的 API Key" maxlength="8192" /></label>
+                  <label>模型名称<input id="model-model" type="text" required autocomplete="off" placeholder="模型 ID" maxlength="200" /></label>
+                  <div class="settings-actions"><button id="model-save" type="submit">保存</button><button id="model-test" type="button">测试连接</button></div>
+                </form>
+                <p id="model-status" class="page-message" role="status"></p>
+              </section>
+              <hr class="settings-divider" />
+              <section aria-labelledby="speech-settings-title">
+                <h2 id="speech-settings-title" class="settings-section-title">语音识别</h2>
+                <form id="speech-form" class="settings-form">
+                  <label>麦克风<select id="speech-device"><option value="">系统默认麦克风</option></select></label>
+                  <label>录音按键<select id="speech-key"><option value="Backquote">反引号 `</option><option value="ControlRight">右 Ctrl</option><option value="AltRight">右 Alt</option><option value="F8">F8</option><option value="F9">F9</option></select></label>
+                  <div class="settings-actions"><button type="submit">保存语音设置</button><button id="speech-reload" type="button">重新加载识别器</button></div>
+                </form>
+                <p id="speech-settings-status" class="page-message" role="status"></p>
+              </section>
+              <hr class="settings-divider" />
+              <section aria-labelledby="exit-settings-title">
+                <h2 id="exit-settings-title" class="settings-section-title">退出</h2>
+                <button id="exit-game" type="button">退出游戏</button>
+                <p id="exit-status" class="page-message" role="status"></p>
+              </section>
             </div>
           </section>
         </aside>
