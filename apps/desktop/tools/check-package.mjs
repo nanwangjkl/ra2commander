@@ -81,8 +81,8 @@ try {
       env.APPDIR = appDir
       if (process.env.RA2C_CHECK_APPIMAGE) env.APPIMAGE = process.env.RA2C_CHECK_APPIMAGE
     }
-    // 容器检查单独关闭 Chromium 沙箱；发行程序不附加这些测试参数。
-    application = await _electron.launch({ executablePath: existsSync(appRun) ? appRun : executable, args: [...(linux ? ['--no-sandbox'] : []), ...(mac ? [] : ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']), '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'], cwd: temporary, env, timeout: 45_000 })
+    // 自检窗口隐藏，游戏仍会加载菜单和遭遇战；构建时静音，避免突然出声。
+    application = await _electron.launch({ executablePath: existsSync(appRun) ? appRun : executable, args: ['--mute-audio', ...(linux ? ['--no-sandbox'] : []), ...(mac ? [] : ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']), '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'], cwd: temporary, env, timeout: 45_000 })
     let diagnostic = ''
     for (const stream of [application.process().stdout, application.process().stderr]) stream?.on('data', bytes => { diagnostic = (diagnostic + bytes).slice(-5000) })
     if (linux) assert.equal(await application.evaluate(() => process.env.LD_PRELOAD), undefined, 'Electron 应在覆盖层预加载已移除的环境中运行')
@@ -92,6 +92,8 @@ try {
       new MutationObserver(() => { if (document.querySelector('.game-res-box .recovery-actions')) window.__resourcePromptSeen = true }).observe(document, { childList: true, subtree: true })
     })
     const page = await application.firstWindow()
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach(win => win.webContents.setAudioMuted(true)))
+    assert.equal(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().every(win => win.webContents.isAudioMuted())), true, '自检窗口应静音')
     const bounds = await application.evaluate(({ BrowserWindow, screen }) => ({ actual: BrowserWindow.getAllWindows()[0].getSize(), area: screen.getPrimaryDisplay().workAreaSize }))
     if (linux) assert.deepEqual(bounds.actual, [1280, 800], 'Steam Deck 使用 1280×800')
     else assert.deepEqual(bounds.actual, [Math.min(1480, bounds.area.width), Math.min(960, bounds.area.height)])
