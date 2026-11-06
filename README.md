@@ -1,3 +1,5 @@
+![蓝发少女的作战部署](doc/assets/readme-cover.png)
+
 # RA2 Commander
 
 用中文语音指挥红警。按住录音键说出目标，RA2 Commander 负责生产、建设、编队和部队行动，你可以随时改令或停止。
