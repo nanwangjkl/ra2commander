@@ -69,3 +69,7 @@ macOS、Windows 采用普通桌面窗口尺寸。程序与用户数据分开保�
 ## 致谢与许可
 
 本仓库代码采用 [MIT License](LICENSE)。游戏由 [ra2web](https://github.com/ra2web/ra2web.github.io) 提供，语音识别使用 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 与 [SenseVoice](https://github.com/FunAudioLLM/SenseVoice)。游戏、游戏素材和语音模型各自保留上游许可，本项目的 MIT 许可不覆盖这些资源；固定来源与许可说明见[游戏资源](doc/assets/game-resources.md)和[语音模型资源](doc/assets/speech-model.md)。
+
+## 友情链接
+
+- [LINUX DO](https://linux.do/)
